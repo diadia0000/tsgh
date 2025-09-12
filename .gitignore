@@ -1,9 +1,9 @@
 python_test_output/
 *.jpg
 *.png
-picture/
+picture/*
 build/
 docs/
 test_output/
-venv/
+.venv/
 
