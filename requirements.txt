@@ -1,0 +1,9 @@
+# WSI 配準系統 Python GUI 依賴
+PyQt5>=5.15.0
+opencv-python>=4.5.0
+numpy>=1.21.0
+matplotlib>=3.5.0
+seaborn>=0.11.0
+Pillow>=8.0.0
+czifile>=2019.7.2
+argparse
