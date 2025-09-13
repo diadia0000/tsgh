@@ -45,7 +45,7 @@ bool CellRegistration::performRegistration(const string& inputDir, const string&
     }
     
     logProgress("Registration completed successfully");
-    return her2Result_.success && dishResult_.success;
+    return (her2Result_.metrics.mutualInformation > 0) && (dishResult_.metrics.mutualInformation > 0);
 }
 
 bool CellRegistration::loadImages(const string& inputDir) {
@@ -92,8 +92,8 @@ bool CellRegistration::loadImages(const string& inputDir) {
         return false;
     }
     
-    // Resize to 50% for better detail preservation
-    double scaleFactor = 0.5;
+    // Resize to 25% for memory optimization
+    double scaleFactor = 0.25;
     
     logProgress("Memory-saving scale factor: " + to_string(scaleFactor));
     
@@ -172,7 +172,15 @@ RegistrationResult CellRegistration::registerToReference(const Mat& reference, c
         Mat aligned = metricsCalc.applyTransform(moving, finalTransform);
         result.metrics = metricsCalc.calculateMetrics(reference, aligned, finalTransform);
         result.transformMatrix = finalTransform;
+        
+        // 檢查度量計算結果
+        logProgress("  Metrics calculated - MI: " + to_string(result.metrics.mutualInformation) + 
+                   ", NMI: " + to_string(result.metrics.normalizedMutualInformation) + 
+                   ", TRE: " + to_string(result.metrics.targetRegistrationError));
+        
+        // 即使度量很低，也認為配準成功（因為變換已經計算出來了）
         result.success = true;
+        logProgress("  Setting result.success = true");
         
         // Debug: Print transform matrix (2D only)
         Mat affine;
@@ -189,6 +197,7 @@ RegistrationResult CellRegistration::registerToReference(const Mat& reference, c
                    ", TRE: " + to_string(result.metrics.targetRegistrationError));
         
     } catch (const exception& e) {
+        logProgress("  Exception caught: " + string(e.what()));
         result.errorMessage = e.what();
         result.success = false;
     }
@@ -233,7 +242,7 @@ bool CellRegistration::saveResults(const string& outputDir) {
         ofstream jsonFile(outputDir + "registration_metrics.json");
         jsonFile << "{\n";
         jsonFile << "  \"her2\": {\n";
-        jsonFile << "    \"success\": " << (her2Result_.success ? "true" : "false") << ",\n";
+        jsonFile << "    \"success\": " << (her2Result_.metrics.mutualInformation > 0 ? "true" : "false") << ",\n";
         jsonFile << "    \"mutual_information\": " << her2Result_.metrics.mutualInformation << ",\n";
         jsonFile << "    \"normalized_mutual_information\": " << her2Result_.metrics.normalizedMutualInformation << ",\n";
         jsonFile << "    \"target_registration_error\": " << her2Result_.metrics.targetRegistrationError << ",\n";
@@ -241,7 +250,7 @@ bool CellRegistration::saveResults(const string& outputDir) {
         jsonFile << "    \"processing_time\": " << her2Result_.processingTime.count() << "\n";
         jsonFile << "  },\n";
         jsonFile << "  \"dish\": {\n";
-        jsonFile << "    \"success\": " << (dishResult_.success ? "true" : "false") << ",\n";
+        jsonFile << "    \"success\": " << (dishResult_.metrics.mutualInformation > 0 ? "true" : "false") << ",\n";
         jsonFile << "    \"mutual_information\": " << dishResult_.metrics.mutualInformation << ",\n";
         jsonFile << "    \"normalized_mutual_information\": " << dishResult_.metrics.normalizedMutualInformation << ",\n";
         jsonFile << "    \"target_registration_error\": " << dishResult_.metrics.targetRegistrationError << ",\n";
@@ -256,14 +265,14 @@ bool CellRegistration::saveResults(const string& outputDir) {
         reportFile << "Cell Image Registration Report\n";
         reportFile << "=============================\n\n";
         reportFile << "Her2 Registration:\n";
-        reportFile << "  Success: " << (her2Result_.success ? "Yes" : "No") << "\n";
+        reportFile << "  Success: " << (her2Result_.metrics.mutualInformation > 0 ? "Yes" : "No") << "\n";
         reportFile << "  MI: " << her2Result_.metrics.mutualInformation << "\n";
         reportFile << "  NMI: " << her2Result_.metrics.normalizedMutualInformation << "\n";
         reportFile << "  TRE: " << her2Result_.metrics.targetRegistrationError << " pixels\n";
         reportFile << "  Quality: " << her2Result_.metrics.quality << "\n\n";
         
         reportFile << "DISH Registration:\n";
-        reportFile << "  Success: " << (dishResult_.success ? "Yes" : "No") << "\n";
+        reportFile << "  Success: " << (dishResult_.metrics.mutualInformation > 0 ? "Yes" : "No") << "\n";
         reportFile << "  MI: " << dishResult_.metrics.mutualInformation << "\n";
         reportFile << "  NMI: " << dishResult_.metrics.normalizedMutualInformation << "\n";
         reportFile << "  TRE: " << dishResult_.metrics.targetRegistrationError << " pixels\n";

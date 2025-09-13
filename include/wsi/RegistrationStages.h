@@ -31,6 +31,11 @@ public:
                                              cv::Mat& bestTransform, double& bestMI);
     cv::Mat performFineTuningOptimization(const cv::Mat& ref, const cv::Mat& mov,
                                          cv::Mat& bestTransform, double& bestMI);
+    
+    bool performDenseLocalSearch(const cv::Mat& ref, const cv::Mat& mov,
+                                cv::Mat& bestTransform, double& bestMI,
+                                double tStep, double rStep, double sStep,
+                                RegistrationMetricsCalculator& metrics);
 
     // Fine adjustment methods
     bool optimizeTranslation(const cv::Mat& ref, const cv::Mat& mov,
@@ -52,6 +57,11 @@ public:
     bool performFineScaleAdjustment(const cv::Mat& ref, const cv::Mat& mov,
                                   cv::Mat& bestTransform, double& bestMI,
                                   double sStep, RegistrationMetricsCalculator& metrics);
+
+    bool performCombinedFineAdjustment(const cv::Mat& ref, const cv::Mat& mov,
+                                     cv::Mat& bestTransform, double& bestMI,
+                                     double tStep, double rStep, double sStep,
+                                     RegistrationMetricsCalculator& metrics);
 
     // Validation and logging
     void validateAndLogTransform(const cv::Mat& transform, 

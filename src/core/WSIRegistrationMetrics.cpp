@@ -10,53 +10,78 @@ double WSIRegistration::calculateMutualInformation(const cv::Mat& img1, const cv
     }
     
     cv::Mat gray1, gray2;
+    
+    // 改進的灰階轉換 - 針對不同染色優化
     if (img1.channels() == 3) {
+        // 使用加權灰階轉換，保留更多結構信息
         cv::cvtColor(img1, gray1, cv::COLOR_BGR2GRAY);
+        // 增強對比度
+        cv::equalizeHist(gray1, gray1);
     } else {
         gray1 = img1.clone();
     }
     
     if (img2.channels() == 3) {
         cv::cvtColor(img2, gray2, cv::COLOR_BGR2GRAY);
+        cv::equalizeHist(gray2, gray2);
     } else {
         gray2 = img2.clone();
     }
     
-    const int bins = params_.histogramBins;
+    // 增加直方圖bins數量以提高精度
+    const int bins = std::max(params_.histogramBins, 128);
     
-    // 計算聯合直方圖
-    cv::Mat jointHist = cv::Mat::zeros(bins, bins, CV_32F);
+    // 使用浮點數精度計算聯合直方圖
+    cv::Mat jointHist = cv::Mat::zeros(bins, bins, CV_64F);
     
+    // 改進的直方圖計算 - 使用雙線性插值
     for (int y = 0; y < gray1.rows; y++) {
         for (int x = 0; x < gray1.cols; x++) {
-            int val1 = std::min(static_cast<int>(gray1.at<uchar>(y, x) * bins / 256), bins - 1);
-            int val2 = std::min(static_cast<int>(gray2.at<uchar>(y, x) * bins / 256), bins - 1);
-            jointHist.at<float>(val1, val2) += 1.0f;
+            double val1 = static_cast<double>(gray1.at<uchar>(y, x)) * (bins - 1) / 255.0;
+            double val2 = static_cast<double>(gray2.at<uchar>(y, x)) * (bins - 1) / 255.0;
+            
+            int i1 = static_cast<int>(val1);
+            int j1 = static_cast<int>(val2);
+            int i2 = std::min(i1 + 1, bins - 1);
+            int j2 = std::min(j1 + 1, bins - 1);
+            
+            double di = val1 - i1;
+            double dj = val2 - j1;
+            
+            // 雙線性插值更新直方圖
+            jointHist.at<double>(i1, j1) += (1.0 - di) * (1.0 - dj);
+            jointHist.at<double>(i1, j2) += (1.0 - di) * dj;
+            jointHist.at<double>(i2, j1) += di * (1.0 - dj);
+            jointHist.at<double>(i2, j2) += di * dj;
         }
     }
     
-    jointHist /= (gray1.rows * gray1.cols);
+    // 正規化
+    double totalPixels = gray1.rows * gray1.cols;
+    jointHist /= totalPixels;
     
     // 計算邊際直方圖
-    cv::Mat hist1 = cv::Mat::zeros(bins, 1, CV_32F);
-    cv::Mat hist2 = cv::Mat::zeros(bins, 1, CV_32F);
+    cv::Mat hist1 = cv::Mat::zeros(bins, 1, CV_64F);
+    cv::Mat hist2 = cv::Mat::zeros(bins, 1, CV_64F);
     
     for (int i = 0; i < bins; i++) {
         for (int j = 0; j < bins; j++) {
-            hist1.at<float>(i) += jointHist.at<float>(i, j);
-            hist2.at<float>(j) += jointHist.at<float>(i, j);
+            hist1.at<double>(i) += jointHist.at<double>(i, j);
+            hist2.at<double>(j) += jointHist.at<double>(i, j);
         }
     }
     
-    // 計算互信息
+    // 計算互信息 - 使用更穩定的數值計算
     double mi = 0.0;
+    const double epsilon = 1e-12;
+    
     for (int i = 0; i < bins; i++) {
         for (int j = 0; j < bins; j++) {
-            float p_xy = jointHist.at<float>(i, j);
-            if (p_xy > 1e-10) {
-                float p_x = hist1.at<float>(i);
-                float p_y = hist2.at<float>(j);
-                if (p_x > 1e-10 && p_y > 1e-10) {
+            double p_xy = jointHist.at<double>(i, j);
+            if (p_xy > epsilon) {
+                double p_x = hist1.at<double>(i);
+                double p_y = hist2.at<double>(j);
+                if (p_x > epsilon && p_y > epsilon) {
                     mi += p_xy * std::log(p_xy / (p_x * p_y));
                 }
             }

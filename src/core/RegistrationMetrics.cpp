@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cmath>
 #include <algorithm>
+#include <cstdlib>
 
 using namespace std;
 using namespace cv;
@@ -43,8 +44,17 @@ double RegistrationMetricsCalculator::calculateMutualInformation(const cv::Mat& 
     if (img1.size() != img2.size()) return 0.0;
     
     Mat gray1, gray2;
-    cvtColor(img1, gray1, COLOR_BGR2GRAY);
-    cvtColor(img2, gray2, COLOR_BGR2GRAY);
+    if (img1.channels() == 3) {
+        cvtColor(img1, gray1, COLOR_BGR2GRAY);
+    } else {
+        gray1 = img1.clone();
+    }
+    
+    if (img2.channels() == 3) {
+        cvtColor(img2, gray2, COLOR_BGR2GRAY);
+    } else {
+        gray2 = img2.clone();
+    }
     
     const int bins = 64;
     Mat jointHist = Mat::zeros(bins, bins, CV_32F);
@@ -59,7 +69,6 @@ double RegistrationMetricsCalculator::calculateMutualInformation(const cv::Mat& 
     
     jointHist /= (gray1.rows * gray1.cols);
     
-    // Calculate marginal histograms
     Mat hist1 = Mat::zeros(bins, 1, CV_32F);
     Mat hist2 = Mat::zeros(bins, 1, CV_32F);
     
@@ -70,7 +79,6 @@ double RegistrationMetricsCalculator::calculateMutualInformation(const cv::Mat& 
         }
     }
     
-    // Calculate mutual information
     double mi = 0.0;
     for (int i = 0; i < bins; i++) {
         for (int j = 0; j < bins; j++) {
@@ -137,7 +145,11 @@ double RegistrationMetricsCalculator::calculateTRE(const cv::Mat& fixed, const c
 
 double RegistrationMetricsCalculator::calculateEntropy(const cv::Mat& image) {
     Mat gray;
-    cvtColor(image, gray, COLOR_BGR2GRAY);
+    if (image.channels() == 3) {
+        cvtColor(image, gray, COLOR_BGR2GRAY);
+    } else {
+        gray = image.clone();
+    }
     
     Mat hist;
     int histSize = 256;
@@ -170,8 +182,16 @@ cv::Mat RegistrationMetricsCalculator::applyTransform(const cv::Mat& image, cons
         return result;
     }
     
-    // Apply ONLY 2D affine transformation
-    warpAffine(image, result, transform, image.size(), INTER_LINEAR);
+    // Apply 2D affine transformation with border handling
+    warpAffine(image, result, transform, image.size(), INTER_LINEAR, BORDER_CONSTANT, Scalar(0));
+    
+    // Check if result is valid
+    if (result.empty()) {
+        cout << "Warning: Transform resulted in empty image, using identity" << endl;
+        Mat identity = (Mat_<double>(2, 3) << 1, 0, 0, 0, 1, 0);
+        warpAffine(image, result, identity, image.size(), INTER_LINEAR);
+    }
+    
     return result;
 }
 
