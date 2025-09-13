@@ -1,5 +1,6 @@
 #pragma once
 
+#include "wsi/RegistrationMetrics.h"
 #include <opencv2/opencv.hpp>
 #include <opencv2/features2d.hpp>
 #include <opencv2/xfeatures2d.hpp>
@@ -8,13 +9,6 @@
 #include <chrono>
 
 namespace cell_registration {
-
-struct RegistrationMetrics {
-    double mutualInformation = 0.0;
-    double normalizedMutualInformation = 0.0;
-    double targetRegistrationError = 0.0;
-    std::string quality = "bad";  // good/normal/bad
-};
 
 struct RegistrationResult {
     bool success = false;
@@ -52,24 +46,7 @@ private:
     RegistrationResult registerToReference(const cv::Mat& reference, const cv::Mat& moving);
     bool saveResults(const std::string& outputDir);
     
-    // Registration stages
-    cv::Mat featureBasedAlignment(const cv::Mat& ref, const cv::Mat& mov);
-    cv::Mat mutualInfoAlignment(const cv::Mat& ref, const cv::Mat& mov, const cv::Mat& initial);
-    cv::Mat bsplineAlignment(const cv::Mat& ref, const cv::Mat& mov, const cv::Mat& initial);
-    
-    // Quality assessment
-    RegistrationMetrics calculateMetrics(const cv::Mat& ref, const cv::Mat& aligned, const cv::Mat& transform);
-    std::string assessQuality(const RegistrationMetrics& metrics);
-    
-    // Metric calculation methods
-    double calculateMutualInformation(const cv::Mat& img1, const cv::Mat& img2);
-    double calculateNormalizedMutualInformation(const cv::Mat& img1, const cv::Mat& img2);
-    double calculateTRE(const cv::Mat& fixed, const cv::Mat& moving, const cv::Mat& transform);
-    double calculateEntropy(const cv::Mat& image);
-    
     // Utility functions
-    cv::Mat applyTransform(const cv::Mat& image, const cv::Mat& transform);
-    void preprocessMedicalImage(const cv::Mat& input, cv::Mat& output);
     void logProgress(const std::string& message);
 };
 

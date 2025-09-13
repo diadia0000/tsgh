@@ -181,6 +181,7 @@ private:
     // 影像預處理
     cv::Mat preprocessImage(const cv::Mat& image, const std::string& imageType) const;
     cv::Mat preprocessWSITile(const cv::Mat& tile, const std::string& imageType) const;
+    cv::Mat normalizeStaining(const cv::Mat& image) const;
     
     // 變換應用
     cv::Mat applyAffineTransform(const cv::Mat& image, const cv::Mat& transform) const;

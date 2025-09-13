@@ -10,7 +10,7 @@ import numpy as np
 from pathlib import Path
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                             QSlider, QPushButton, QCheckBox, QComboBox)
-from PyQt5.QtCore import Qt, QPoint
+from PyQt5.QtCore import Qt, QPoint, QSize
 from PyQt5.QtGui import QPixmap, QImage, QTransform, QPainter
 
 class ImageViewer(QWidget):
@@ -61,7 +61,10 @@ class ImageViewer(QWidget):
         self.zoom_slider = QSlider(Qt.Horizontal)
         self.zoom_slider.setRange(10, 500)  # 10% to 500%
         self.zoom_slider.setValue(100)
-        self.zoom_slider.valueChanged.connect(self.on_zoom_changed)
+        # 不要在拖拉時一直發射 valueChanged（避免大量重繪）
+        self.zoom_slider.setTracking(False)
+        self.zoom_slider.valueChanged.connect(self.on_zoom_changed)  # 更新 label
+        self.zoom_slider.sliderReleased.connect(self.apply_zoom)     # 實際套用並重繪（去抖動）
         layout.addWidget(self.zoom_slider)
         
         self.zoom_label = QLabel("100%")
@@ -77,6 +80,7 @@ class ImageViewer(QWidget):
         self.rotation_slider = QSlider(Qt.Horizontal)
         self.rotation_slider.setRange(-180, 180)
         self.rotation_slider.setValue(0)
+        # 旋轉也可採類似策略（此處保留即時更新，但可改為 sliderReleased）
         self.rotation_slider.valueChanged.connect(self.on_rotation_changed)
         layout.addWidget(self.rotation_slider)
         
@@ -109,22 +113,47 @@ class ImageViewer(QWidget):
                 return False
                 
             # Load image using OpenCV
-            self.current_image = cv2.imread(str(image_path))
-            if self.current_image is None:
+            full_bgr = cv2.imread(str(image_path))
+            if full_bgr is None:
                 self.image_label.setText(f"無法載入影像: {image_path.name}")
                 return False
                 
-            # Convert BGR to RGB
-            self.current_image = cv2.cvtColor(self.current_image, cv2.COLOR_BGR2RGB)
-            
-            # Load reference image if this is not HE
+            # 轉 RGB 並保留 full resolution 原圖供需要時使用（但不在 UI 直接顯示）
+            self.current_image_full = cv2.cvtColor(full_bgr, cv2.COLOR_BGR2RGB)
+
+            # 建立顯示用的縮圖（限制最大邊長，避免巨圖導致顯示卡頓）
+            max_display = 1600  # 可依介面調整
+            h, w = self.current_image_full.shape[:2]
+            scale = 1.0
+            if max(h, w) > max_display:
+                scale = max_display / max(h, w)
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+                self.display_image = cv2.resize(self.current_image_full, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            else:
+                self.display_image = self.current_image_full.copy()
+
+            # Convert display_image to QImage once and cache (will be reused on transforms)
+            h2, w2, _ = self.display_image.shape
+            bytes_per_line = 3 * w2
+            self._cached_qimage = QImage(self.display_image.data, w2, h2, bytes_per_line, QImage.Format_RGB888).copy()
+
+            # reference image (also produce preview if exists)
             if "HE" not in image_path.name:
                 he_path = image_path.parent / "aligned_HE.tiff"
                 if he_path.exists():
-                    self.reference_image = cv2.imread(str(he_path))
-                    if self.reference_image is not None:
-                        self.reference_image = cv2.cvtColor(self.reference_image, cv2.COLOR_BGR2RGB)
-            
+                    he_bgr = cv2.imread(str(he_path))
+                    if he_bgr is not None:
+                        he_rgb = cv2.cvtColor(he_bgr, cv2.COLOR_BGR2RGB)
+                        # create a preview for reference with same scale
+                        if scale != 1.0:
+                            he_rgb = cv2.resize(he_rgb, (self._cached_qimage.width(), self._cached_qimage.height()), interpolation=cv2.INTER_AREA)
+                        self._cached_ref_qimage = QImage(he_rgb.data, he_rgb.shape[1], he_rgb.shape[0], 3 * he_rgb.shape[1], QImage.Format_RGB888).copy()
+                    else:
+                        self._cached_ref_qimage = None
+                else:
+                    self._cached_ref_qimage = None
+
             self.reset_view()
             self.update_display()
             return True
@@ -135,59 +164,62 @@ class ImageViewer(QWidget):
             
     def update_display(self):
         """Update image display"""
-        if self.current_image is None:
+        if getattr(self, 'display_image', None) is None:
             return
             
-        # Get current image to display
-        display_image = self.current_image.copy()
-        
-        # Apply overlay if enabled
-        if (self.overlay_checkbox.isChecked() and 
-            self.reference_image is not None and 
-            self.current_image.shape == self.reference_image.shape):
-            
+        # Use cached QImage (preview) to avoid converting numpy->QImage every redraw
+        q_image = getattr(self, '_cached_qimage', None)
+        if q_image is None:
+            return
+         
+        # 如果要求疊合，用 cached ref qimage 透過 QPainter 合成（比每次做 cv2.addWeighted 快）
+        if self.overlay_checkbox.isChecked() and getattr(self, '_cached_ref_qimage', None) is not None:
+            # create a temp pixmap to blend
+            pm = QPixmap.fromImage(q_image)
+            painter = QPainter(pm)
             alpha = self.opacity_slider.value() / 100.0
-            display_image = cv2.addWeighted(
-                self.reference_image, 1 - alpha,
-                self.current_image, alpha, 0
-            )
-        
-        # Convert to QImage
-        height, width, channel = display_image.shape
-        bytes_per_line = 3 * width
-        q_image = QImage(display_image.data, width, height, bytes_per_line, QImage.Format_RGB888)
-        
-        # Apply transformations
+            painter.setOpacity(alpha)
+            painter.drawImage(0, 0, self._cached_ref_qimage)
+            painter.end()
+            pixmap = pm
+        else:
+            pixmap = QPixmap.fromImage(q_image)
+         
+         # Apply transformations
         transform = QTransform()
         transform.scale(self.zoom_factor, self.zoom_factor)
         transform.rotate(self.rotation_angle)
-        
-        pixmap = QPixmap.fromImage(q_image)
+         
         pixmap = pixmap.transformed(transform, Qt.SmoothTransformation)
-        
-        # Apply pan offset
+         
+         # Apply pan offset
         if not self.pan_offset.isNull():
-            # Create a larger pixmap for panning
-            larger_pixmap = QPixmap(pixmap.size() + QSize(200, 200))
-            larger_pixmap.fill(Qt.white)
-            
-            painter = QPainter(larger_pixmap)
-            painter.drawPixmap(self.pan_offset + QPoint(100, 100), pixmap)
-            painter.end()
-            
-            pixmap = larger_pixmap
-        
-        # Scale to fit label if too large
+             # Create a larger pixmap for panning
+             larger_pixmap = QPixmap(pixmap.size() + QSize(200, 200))
+             larger_pixmap.fill(Qt.white)
+             
+             painter = QPainter(larger_pixmap)
+             painter.drawPixmap(self.pan_offset + QPoint(100, 100), pixmap)
+             painter.end()
+             
+             pixmap = larger_pixmap
+         
+         # Scale to fit label if too large
         label_size = self.image_label.size()
         if pixmap.width() > label_size.width() or pixmap.height() > label_size.height():
-            pixmap = pixmap.scaled(label_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        
+             pixmap = pixmap.scaled(label_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+         
         self.image_label.setPixmap(pixmap)
         
     def on_zoom_changed(self, value):
         """Handle zoom slider change"""
-        self.zoom_factor = value / 100.0
+        # 只更新顯示 label（實際重繪在 sliderReleased -> apply_zoom）
         self.zoom_label.setText(f"{value}%")
+        
+    def apply_zoom(self):
+        """Apply zoom after slider release to avoid frequent redraws"""
+        value = self.zoom_slider.value()
+        self.zoom_factor = value / 100.0
         self.update_display()
         
     def on_rotation_changed(self, value):
@@ -289,3 +321,14 @@ class ImageViewer(QWidget):
             new_value = max(self.zoom_slider.value() - 10, self.zoom_slider.minimum())
             
         self.zoom_slider.setValue(new_value)
+        
+    def plot_rois(self, rois):
+        # Clear existing ROIs
+        for item in self.roi_items:
+            self.removeItem(item)
+        self.roi_items = []
+        
+        # Plot new ROIs
+        for roi in rois:
+            roi_item = self.plot_roi(roi)
+            self.roi_items.append(roi_item)

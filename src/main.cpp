@@ -1,4 +1,4 @@
-#include "core/CellRegistration.h"
+#include "wsi/CellRegistration.h"
 #include <iostream>
 #include <string>
 #include <filesystem>

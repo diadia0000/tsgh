@@ -20,15 +20,28 @@
 3. **B-spline 非剛體對齊** - B-spline FFD 像素級對齊
 4. **品質評估** - MI、NMI、TRE 指標計算
 
+### 模組化架構設計
+
+#### Core 核心模組
+- **多階段配準流程**: 從粗對齊到精細配準的完整流程
+- **WSI專用處理**: 針對大型病理切片影像優化
+- **豐富評估指標**: 提供多種配準品質評估方法
+- **細胞級配準**: 支持細胞層級的精確配準
+
+#### GPU 加速模組
+- **CUDA並行計算**: 利用GPU大幅提升處理速度
+- **記憶體優化**: 智能記憶體管理，支持大型影像處理
+- **自動回退機制**: GPU不可用時自動切換到CPU處理
+
+#### IO 處理模組
+- **多格式支持**: 支援WSI、TIFF、CZI等多種醫學影像格式
+- **高效載入**: 針對大型影像優化的分塊載入機制
+- **擴展性設計**: 易於添加新的影像格式支持
+
 ### 支援的影像類型
 - **HE 染色** (基準影像)
 - **Her2 免疫組化**
 - **DISH 雙重原位雜交**
-
-### CUDA 加速
-- 支援 CUDA 加速處理大型 WSI 檔案
-- 自動檢測 GPU 可用性並回退到 CPU 處理
-- 記憶體使用優化
 
 ## 系統需求
 
@@ -182,14 +195,35 @@ tsgh/
 │   └── output/                  # 配準結果輸出
 ├── src/                         # C++ 源碼
 │   ├── core/                    # 核心配準演算法
+│   │   ├── CellRegistration.cpp              # 細胞級別配準
+│   │   ├── ImagePreprocessing.cpp            # 圖像預處理
+│   │   ├── RegistrationMetrics.cpp           # 配準評估指標
+│   │   ├── RegistrationStagesBSpline.cpp     # B樣條配準階段
+│   │   ├── RegistrationStagesCore.cpp        # 配準核心邏輯
+│   │   ├── RegistrationStagesOptimization.cpp # 配準優化
+│   │   ├── WSIRegistrationCore.cpp           # WSI配準核心
+│   │   ├── WSIRegistrationMetrics.cpp        # WSI配準指標
+│   │   ├── WSIRegistrationPreprocessing.cpp  # WSI預處理
+│   │   ├── WSIRegistrationStages.cpp         # WSI配準階段管理
+│   │   └── WSIRegistrationTransforms.cpp     # 配準變換實現
 │   ├── gpu/                     # CUDA 加速模組
+│   │   ├── CudaRegistrationCore.cpp          # CUDA配準核心
+│   │   ├── CudaRegistrationUtils.cpp         # CUDA配準工具
+│   │   └── CudaUtils.cpp                     # CUDA通用工具
 │   ├── io/                      # 檔案 I/O 處理
+│   │   ├── WSILoader.cpp                     # WSI圖像載入器
+│   │   └── WSILoaderExtensions.cpp           # WSI載入器擴展
 │   └── main.cpp                 # 主程式入口
 ├── gui/                         # PyQt5 GUI 程式
 │   ├── main.py                  # GUI 主程式
 │   ├── viewer.py                # 影像顯示控制
 │   ├── metrics.py               # 評估指標處理
 │   └── ui/                      # Qt Designer UI 檔案
+├── .amazonq/                    # 專案分析文檔
+│   └── rules/                   # 模組結構分析
+│       ├── core.md              # 核心模組分析
+│       ├── gpu.md               # GPU模組分析
+│       └── io.md                # IO模組分析
 └── CMakeLists.txt               # CMake 建置檔案
 ```
 
@@ -278,12 +312,29 @@ picture/output/
 - 輸入影像資訊 (大小, 格式, 類型)
 - 完整的錯誤訊息
 - 使用的參數設定
+## 
+開發與貢獻
 
-## 授權條款
+### 專案架構說明
+本專案採用模組化設計，詳細的模組分析文檔位於 `.amazonq/rules/` 目錄：
+- `core.md` - 核心配準算法模組分析
+- `gpu.md` - GPU加速模組分析  
+- `io.md` - 圖像IO處理模組分析
 
-本專案採用 MIT 授權條款，詳見 LICENSE 檔案。
+### 代碼結構
+- **核心算法**: 11個核心組件，涵蓋完整的配準流程
+- **GPU加速**: 3個CUDA組件，提供高性能並行計算
+- **IO處理**: 2個專用組件，處理各種醫學影像格式
+
+
 
 ## 更新日誌
+
+### v1.1.0 (2025-01-13)
+- 重構專案架構，採用模組化設計
+- 新增詳細的模組分析文檔
+- 優化代碼結構和可維護性
+- 改進README文檔結構
 
 ### v1.0.0 (2024-12-09)
 - 實現四階段配準工作流程

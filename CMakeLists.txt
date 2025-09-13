@@ -30,7 +30,6 @@ find_package(OpenCV REQUIRED COMPONENTS
 
 # 包含目錄
 include_directories(${OpenCV_INCLUDE_DIRS})
-include_directories(src)
 
 # 收集所有源文件
 file(GLOB_RECURSE CORE_SOURCES "src/core/*.cpp")
@@ -47,6 +46,9 @@ add_executable(wsi_registration
 
 # 尋找OpenMP
 find_package(OpenMP REQUIRED)
+
+# 設置包含目錄
+target_include_directories(wsi_registration PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
 # 連結OpenCV庫
 target_link_libraries(wsi_registration ${OpenCV_LIBRARIES})
