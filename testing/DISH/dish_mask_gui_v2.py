@@ -242,18 +242,21 @@ class DishMaskGUI(QMainWindow):
         display_group.setLayout(display_layout)
         layout.addWidget(display_group)
         
-        # 統計資訊
-        stats_group = QGroupBox("統計資訊")
-        stats_layout = QVBoxLayout()
+        # 統計資訊顯示
+        info_group = QGroupBox("影像資訊")
+        info_layout = QVBoxLayout()
         
-        self.stats_text = QTextEdit()
-        self.stats_text.setMaximumHeight(150)
-        self.stats_text.setReadOnly(True)
-        self.stats_text.setPlainText("尚未載入影像...")
+        self.info_label = QLabel("等待載入影像...")
+        self.info_label.setStyleSheet("QLabel { font-family: 'Microsoft JhengHei'; }")
+        info_layout.addWidget(self.info_label)
         
-        stats_layout.addWidget(self.stats_text)
-        stats_group.setLayout(stats_layout)
-        layout.addWidget(stats_group)
+        # 新增：即時統計資訊
+        self.stats_label = QLabel("處理統計：等待處理...")
+        self.stats_label.setStyleSheet("QLabel { font-family: 'Microsoft JhengHei'; color: #0066cc; }")
+        info_layout.addWidget(self.stats_label)
+        
+        info_group.setLayout(info_layout)
+        layout.addWidget(info_group)
         
         # 操作按鈕
         button_layout = QVBoxLayout()
@@ -350,6 +353,10 @@ class DishMaskGUI(QMainWindow):
     
     def schedule_update(self):
         """排程更新 (防抖動)"""
+        # 如果沒有載入影像，不需要排程處理
+        if self.processor.working_image is None:
+            return
+            
         self.update_timer.stop()
         self.update_timer.start(self.debounce_delay)
         
@@ -379,8 +386,7 @@ class DishMaskGUI(QMainWindow):
         """處理完成回調"""
         try:
             self.current_result = result
-            self.update_display()
-            self.update_statistics()
+            self.update_display(result)
             self.save_btn.setEnabled(True)
             self.statusBar().showMessage(f"處理完成 ({result.processing_time:.2f}s)")
         except Exception as e:
@@ -407,12 +413,43 @@ class DishMaskGUI(QMainWindow):
         
         self.display_image(overlay)
     
-    def update_display(self):
-        """更新圖像顯示"""
-        if self.current_result is None:
-            return
+    def update_display(self, result):
+        """更新顯示結果"""
+        try:
+            if result and hasattr(result, 'overlay'):
+                # 顯示疊圖結果
+                self.display_image(result.overlay)
+                
+                # 更新即時統計資訊
+                self.update_stats_display(result)
+                
+        except Exception as e:
+            QMessageBox.warning(self, "錯誤", f"更新顯示失敗: {str(e)}")
+
+    def update_stats_display(self, result):
+        """更新統計資訊顯示"""
+        try:
+            # 更新影像資訊
+            info = self.processor.get_image_info()
+            info_text = f"""影像資訊:
+• 檔案: {info.get('filename', 'N/A')}
+• 原始尺寸: {info.get('original_size', (0, 0))[0]}×{info.get('original_size', (0, 0))[1]}
+• 工作尺寸: {info.get('working_size', (0, 0))[0]}×{info.get('working_size', (0, 0))[1]}
+• 縮放比例: {info.get('working_scale', 0):.1%}"""
             
-        self.display_image(self.current_result.overlay)
+            self.info_label.setText(info_text)
+            
+            # 更新統計資訊
+            stats_text = f"""處理統計:
+• 遮罩覆蓋率: {result.mask_area_percent:.1f}%
+• 細胞區域: {result.cell_area_percent:.1f}%
+• 檢測細胞數: {result.cell_count} 個
+• 處理時間: {result.processing_time:.2f}秒"""
+            
+            self.stats_label.setText(stats_text)
+            
+        except Exception as e:
+            self.stats_label.setText(f"統計資訊更新失敗: {str(e)}")
     
     def display_image(self, img):
         """顯示圖像"""
