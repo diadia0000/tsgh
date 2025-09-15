@@ -1,0 +1,13 @@
+{
+  "lab_a_lower": 0,
+  "lab_a_upper": 255,
+  "lab_b_lower": 0,
+  "lab_b_upper": 255,
+  "dab_lower": 0,
+  "dab_upper": 150,
+  "membrane_kernel_size": 3,
+  "membrane_open_iter": 1,
+  "membrane_close_iter": 2,
+  "min_membrane_area": 50,
+  "alpha": 50
+}

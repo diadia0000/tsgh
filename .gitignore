@@ -4,8 +4,5 @@ python_test_output/
 picture/*
 build/
 docs/
-test_output/
 .venv/
 *.tiff
-*.json
-*.txt

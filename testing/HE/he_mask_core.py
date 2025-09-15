@@ -387,16 +387,13 @@ class HEMaskProcessor:
                 full_result = result
             
             # 儲存遮罩 (PNG 8-bit)
-            # 一律確保「白色(255)=細胞膜，黑色(0)=其他」
+            # 直接反轉遮罩：黑色變白色，白色變黑色
             mask_to_save = full_result.mask_membrane_clean
             if mask_to_save is None:
                 raise ValueError("mask_membrane_clean 為 None，無法儲存遮罩")
-            # 轉為0/255二值圖
+            # 轉為0/255二值圖並反轉
             mask_to_save = ((mask_to_save > 0).astype(np.uint8)) * 255
-            # 如果白色覆蓋率過高(>50%)，推測極性相反，將其反相
-            white_ratio = float(np.mean(mask_to_save)) / 255.0
-            if white_ratio > 0.5:
-                mask_to_save = cv.bitwise_not(mask_to_save)
+            mask_to_save = cv.bitwise_not(mask_to_save)  # 反轉：黑變白，白變黑
             self._save_png(membrane_dir / f"{basename}_mask_membrane.png", mask_to_save)
             
             # 儲存疊加圖
