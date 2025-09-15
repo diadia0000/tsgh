@@ -231,42 +231,24 @@ class ValueFormatters:
 class SliderConfigs:
     """預定義滑桿配置"""
     
-    # 細胞質 HSV 配置
-    CYTOPLASM_HSV = [
-        ('cyto_h1_min', 'H1最小', 0, 179, 0),
-        ('cyto_h1_max', 'H1最大', 0, 179, 20),
-        ('cyto_h2_min', 'H2最小', 0, 179, 160),
-        ('cyto_h2_max', 'H2最大', 0, 179, 179),
-        ('cyto_s_min', 'S最小', 0, 255, 30),
-        ('cyto_s_max', 'S最大', 0, 255, 150),
-        ('cyto_v_min', 'V最小', 0, 255, 80),
-        ('cyto_v_max', 'V最大', 0, 255, 255),
+    # 細胞膜 HSV 配置
+    MEMBRANE_HSV = [
+        ('membrane_h1_min', 'H1最小', 0, 179, 0),
+        ('membrane_h1_max', 'H1最大', 0, 179, 20),
+        ('membrane_h2_min', 'H2最小', 0, 179, 160),
+        ('membrane_h2_max', 'H2最大', 0, 179, 179),
+        ('membrane_s_min', 'S最小', 0, 255, 30),
+        ('membrane_s_max', 'S最大', 0, 255, 150),
+        ('membrane_v_min', 'V最小', 0, 255, 80),
+        ('membrane_v_max', 'V最大', 0, 255, 255),
     ]
     
-    # 細胞核 HSV 配置
-    NUCLEI_HSV = [
-        ('nuclei_h_min', 'H最小', 0, 179, 100),
-        ('nuclei_h_max', 'H最大', 0, 179, 140),
-        ('nuclei_s_min', 'S最小', 0, 255, 50),
-        ('nuclei_s_max', 'S最大', 0, 255, 255),
-        ('nuclei_v_min', 'V最小', 0, 255, 20),
-        ('nuclei_v_max', 'V最大', 0, 255, 255),
-    ]
-    
-    # 細胞質形態學配置
-    CYTOPLASM_MORPH = [
-        ('cyto_kernel_size', 'Kernel 大小', 1, 15, 3),
-        ('cyto_open_iter', '開運算次數', 0, 10, 1),
-        ('cyto_close_iter', '閉運算次數', 0, 10, 1),
-        ('min_area_cyto', '最小面積', 10, 500, 50),
-    ]
-    
-    # 細胞核形態學配置
-    NUCLEI_MORPH = [
-        ('nuclei_kernel_size', 'Kernel 大小', 1, 15, 3),
-        ('nuclei_open_iter', '開運算次數', 0, 10, 1),
-        ('nuclei_close_iter', '閉運算次數', 0, 10, 1),
-        ('min_area_nuclei', '最小面積', 5, 200, 20),
+    # 細胞膜形態學配置
+    MEMBRANE_MORPH = [
+        ('membrane_kernel_size', 'Kernel 大小', 1, 15, 3),
+        ('membrane_open_iter', '開運算次數', 0, 10, 1),
+        ('membrane_close_iter', '閉運算次數', 0, 10, 1),
+        ('min_membrane_area', '最小面積', 10, 500, 50),
     ]
     
     # 平滑處理配置
@@ -277,8 +259,7 @@ class SliderConfigs:
 
 # 預定義的值格式化器
 DEFAULT_VALUE_FORMATTERS = {
-    'cyto_kernel_size': ValueFormatters.ensure_odd,
-    'nuclei_kernel_size': ValueFormatters.ensure_odd,
+    'membrane_kernel_size': ValueFormatters.ensure_odd,
     'gaussian_kernel': ValueFormatters.ensure_odd,
     'median_kernel': ValueFormatters.ensure_odd,
 }

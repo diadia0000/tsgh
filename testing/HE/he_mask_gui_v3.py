@@ -15,7 +15,7 @@ from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QLabel, QSlider, QPushButton,
                             QGroupBox, QMessageBox, QFileDialog, QSplitter, 
-                            QComboBox, QTabWidget)
+                            QComboBox, QTabWidget, QCheckBox)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap
 
@@ -50,7 +50,7 @@ class HEMaskGUI(QMainWindow):
         self.processor = HEMaskProcessor()
         self.current_result = None
         self.processing_thread = None
-        self.current_display_mode = "overlay_cyto"
+        self.current_display_mode = "overlay_membrane"
         
         # 參數管理器
         self.param_manager = ParameterManager()
@@ -147,59 +147,32 @@ class HEMaskGUI(QMainWindow):
         """建立參數分頁"""
         tab_widget = QTabWidget()
         
-        # 細胞質參數分頁
-        cyto_tab = QWidget()
-        cyto_layout = QVBoxLayout()
+        # 細胞膜參數分頁
+        membrane_tab = QWidget()
+        membrane_layout = QVBoxLayout()
         
-        # 細胞質 HSV 組
-        cyto_hsv_group, cyto_hsv_sliders = GroupBoxFactory.create_slider_group(
-            "細胞質 (Eosin) HSV 閾值", 
-            SliderConfigs.CYTOPLASM_HSV, 
+        # 細胞膜 HSV 組
+        membrane_hsv_group, membrane_hsv_sliders = GroupBoxFactory.create_slider_group(
+            "細胞膜 (Eosin) HSV 閾值", 
+            SliderConfigs.MEMBRANE_HSV, 
             self.schedule_update
         )
-        self.param_manager.register_slider_group("cyto_hsv", cyto_hsv_sliders)
-        cyto_layout.addWidget(cyto_hsv_group)
+        self.param_manager.register_slider_group("membrane_hsv", membrane_hsv_sliders)
+        membrane_layout.addWidget(membrane_hsv_group)
         
-        # 細胞質形態學組
-        cyto_morph_group, cyto_morph_sliders = GroupBoxFactory.create_slider_group(
-            "細胞質形態學參數", 
-            SliderConfigs.CYTOPLASM_MORPH, 
+        # 細胞膜形態學組
+        membrane_morph_group, membrane_morph_sliders = GroupBoxFactory.create_slider_group(
+            "細胞膜形態學參數", 
+            SliderConfigs.MEMBRANE_MORPH, 
             self.schedule_update,
             DEFAULT_VALUE_FORMATTERS
         )
-        self.param_manager.register_slider_group("cyto_morph", cyto_morph_sliders)
-        cyto_layout.addWidget(cyto_morph_group)
+        self.param_manager.register_slider_group("membrane_morph", membrane_morph_sliders)
+        membrane_layout.addWidget(membrane_morph_group)
         
-        cyto_layout.addStretch()
-        cyto_tab.setLayout(cyto_layout)
-        tab_widget.addTab(cyto_tab, "細胞質 (Eosin)")
-        
-        # 細胞核參數分頁
-        nuclei_tab = QWidget()
-        nuclei_layout = QVBoxLayout()
-        
-        # 細胞核 HSV 組
-        nuclei_hsv_group, nuclei_hsv_sliders = GroupBoxFactory.create_slider_group(
-            "細胞核 (Hematoxylin) HSV 閾值", 
-            SliderConfigs.NUCLEI_HSV, 
-            self.schedule_update
-        )
-        self.param_manager.register_slider_group("nuclei_hsv", nuclei_hsv_sliders)
-        nuclei_layout.addWidget(nuclei_hsv_group)
-        
-        # 細胞核形態學組
-        nuclei_morph_group, nuclei_morph_sliders = GroupBoxFactory.create_slider_group(
-            "細胞核形態學參數", 
-            SliderConfigs.NUCLEI_MORPH, 
-            self.schedule_update,
-            DEFAULT_VALUE_FORMATTERS
-        )
-        self.param_manager.register_slider_group("nuclei_morph", nuclei_morph_sliders)
-        nuclei_layout.addWidget(nuclei_morph_group)
-        
-        nuclei_layout.addStretch()
-        nuclei_tab.setLayout(nuclei_layout)
-        tab_widget.addTab(nuclei_tab, "細胞核 (Hematoxylin)")
+        membrane_layout.addStretch()
+        membrane_tab.setLayout(membrane_layout)
+        tab_widget.addTab(membrane_tab, "細胞膜 (Eosin)")
         
         # 形態學處理分頁
         morph_tab = QWidget()
@@ -250,7 +223,7 @@ class HEMaskGUI(QMainWindow):
         
         self.display_mode_combo = QComboBox()
         self.display_mode_combo.addItems([
-            "細胞質疊加", "細胞核疊加", "排他核疊加", "原始影像"
+            "細胞膜疊加", "原始影像"
         ])
         self.display_mode_combo.currentTextChanged.connect(self.change_display_mode)
         
@@ -320,7 +293,7 @@ class HEMaskGUI(QMainWindow):
         values = self.param_manager.get_all_values()
         
         # 確保 kernel 大小為奇數
-        for key in ['cyto_kernel_size', 'nuclei_kernel_size', 'gaussian_kernel', 'median_kernel']:
+        for key in ['membrane_kernel_size', 'gaussian_kernel', 'median_kernel']:
             if key in values:
                 kernel_value = values[key]
                 values[key] = kernel_value if kernel_value % 2 == 1 else kernel_value + 1
@@ -388,13 +361,11 @@ class HEMaskGUI(QMainWindow):
     def change_display_mode(self, mode_text: str):
         """改變顯示模式"""
         mode_map = {
-            "細胞質疊加": "overlay_cyto",
-            "細胞核疊加": "overlay_nuclei", 
-            "排他核疊加": "overlay_nuclei_exclusive",
+            "細胞膜疊加": "overlay_membrane",
             "原始影像": "original"
         }
         
-        self.current_display_mode = mode_map.get(mode_text, "overlay_cyto")
+        self.current_display_mode = mode_map.get(mode_text, "overlay_membrane")
         
         if self.current_result is not None:
             self.update_display(self.current_result)
@@ -406,22 +377,10 @@ class HEMaskGUI(QMainWindow):
         try:
             alpha = self.alpha_slider.value()
             
-            if self.current_display_mode == "overlay_cyto":
+            if self.current_display_mode == "overlay_membrane":
                 overlay = self.processor._create_overlay(
-                    self.processor.working_image, result.mask_cyto_clean, 
+                    self.processor.working_image, result.mask_membrane_clean, 
                     alpha, color=(0, 255, 255)
-                )
-                self.display_image(overlay)
-            elif self.current_display_mode == "overlay_nuclei":
-                overlay = self.processor._create_overlay(
-                    self.processor.working_image, result.mask_nuclei_clean, 
-                    alpha, color=(255, 0, 0)
-                )
-                self.display_image(overlay)
-            elif self.current_display_mode == "overlay_nuclei_exclusive":
-                overlay = self.processor._create_overlay(
-                    self.processor.working_image, result.mask_nuclei_exclusive, 
-                    alpha, color=(255, 0, 0)
                 )
                 self.display_image(overlay)
             elif self.current_display_mode == "original":
@@ -440,9 +399,7 @@ class HEMaskGUI(QMainWindow):
             
             # 更新統計資訊
             stats_text = f"""處理統計:
-• 細胞質覆蓋率: {result.cyto_area_percent:.1f}%
-• 細胞核覆蓋率: {result.nuclei_area_percent:.1f}%
-• 排他核覆蓋率: {result.nuclei_exclusive_percent:.1f}%
+• 細胞膜覆蓋率: {result.membrane_area_percent:.1f}%
 • 處理時間: {result.processing_time:.2f}秒"""
             
             self.stats_label.setText(stats_text)

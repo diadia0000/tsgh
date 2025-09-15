@@ -16,66 +16,45 @@ from PIL import Image
 
 @dataclass
 class HEMaskingParams:
-    """HE 遮罩處理參數"""
-    # 細胞質 (Eosin) HSV 閾值 - 雙區段 H 範圍
-    cyto_h1_min: int = 0
-    cyto_h1_max: int = 20
-    cyto_h2_min: int = 160
-    cyto_h2_max: int = 179
-    cyto_s_min: int = 30
-    cyto_s_max: int = 150
-    cyto_v_min: int = 80
-    cyto_v_max: int = 255
+    """HE 遮罩處理參數 - 專注於細胞膜分離"""
+    # 細胞膜 (Eosin) HSV 閾值 - 雙區段 H 範圍
+    membrane_h1_min: int = 0
+    membrane_h1_max: int = 20
+    membrane_h2_min: int = 160
+    membrane_h2_max: int = 179
+    membrane_s_min: int = 30
+    membrane_s_max: int = 150
+    membrane_v_min: int = 80
+    membrane_v_max: int = 255
     
-    # 細胞核 (Hematoxylin) HSV 閾值
-    nuclei_h_min: int = 105
-    nuclei_h_max: int = 130
-    nuclei_s_min: int = 80
-    nuclei_s_max: int = 255
-    nuclei_v_min: int = 30
-    nuclei_v_max: int = 200
-    
-    # 形態學參數 - 細胞質（設為1以跳過處理加速）
-    cyto_kernel_size: int = 1
-    cyto_open_iter: int = 0
-    cyto_close_iter: int = 0
-    
-    # 形態學參數 - 細胞核（設為1以跳過處理加速）
-    nuclei_kernel_size: int = 1
-    nuclei_open_iter: int = 0
-    nuclei_close_iter: int = 0
+    # 形態學參數 - 細胞膜（設為1以跳過處理加速）
+    membrane_kernel_size: int = 3
+    membrane_open_iter: int = 1
+    membrane_close_iter: int = 1
     
     # 平滑參數（關閉以加速處理）
     gaussian_kernel: int = 1
     median_kernel: int = 1
     
     # 面積過濾
-    min_area_cyto: int = 100
-    min_area_nuclei: int = 50
+    min_membrane_area: int = 50
     
     # 顯示參數
-    alpha: int = 40  # 透明度百分比
+    alpha: int = 50  # 透明度百分比
     
     def to_dict(self) -> Dict[str, Any]:
         """轉為字典格式"""
         return {
-            'cyto_h1_min': self.cyto_h1_min, 'cyto_h1_max': self.cyto_h1_max,
-            'cyto_h2_min': self.cyto_h2_min, 'cyto_h2_max': self.cyto_h2_max,
-            'cyto_s_min': self.cyto_s_min, 'cyto_s_max': self.cyto_s_max,
-            'cyto_v_min': self.cyto_v_min, 'cyto_v_max': self.cyto_v_max,
-            'nuclei_h_min': self.nuclei_h_min, 'nuclei_h_max': self.nuclei_h_max,
-            'nuclei_s_min': self.nuclei_s_min, 'nuclei_s_max': self.nuclei_s_max,
-            'nuclei_v_min': self.nuclei_v_min, 'nuclei_v_max': self.nuclei_v_max,
-            'cyto_kernel_size': self.cyto_kernel_size,
-            'cyto_open_iter': self.cyto_open_iter,
-            'cyto_close_iter': self.cyto_close_iter,
-            'nuclei_kernel_size': self.nuclei_kernel_size,
-            'nuclei_open_iter': self.nuclei_open_iter,
-            'nuclei_close_iter': self.nuclei_close_iter,
+            'membrane_h1_min': self.membrane_h1_min, 'membrane_h1_max': self.membrane_h1_max,
+            'membrane_h2_min': self.membrane_h2_min, 'membrane_h2_max': self.membrane_h2_max,
+            'membrane_s_min': self.membrane_s_min, 'membrane_s_max': self.membrane_s_max,
+            'membrane_v_min': self.membrane_v_min, 'membrane_v_max': self.membrane_v_max,
+            'membrane_kernel_size': self.membrane_kernel_size,
+            'membrane_open_iter': self.membrane_open_iter,
+            'membrane_close_iter': self.membrane_close_iter,
             'gaussian_kernel': self.gaussian_kernel,
             'median_kernel': self.median_kernel,
-            'min_area_cyto': self.min_area_cyto,
-            'min_area_nuclei': self.min_area_nuclei,
+            'min_membrane_area': self.min_membrane_area,
             'alpha': self.alpha
         }
     
@@ -86,37 +65,23 @@ class HEMaskingParams:
 
 @dataclass
 class HEProcessingResult:
-    """HE 處理結果"""
+    """HE 處理結果 - 專注於細胞膜"""
     # 原始遮罩
-    mask_cyto_raw: np.ndarray
-    mask_nuclei_raw: np.ndarray
+    mask_membrane_raw: np.ndarray
     
     # 清理後遮罩
-    mask_cyto_clean: np.ndarray
-    mask_nuclei_clean: np.ndarray
-    mask_nuclei_exclusive: np.ndarray  # 排除細胞質的核遮罩
+    mask_membrane_clean: np.ndarray
     
-    # 疊加圖
-    overlay_cyto: np.ndarray
-    overlay_nuclei: np.ndarray
-    overlay_nuclei_exclusive: np.ndarray
+    # 疊加與提取圖
+    overlay_membrane: np.ndarray
+    extract_membrane: np.ndarray
     
-    # 提取結果 (RGBA)
-    extract_cyto: np.ndarray
-    extract_nuclei_exclusive: np.ndarray
-    
-    # 參數與統計
+    # 處理參數與統計
     params: HEMaskingParams
     processing_time: float
-    
-    # 統計資訊
     total_pixels: int
-    cyto_pixels: int
-    nuclei_pixels: int
-    nuclei_exclusive_pixels: int
-    cyto_area_percent: float
-    nuclei_area_percent: float
-    nuclei_exclusive_percent: float
+    membrane_pixels: int
+    membrane_area_percent: float
 
 class HEMaskProcessor:
     """HE 染色細胞遮罩處理核心"""
@@ -210,11 +175,11 @@ class HEMaskProcessor:
         }
     
     def process_mask(self, params: HEMaskingParams, use_original: bool = False) -> HEProcessingResult:
-        """處理 HE 細胞質/細胞核遮罩"""
+        """處理 HE 細胞膜遮罩 - 專注於細胞膜分離"""
         start_time = time.time()
         
         try:
-            print(f"開始處理 HE 遮罩，use_original={use_original}")
+            print(f"開始處理 HE 細胞膜遮罩，use_original={use_original}")
             
             # 選擇處理影像
             if use_original and self.original_image is not None:
@@ -241,103 +206,67 @@ class HEMaskProcessor:
                 print(f"套用 Median 平滑: {params.median_kernel}x{params.median_kernel}")
                 hsv = cv.medianBlur(hsv, params.median_kernel)
             
-            # 細胞質遮罩 (雙 H 範圍)
-            print(f"提取細胞質遮罩: H1({params.cyto_h1_min}-{params.cyto_h1_max}), H2({params.cyto_h2_min}-{params.cyto_h2_max})")
-            mask_cyto_raw = self._extract_cytoplasm_mask(hsv, params)
-            print(f"原始細胞質遮罩像素數: {np.sum(mask_cyto_raw > 0)}")
-            
-            # 細胞核遮罩
-            print(f"提取細胞核遮罩: H({params.nuclei_h_min}-{params.nuclei_h_max})")
-            mask_nuclei_raw = self._extract_nuclei_mask(hsv, params)
-            print(f"原始細胞核遮罩像素數: {np.sum(mask_nuclei_raw > 0)}")
+            # 細胞膜遮罩 (雙 H 範圍)
+            print(f"提取細胞膜遮罩: H1({params.membrane_h1_min}-{params.membrane_h1_max}), H2({params.membrane_h2_min}-{params.membrane_h2_max})")
+            mask_membrane_raw = self._extract_membrane_mask(hsv, params)
+            print(f"原始細胞膜遮罩像素數: {np.sum(mask_membrane_raw > 0)}")
             
             # 形態學清理
             print("進行形態學清理...")
-            mask_cyto_clean = self._morphology_cleanup(
-                mask_cyto_raw, params.cyto_kernel_size, 
-                params.cyto_open_iter, params.cyto_close_iter
-            )
-            
-            mask_nuclei_clean = self._morphology_cleanup(
-                mask_nuclei_raw, params.nuclei_kernel_size,
-                params.nuclei_open_iter, params.nuclei_close_iter
+            mask_membrane_clean = self._morphology_cleanup(
+                mask_membrane_raw, params.membrane_kernel_size, 
+                params.membrane_open_iter, params.membrane_close_iter
             )
             
             # 面積過濾
             print("進行面積過濾...")
-            mask_cyto_clean = self._area_filter(mask_cyto_clean, int(params.min_area_cyto * scale_factor**2))
-            mask_nuclei_clean = self._area_filter(mask_nuclei_clean, int(params.min_area_nuclei * scale_factor**2))
-            
-            # 排他性細胞核遮罩 (移除與細胞質重疊部分)
-            print("建立排他性細胞核遮罩...")
-            mask_nuclei_exclusive = cv.bitwise_and(mask_nuclei_clean, cv.bitwise_not(mask_cyto_clean))
+            mask_membrane_clean = self._area_filter(mask_membrane_clean, int(params.min_membrane_area * scale_factor**2))
             
             # 建立疊加圖
             print("建立疊加圖...")
-            overlay_cyto = self._create_overlay(img, mask_cyto_clean, params.alpha, color=(0, 255, 255))  # 黃色
-            overlay_nuclei = self._create_overlay(img, mask_nuclei_clean, params.alpha, color=(255, 0, 0))  # 藍色  
-            overlay_nuclei_exclusive = self._create_overlay(img, mask_nuclei_exclusive, params.alpha, color=(255, 0, 0))  # 藍色
+            overlay_membrane = self._create_overlay(img, mask_membrane_clean, params.alpha, color=(0, 255, 255))  # 黃色細胞膜
             
             # 建立提取結果 (RGBA)
             print("建立提取結果...")
-            extract_cyto = self._create_extraction(img, mask_cyto_clean)
-            extract_nuclei_exclusive = self._create_extraction(img, mask_nuclei_exclusive)
+            extract_membrane = self._create_extraction(img, mask_membrane_clean)
             
             # 統計資訊
             total_pixels = img.shape[0] * img.shape[1]
-            cyto_pixels = np.sum(mask_cyto_clean > 0)
-            nuclei_pixels = np.sum(mask_nuclei_clean > 0)
-            nuclei_exclusive_pixels = np.sum(mask_nuclei_exclusive > 0)
+            membrane_pixels = np.sum(mask_membrane_clean > 0)
             
             processing_time = time.time() - start_time
             print(f"處理完成，耗時: {processing_time:.2f}秒")
             
             return HEProcessingResult(
-                mask_cyto_raw=mask_cyto_raw,
-                mask_nuclei_raw=mask_nuclei_raw,
-                mask_cyto_clean=mask_cyto_clean,
-                mask_nuclei_clean=mask_nuclei_clean,
-                mask_nuclei_exclusive=mask_nuclei_exclusive,
-                overlay_cyto=overlay_cyto,
-                overlay_nuclei=overlay_nuclei,
-                overlay_nuclei_exclusive=overlay_nuclei_exclusive,
-                extract_cyto=extract_cyto,
-                extract_nuclei_exclusive=extract_nuclei_exclusive,
+                mask_membrane_raw=mask_membrane_raw,
+                mask_membrane_clean=mask_membrane_clean,
+                overlay_membrane=overlay_membrane,
+                extract_membrane=extract_membrane,
                 params=params,
                 processing_time=processing_time,
                 total_pixels=total_pixels,
-                cyto_pixels=cyto_pixels,
-                nuclei_pixels=nuclei_pixels,
-                nuclei_exclusive_pixels=nuclei_exclusive_pixels,
-                cyto_area_percent=100.0 * cyto_pixels / total_pixels,
-                nuclei_area_percent=100.0 * nuclei_pixels / total_pixels,
-                nuclei_exclusive_percent=100.0 * nuclei_exclusive_pixels / total_pixels
+                membrane_pixels=membrane_pixels,
+                membrane_area_percent=100.0 * membrane_pixels / total_pixels
             )
             
         except Exception as e:
             print(f"處理遮罩時發生錯誤: {e}")
             raise
     
-    def _extract_cytoplasm_mask(self, hsv: np.ndarray, params: HEMaskingParams) -> np.ndarray:
-        """提取細胞質遮罩 (雙 H 範圍聯集)"""
+    def _extract_membrane_mask(self, hsv: np.ndarray, params: HEMaskingParams) -> np.ndarray:
+        """提取細胞膜遮罩 (雙 H 範圍聯集)"""
         # 第一段 H 範圍
-        lower1 = np.array([params.cyto_h1_min, params.cyto_s_min, params.cyto_v_min])
-        upper1 = np.array([params.cyto_h1_max, params.cyto_s_max, params.cyto_v_max])
+        lower1 = np.array([params.membrane_h1_min, params.membrane_s_min, params.membrane_v_min])
+        upper1 = np.array([params.membrane_h1_max, params.membrane_s_max, params.membrane_v_max])
         mask1 = cv.inRange(hsv, lower1, upper1)
         
         # 第二段 H 範圍
-        lower2 = np.array([params.cyto_h2_min, params.cyto_s_min, params.cyto_v_min])
-        upper2 = np.array([params.cyto_h2_max, params.cyto_s_max, params.cyto_v_max])
+        lower2 = np.array([params.membrane_h2_min, params.membrane_s_min, params.membrane_v_min])
+        upper2 = np.array([params.membrane_h2_max, params.membrane_s_max, params.membrane_v_max])
         mask2 = cv.inRange(hsv, lower2, upper2)
         
         # 聯集
         return cv.bitwise_or(mask1, mask2)
-    
-    def _extract_nuclei_mask(self, hsv: np.ndarray, params: HEMaskingParams) -> np.ndarray:
-        """提取細胞核遮罩"""
-        lower = np.array([params.nuclei_h_min, params.nuclei_s_min, params.nuclei_v_min])
-        upper = np.array([params.nuclei_h_max, params.nuclei_s_max, params.nuclei_v_max])
-        return cv.inRange(hsv, lower, upper)
     
     def _morphology_cleanup(self, mask: np.ndarray, kernel_size: int, open_iter: int, close_iter: int) -> np.ndarray:
         """形態學去雜訊"""
@@ -448,13 +377,8 @@ class HEMaskProcessor:
                 basename = "he_result"
             
             # 建立子資料夾
-            cyto_dir = output_path / "cytoplasm"
-            nuclei_dir = output_path / "nuclei"
-            nuclei_excl_dir = output_path / "nuclei_exclusive"
-            
-            cyto_dir.mkdir(exist_ok=True)
-            nuclei_dir.mkdir(exist_ok=True)
-            nuclei_excl_dir.mkdir(exist_ok=True)
+            membrane_dir = output_path / "membrane"
+            membrane_dir.mkdir(exist_ok=True)
             
             # 使用全尺寸處理 (如果需要)
             if self.original_image is not None:
@@ -463,18 +387,23 @@ class HEMaskProcessor:
                 full_result = result
             
             # 儲存遮罩 (PNG 8-bit)
-            self._save_png(cyto_dir / f"{basename}_mask_cyto.png", full_result.mask_cyto_clean)
-            self._save_png(nuclei_dir / f"{basename}_mask_nuclei.png", full_result.mask_nuclei_clean)
-            self._save_png(nuclei_excl_dir / f"{basename}_mask_nuclei_exclusive.png", full_result.mask_nuclei_exclusive)
+            # 一律確保「白色(255)=細胞膜，黑色(0)=其他」
+            mask_to_save = full_result.mask_membrane_clean
+            if mask_to_save is None:
+                raise ValueError("mask_membrane_clean 為 None，無法儲存遮罩")
+            # 轉為0/255二值圖
+            mask_to_save = ((mask_to_save > 0).astype(np.uint8)) * 255
+            # 如果白色覆蓋率過高(>50%)，推測極性相反，將其反相
+            white_ratio = float(np.mean(mask_to_save)) / 255.0
+            if white_ratio > 0.5:
+                mask_to_save = cv.bitwise_not(mask_to_save)
+            self._save_png(membrane_dir / f"{basename}_mask_membrane.png", mask_to_save)
             
             # 儲存疊加圖
-            self._save_png(cyto_dir / f"{basename}_overlay_cyto.png", full_result.overlay_cyto)
-            self._save_png(nuclei_dir / f"{basename}_overlay_nuclei.png", full_result.overlay_nuclei)
-            self._save_png(nuclei_excl_dir / f"{basename}_overlay_nuclei_exclusive.png", full_result.overlay_nuclei_exclusive)
+            self._save_png(membrane_dir / f"{basename}_overlay_membrane.png", full_result.overlay_membrane)
             
             # 儲存提取結果 (RGBA)
-            self._save_png_rgba(cyto_dir / f"{basename}_extract_cyto.png", full_result.extract_cyto)
-            self._save_png_rgba(nuclei_excl_dir / f"{basename}_extract_nuclei_exclusive.png", full_result.extract_nuclei_exclusive)
+            self._save_png_rgba(membrane_dir / f"{basename}_extract_membrane.png", full_result.extract_membrane)
             
             # 儲存參數
             params_file = output_path / f"{basename}_params.json"
