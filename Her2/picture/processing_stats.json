@@ -1,0 +1,17 @@
+{
+  "total_tiles": 4730,
+  "successful_tiles": 4730,
+  "empty_tiles": 0,
+  "failed_tiles": 0,
+  "batch_size": 500,
+  "total_batches": 10,
+  "config": {
+    "scale_factor": 0.2,
+    "h_threshold": 127,
+    "threshold_method": "otsu_with_h_filter",
+    "morph_open_kernel": 3,
+    "morph_open_iterations": 2,
+    "morph_close_kernel": 3,
+    "morph_close_iterations": 2
+  }
+}

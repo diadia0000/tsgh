@@ -4,12 +4,12 @@ CZI 影像對齊工具 (專用版本)
 
 功能:
 1. 專門處理 CZI 檔案格式
-2. 使用金字塔最上層 (scale_factor=0.0625) 載入縮圖避免記憶體問題
+2. 使用金字塔中層 (scale_factor=0.20) 載入縮圖
 3. 使用互訊息 (Mutual Information, MI) 作為圖像對齊品質評估指標
 4. 提供視覺化對齊介面
 
 記憶體管理策略:
-- 只載入最低解析度層級 (約 6.25% 原始大小)
+- 只載入中等解析度層級 (約 20% 原始大小)
 - 避免載入完整影像數據
 """
 
@@ -30,13 +30,13 @@ from skimage.transform import warp, AffineTransform
 from skimage.color import rgb2gray
 import tifffile
 
-def read_czi_thumbnail(path, scale_factor=0.0625):
+def read_czi_thumbnail(path, scale_factor=0.20):
     """
     讀取 CZI 檔案縮圖
 
     Args:
         path: CZI 檔案路徑
-        scale_factor: 縮放因子，預設使用最上層 (0.0625)
+        scale_factor: 縮放因子，預設使用中層 (0.20)
 
     Returns:
         numpy.ndarray: 縮圖影像數據 (BGR24 format)
@@ -252,6 +252,10 @@ class AlignerWindow(QMainWindow):
         # 參考影像不允許變換，只允許調整透明度
         self.imageControls[0].setEnabledControls(False)
         self.imageControls[0].opacitySlider.setEnabled(True)
+        
+        # 記憶體優化：緩存載入的影像數據
+        self.cached_images = {}  # {file_path: numpy_array}
+        self.composite_image = None
 
         self.initUI()
         self.connectSignals()
@@ -285,6 +289,8 @@ class AlignerWindow(QMainWindow):
         self.saveTransformButton = QPushButton("Save Alignment Parameters")
         self.loadTransformButton = QPushButton("Load Alignment Parameters")
         self.saveCompositeButton = QPushButton("Save Composite Image")
+        self.clearCacheButton = QPushButton("Clear Memory Cache")
+        self.clearCacheButton.setStyleSheet("background-color: #ff9800; color: white;")
         
         # 信息標籤
         infoLabel = QLabel("提示：只支援 CZI 檔案\n使用縮圖模式節省記憶體\n互訊息越高表示對齊越好")
@@ -296,6 +302,7 @@ class AlignerWindow(QMainWindow):
         actionLayout.addWidget(self.saveTransformButton)
         actionLayout.addWidget(self.loadTransformButton)
         actionLayout.addWidget(self.saveCompositeButton)
+        actionLayout.addWidget(self.clearCacheButton)
         actionLayout.addStretch(1)
         actionLayout.addWidget(infoLabel)
 
@@ -320,6 +327,7 @@ class AlignerWindow(QMainWindow):
         self.saveTransformButton.clicked.connect(self.saveTransforms)
         self.loadTransformButton.clicked.connect(self.loadTransforms)
         self.saveCompositeButton.clicked.connect(self.saveCompositeImage)
+        self.clearCacheButton.clicked.connect(self.clearMemoryCache)
 
     def loadImage(self, index):
         filePath, _ = QFileDialog.getOpenFileName(
@@ -336,8 +344,16 @@ class AlignerWindow(QMainWindow):
 
                 print(f"Loading CZI image {index + 1}: {filePath}")
 
-                # 使用專用的 CZI 縮圖讀取函數
-                img_data = read_czi_thumbnail(filePath, scale_factor=0.0625)
+                # 記憶體優化：檢查緩存
+                if filePath in self.cached_images:
+                    print(f"  - 使用緩存的影像數據")
+                    img_data = self.cached_images[filePath]
+                else:
+                    # 使用專用的 CZI 縮圖讀取函數
+                    img_data = read_czi_thumbnail(filePath, scale_factor=0.20)
+                    # 緩存影像數據
+                    self.cached_images[filePath] = img_data
+                    print(f"  - 影像數據已緩存")
 
                 if img_data is None or img_data.size == 0:
                     raise ValueError("Failed to load CZI image")
@@ -376,7 +392,7 @@ class AlignerWindow(QMainWindow):
                 # 顯示成功訊息
                 QMessageBox.information(self, "Success",
                     f"成功載入 CZI 縮圖\n尺寸: {width}x{height}\n"
-                    f"解析度: 約 6.25% (節省記憶體模式)")
+                    f"解析度: 約 20% (中等解析度模式)")
 
             except Exception as e:
                 print(f"Error loading CZI image {filePath}: {e}")
@@ -419,8 +435,18 @@ class AlignerWindow(QMainWindow):
             return None
 
         try:
-            img = read_czi_thumbnail(ctrl.filePath, scale_factor=0.0625)
-            ref_img = read_czi_thumbnail(ref_ctrl.filePath, scale_factor=0.0625)
+            # 記憶體優化：使用緩存
+            if ctrl.filePath in self.cached_images:
+                img = self.cached_images[ctrl.filePath]
+            else:
+                img = read_czi_thumbnail(ctrl.filePath, scale_factor=0.20)
+                self.cached_images[ctrl.filePath] = img
+                
+            if ref_ctrl.filePath in self.cached_images:
+                ref_img = self.cached_images[ref_ctrl.filePath]
+            else:
+                ref_img = read_czi_thumbnail(ref_ctrl.filePath, scale_factor=0.20)
+                self.cached_images[ref_ctrl.filePath] = ref_img
 
             t = ctrl.getTransform()
 
@@ -457,7 +483,15 @@ class AlignerWindow(QMainWindow):
 
         try:
             print("開始計算互訊息...")
-            ref_img_color = read_czi_thumbnail(ref_ctrl.filePath, scale_factor=0.0625)
+            # 記憶體優化：使用緩存
+            if ref_ctrl.filePath in self.cached_images:
+                ref_img_color = self.cached_images[ref_ctrl.filePath]
+                print(f"  - 使用緩存的參考影像")
+            else:
+                ref_img_color = read_czi_thumbnail(ref_ctrl.filePath, scale_factor=0.20)
+                self.cached_images[ref_ctrl.filePath] = ref_img_color
+                print(f"  - 參考影像已緩存")
+            
             print(f"參考影像載入: shape={ref_img_color.shape}, dtype={ref_img_color.dtype}")
 
             # 確保參考圖片是3通道
@@ -470,10 +504,11 @@ class AlignerWindow(QMainWindow):
             num_images = 0
             mi_scores = []
 
-            # 初始化複合影像
-            self.composite_image = np.zeros_like(ref_img_color, dtype=np.float64)
+            # 記憶體優化：使用 uint32 而非 float64 進行累加
+            print("  - 使用 uint32 累加器節省記憶體 (相比 float64 節省 50% 記憶體)")
+            self.composite_accumulator = np.zeros_like(ref_img_color, dtype=np.uint32)
             valid_images = 1  # 包含參考影像
-            self.composite_image += ref_img_color.astype(np.float64)
+            self.composite_accumulator += ref_img_color.astype(np.uint32)
 
             # 處理其他影像
             for i in range(1, len(self.imageControls)):
@@ -502,8 +537,8 @@ class AlignerWindow(QMainWindow):
                         num_images += 1
                         mi_scores.append(mi_score)
 
-                        # 添加到複合影像
-                        self.composite_image += warped_img_color.astype(np.float64)
+                        # 記憶體優化：使用 uint32 累加
+                        self.composite_accumulator += warped_img_color.astype(np.uint32)
                         valid_images += 1
                     else:
                         print(f"無法獲取變換影像 {i+1}")
@@ -524,9 +559,11 @@ class AlignerWindow(QMainWindow):
 
             # 生成複合影像
             if valid_images > 0:
-                self.composite_image = self.composite_image / valid_images
-                self.composite_image = np.clip(self.composite_image, 0, 255).astype(np.uint8)
-                print(f"複合影像生成成功，使用了 {valid_images} 張影像")
+                # 記憶體優化：直接計算平均並轉換為 uint8
+                self.composite_image = (self.composite_accumulator / valid_images).astype(np.uint8)
+                # 清理累加器以釋放記憶體
+                del self.composite_accumulator
+                print(f"複合影像生成成功，使用了 {valid_images} 張影像，記憶體已優化")
 
                 QMessageBox.information(self, "Analysis Complete",
                     f"互訊息分析完成！\n"
@@ -551,7 +588,7 @@ class AlignerWindow(QMainWindow):
                 transforms[f'image_{i+1}'] = {
                     'filepath': ctrl.filePath,
                     'transform': ctrl.getTransform(),
-                    'scale_factor_used': 0.0625,
+                    'scale_factor_used': 0.20,
                     'note': 'CZI thumbnail mode for memory efficiency'
                 }
         
@@ -578,22 +615,30 @@ class AlignerWindow(QMainWindow):
         filePath, _ = QFileDialog.getSaveFileName(self, "Save Composite Image", "", "TIFF Files (*.tiff);;PNG Files (*.png)")
         if filePath:
             try:
+                # 將 BGR 格式轉換為 RGB 格式用於保存
+                # CZI 原生格式是 BGR，但標準圖像格式應該是 RGB
+                composite_rgb = self.composite_image[:, :, ::-1]  # BGR -> RGB
+                
+                print(f"轉換顏色格式: BGR -> RGB，形狀: {composite_rgb.shape}")
+                
                 # 添加元數據
                 metadata = {
-                    'ImageDescription': 'CZI Composite Image - Thumbnail Mode (6.25% resolution)',
+                    'ImageDescription': 'CZI Composite Image - Thumbnail Mode (20% resolution) - RGB format',
                     'Software': 'CZI Image Aligner with MI Analysis',
                     'DateTime': str(np.datetime64('now'))
                 }
 
                 if filePath.lower().endswith('.tiff'):
-                    tifffile.imwrite(filePath, self.composite_image, imagej=True, metadata=metadata)
+                    tifffile.imwrite(filePath, composite_rgb, imagej=True, metadata=metadata)
+                    print(f"TIFF 格式儲存: RGB24 格式")
                 else:
                     # PNG 不支援複雜元數據，直接儲存
                     from PIL import Image
-                    Image.fromarray(self.composite_image).save(filePath)
+                    Image.fromarray(composite_rgb).save(filePath)
+                    print(f"PNG 格式儲存: RGB24 格式")
 
                 print(f"複合影像已儲存至: {filePath}")
-                QMessageBox.information(self, "Success", f"複合影像已成功儲存至:\n{filePath}")
+                QMessageBox.information(self, "Success", f"複合影像已成功儲存至:\n{filePath}\n格式: RGB24")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"儲存複合影像失敗:\n{str(e)}")
 
@@ -684,8 +729,8 @@ class AlignerWindow(QMainWindow):
                 if transforms and list(transforms.values())[0].get('scale_factor_used'):
                     scale_factor = list(transforms.values())[0]['scale_factor_used']
                     result_message += f"\n\n原始縮放因子: {scale_factor}"
-                    if scale_factor != 0.0625:
-                        result_message += f"\n⚠️ 注意: 當前程序使用 0.0625，與載入的參數可能不同"
+                    if scale_factor != 0.20:
+                        result_message += f"\n⚠️ 注意: 當前程序使用 0.20，與載入的參數可能不同"
 
                 result_message += f"\n\n提示: 如果檔案路徑已變更，請手動重新載入 CZI 檔案"
 
@@ -706,6 +751,37 @@ class AlignerWindow(QMainWindow):
                 import traceback
                 traceback.print_exc()
                 QMessageBox.critical(self, "載入錯誤", error_msg)
+
+    def clearMemoryCache(self):
+        """清理記憶體緩存"""
+        try:
+            cache_count = len(self.cached_images)
+            cache_size_mb = 0
+            
+            # 計算緩存大小
+            for img_array in self.cached_images.values():
+                cache_size_mb += img_array.nbytes / (1024 * 1024)
+            
+            # 清理緩存
+            self.cached_images.clear()
+            
+            # 清理複合影像
+            if hasattr(self, 'composite_image'):
+                del self.composite_image
+                self.composite_image = None
+            
+            # 強制垃圾回收
+            import gc
+            gc.collect()
+            
+            print(f"記憶體緩存已清理: {cache_count} 個影像, 約 {cache_size_mb:.1f} MB")
+            QMessageBox.information(self, "Memory Cleared", 
+                f"記憶體緩存已清理！\n"
+                f"清理了 {cache_count} 個緩存影像\n"
+                f"釋放約 {cache_size_mb:.1f} MB 記憶體")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"清理記憶體時發生錯誤:\n{str(e)}")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
