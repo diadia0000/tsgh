@@ -8,3 +8,4 @@ docs/
 *.tiff
 .idea/
 *.pdf
+__pycache__/
