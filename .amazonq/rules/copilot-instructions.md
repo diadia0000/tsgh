@@ -2,11 +2,12 @@
 
 ## General Rule
 
-Whenever the generates a file: 1. **Check if the target file already
-exists.** 2. If it exists, **delete the old file first**. 3. Then create
-the new file with the updated content.
+Whenever the generates a file:
+1. **Check if the target file already exists.**
+2. If it exists, **delete the old file first**.
+3. Then create the new file with the updated content.
 
-------------------------------------------------------------------------
+---
 
 ## Implementation Guidelines
 
@@ -52,11 +53,13 @@ filename="output.md"
 echo "New content here..." > "$filename"
 ```
 
-------------------------------------------------------------------------
+---
 
 ## Output Rules
 
-When generating files: - Always **overwrite instead of appending**. -
-Always **delete old version** before saving new. - Never keep duplicate
-versions unless explicitly requested. - If unsure whether to overwrite,
-**ask the user**.
+When generating files:
+- Always **overwrite instead of appending**.
+- Always **delete old version** before saving new.
+- Never keep duplicate versions unless explicitly requested.
+- If unsure whether to overwrite, **ask the user**.
+- Ensure the new file is saved with the correct encoding (preferably UTF-8).

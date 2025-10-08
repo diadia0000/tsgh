@@ -62,3 +62,4 @@ When generating files:
 - Always **delete old version** before saving new.
 - Never keep duplicate versions unless explicitly requested.
 - If unsure whether to overwrite, **ask the user**.
+- Ensure the new file is saved with the correct encoding (preferably UTF-8).

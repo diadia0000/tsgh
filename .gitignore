@@ -9,3 +9,4 @@ docs/
 .idea/
 *.pdf
 __pycache__/
+minconda

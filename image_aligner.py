@@ -19,13 +19,13 @@ import numpy as np
 from pathlib import Path
 from sklearn.metrics import mutual_info_score
 from aicspylibczi import CziFile
-from PyQt6.QtWidgets import (
+from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
     QSlider, QLabel, QDoubleSpinBox, QGridLayout, QCheckBox, QMessageBox
 )
-from PyQt6.QtGui import QPixmap, QImage, QTransform
-from PyQt6.QtCore import Qt
+from PyQt5.QtGui import QPixmap, QImage, QTransform
+from PyQt5.QtCore import Qt
 from skimage.transform import warp, AffineTransform
 from skimage.color import rgb2gray
 import tifffile
