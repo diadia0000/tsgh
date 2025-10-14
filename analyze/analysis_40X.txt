@@ -1,7 +1,7 @@
 ================================================================================
 CZI 檔案詳細分析報告
 ================================================================================
-生成時間: 2025-10-08 20:34:54
+生成時間: 2025-10-08 22:32:37
 分析工具: aicspylibczi + numpy
 分析檔案數量: 3
 
@@ -17,7 +17,7 @@ CZI 檔案詳細分析報告
   檔案名稱: DISH_40X_2.czi
   檔案路徑: E:\Class\tsgh\picture\whole_size\40X\DISH_40X_2.czi
   檔案大小: 4.60 GB
-  分析時間: 2025-10-08 20:34:17
+  分析時間: 2025-10-08 22:32:26
 
 基本影像屬性:
   維度: SCZMYXA
@@ -30,18 +30,12 @@ CZI 檔案詳細分析報告
   是否為馬賽克: True
   馬賽克瓦片數: 15759
   金字塔檢測方法:
-    - scale_factor_test
-  金字塔層數: 5
-  金字塔: 是
+  金字塔層數: 1
+  金字塔: 否 (所有檢測方法均未發現多層結構)
   各層詳細資訊:
 
-  可訪問縮放層級:
-    - 1.0
-    - 0.5
-    - 0.25
-    - 0.125
-    - 0.0625
-  建議: 建議使用適當的scale_factor載入，避免直接載入最高解析度
+  建議: 此文件僅包含單一解析度影像，建議使用scale_factor參數縮小後載入以節省記憶體
+  說明: scale_factor是讀取時的縮放參數，不代表檔案內建金字塔結構
   總像素數: 239504525568
   每像素位元組數: 3
   估算影像大小: 669.17 GB
@@ -54,22 +48,18 @@ CZI 檔案詳細分析報告
   每通道位元數: 8
 
 座標系統與元數據:
-  元數據來源: czi.meta property
-  元數據長度: 1
   圖塊總數: 15759
   圖塊座標範例:
-    - {'Tile_Index': '<_aicspylibczi.TileInfo object at 0x000002501DFB1970>', 'X': -499608, 'Y': 28829, 'Width': 2056, 'Height': 2464}
-    - {'Tile_Index': '<_aicspylibczi.TileInfo object at 0x000002501DFB18F0>', 'X': -497758, 'Y': 28829, 'Width': 2056, 'Height': 2464}
-    - {'Tile_Index': '<_aicspylibczi.TileInfo object at 0x000002501DFB1870>', 'X': -495908, 'Y': 28829, 'Width': 2056, 'Height': 2464}
+    - {'Tile_Index': '<_aicspylibczi.TileInfo object at 0x0000027D24262DB0>', 'X': -499608, 'Y': 28829, 'Width': 2056, 'Height': 2464}
+    - {'Tile_Index': '<_aicspylibczi.TileInfo object at 0x0000027D24262D30>', 'X': -497758, 'Y': 28829, 'Width': 2056, 'Height': 2464}
+    - {'Tile_Index': '<_aicspylibczi.TileInfo object at 0x0000027D24262CB0>', 'X': -495908, 'Y': 28829, 'Width': 2056, 'Height': 2464}
   馬賽克邊界框:
     X: -499628
     Y: 28699
     Width: 283317
     Height: 228831
 
-  元數據狀態: 完整 - 含圖塊座標
   對齊建議: 可以使用圖塊座標進行精確拼接
-  XML_Status: 無效或過短
 
 像素統計資訊:
   採樣說明: 馬賽克影像：分析第一個圖塊 (Region (-499608, 28829, 2056, 2464))
@@ -96,7 +86,7 @@ CZI 檔案詳細分析報告
   檔案名稱: HER2_40X.czi
   檔案路徑: E:\Class\tsgh\picture\whole_size\40X\HER2_40X.czi
   檔案大小: 5.60 GB
-  分析時間: 2025-10-08 20:34:28
+  分析時間: 2025-10-08 22:32:29
 
 基本影像屬性:
   維度: SCZMYXA
@@ -109,18 +99,12 @@ CZI 檔案詳細分析報告
   是否為馬賽克: True
   馬賽克瓦片數: 15759
   金字塔檢測方法:
-    - scale_factor_test
-  金字塔層數: 5
-  金字塔: 是
+  金字塔層數: 1
+  金字塔: 否 (所有檢測方法均未發現多層結構)
   各層詳細資訊:
 
-  可訪問縮放層級:
-    - 1.0
-    - 0.5
-    - 0.25
-    - 0.125
-    - 0.0625
-  建議: 建議使用適當的scale_factor載入，避免直接載入最高解析度
+  建議: 此文件僅包含單一解析度影像，建議使用scale_factor參數縮小後載入以節省記憶體
+  說明: scale_factor是讀取時的縮放參數，不代表檔案內建金字塔結構
   總像素數: 239504525568
   每像素位元組數: 3
   估算影像大小: 669.17 GB
@@ -133,22 +117,18 @@ CZI 檔案詳細分析報告
   每通道位元數: 8
 
 座標系統與元數據:
-  元數據來源: czi.meta property
-  元數據長度: 1
   圖塊總數: 15759
   圖塊座標範例:
-    - {'Tile_Index': '<_aicspylibczi.TileInfo object at 0x000002501DF47DF0>', 'X': -499608, 'Y': 28829, 'Width': 2056, 'Height': 2464}
-    - {'Tile_Index': '<_aicspylibczi.TileInfo object at 0x000002501DF47E70>', 'X': -497758, 'Y': 28829, 'Width': 2056, 'Height': 2464}
-    - {'Tile_Index': '<_aicspylibczi.TileInfo object at 0x000002501DF47EF0>', 'X': -495904, 'Y': 28828, 'Width': 2056, 'Height': 2464}
+    - {'Tile_Index': '<_aicspylibczi.TileInfo object at 0x0000027D24237EB0>', 'X': -499608, 'Y': 28829, 'Width': 2056, 'Height': 2464}
+    - {'Tile_Index': '<_aicspylibczi.TileInfo object at 0x0000027D24237E30>', 'X': -497758, 'Y': 28829, 'Width': 2056, 'Height': 2464}
+    - {'Tile_Index': '<_aicspylibczi.TileInfo object at 0x0000027D24237DB0>', 'X': -495904, 'Y': 28828, 'Width': 2056, 'Height': 2464}
   馬賽克邊界框:
     X: -499890
     Y: 28779
     Width: 283637
     Height: 228733
 
-  元數據狀態: 完整 - 含圖塊座標
   對齊建議: 可以使用圖塊座標進行精確拼接
-  XML_Status: 無效或過短
 
 像素統計資訊:
   採樣說明: 馬賽克影像：分析第一個圖塊 (Region (-499608, 28829, 2056, 2464))
@@ -175,7 +155,7 @@ CZI 檔案詳細分析報告
   檔案名稱: HE_40X.czi
   檔案路徑: E:\Class\tsgh\picture\whole_size\40X\HE_40X.czi
   檔案大小: 7.32 GB
-  分析時間: 2025-10-08 20:34:40
+  分析時間: 2025-10-08 22:32:33
 
 基本影像屬性:
   維度: SCZMYXA
@@ -188,18 +168,12 @@ CZI 檔案詳細分析報告
   是否為馬賽克: True
   馬賽克瓦片數: 15759
   金字塔檢測方法:
-    - scale_factor_test
-  金字塔層數: 5
-  金字塔: 是
+  金字塔層數: 1
+  金字塔: 否 (所有檢測方法均未發現多層結構)
   各層詳細資訊:
 
-  可訪問縮放層級:
-    - 1.0
-    - 0.5
-    - 0.25
-    - 0.125
-    - 0.0625
-  建議: 建議使用適當的scale_factor載入，避免直接載入最高解析度
+  建議: 此文件僅包含單一解析度影像，建議使用scale_factor參數縮小後載入以節省記憶體
+  說明: scale_factor是讀取時的縮放參數，不代表檔案內建金字塔結構
   總像素數: 239504525568
   每像素位元組數: 3
   估算影像大小: 669.17 GB
@@ -212,22 +186,14 @@ CZI 檔案詳細分析報告
   每通道位元數: 8
 
 座標系統與元數據:
-  元數據來源: czi.meta property
-  元數據長度: 1
   圖塊總數: 15759
-  圖塊座標範例:
-    - {'Tile_Index': '<_aicspylibczi.TileInfo object at 0x000002501DF849F0>', 'X': -453348, 'Y': 13306, 'Width': 2056, 'Height': 2464}
-    - {'Tile_Index': '<_aicspylibczi.TileInfo object at 0x000002501DF84970>', 'X': -451497, 'Y': 13306, 'Width': 2056, 'Height': 2464}
-    - {'Tile_Index': '<_aicspylibczi.TileInfo object at 0x000002501DF848F0>', 'X': -449646, 'Y': 13306, 'Width': 2056, 'Height': 2464}
   馬賽克邊界框:
     X: -453375
     Y: 9139
     Width: 283435
     Height: 232800
 
-  元數據狀態: 完整 - 含圖塊座標
   對齊建議: 可以使用圖塊座標進行精確拼接
-  XML_Status: 無效或過短
 
 像素統計資訊:
   採樣說明: 馬賽克影像：分析第一個圖塊 (Region (-453348, 13306, 2056, 2464))

@@ -19,7 +19,6 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime
 from aicspylibczi import CziFile
-import xml.etree.ElementTree as ET
 
 
 def format_bytes(bytes_count):
@@ -134,46 +133,45 @@ def analyze_pyramid_levels(czi_file):
         pyramid_info['s_dimension_error'] = str(e)
         print(f"    - S維度檢查失敗: {e}")
 
-    # 方法2: 嘗試讀取不同解析度層級
+    # 方法2: 檢查是否有預建的金字塔層級（透過嘗試讀取不同Scene）
+    # 注意：scale_factor 只是讀取時的縮放參數，不代表檔案內建金字塔
     try:
-        scale_factors = [1.0, 0.5, 0.25, 0.125, 0.0625]
-        accessible_scales = []
-
-        for scale in scale_factors:
-            try:
-                if czi_file.is_mosaic():
-                    # 嘗試讀取一小塊來測試該層級是否存在
-                    bbox_dict = czi_file.get_all_mosaic_tile_bounding_boxes()
-                    if bbox_dict:
-                        first_bbox = list(bbox_dict.values())[0]
-                        # 測試讀取很小的區域
-                        test_region = (first_bbox.x, first_bbox.y, min(100, first_bbox.w), min(100, first_bbox.h))
-                        test_data = czi_file.read_mosaic(test_region, scale_factor=scale, C=0)
+        if 'S' in dims and size[dims.index('S')] > 1:
+            # 如果S維度>1，嘗試讀取不同的Scene來確認是否為金字塔
+            s_count = size[dims.index('S')]
+            accessible_scenes = []
+            
+            for scene_idx in range(min(s_count, 5)):  # 最多測試5個scene
+                try:
+                    if czi_file.is_mosaic():
+                        bbox_dict = czi_file.get_all_mosaic_tile_bounding_boxes()
+                        if bbox_dict:
+                            first_bbox = list(bbox_dict.values())[0]
+                            test_region = (first_bbox.x, first_bbox.y, min(100, first_bbox.w), min(100, first_bbox.h))
+                            test_data = czi_file.read_mosaic(test_region, S=scene_idx, C=0)
+                            if test_data is not None and test_data.size > 0:
+                                accessible_scenes.append(scene_idx)
+                                del test_data
+                    else:
+                        test_data = czi_file.read_image(S=scene_idx, X=slice(0, 100), Y=slice(0, 100))
                         if test_data is not None and test_data.size > 0:
-                            accessible_scales.append(scale)
-                            del test_data  # 立即清理
-                else:
-                    # 非馬賽克圖像
-                    test_data = czi_file.read_image(scene=0, scale_factor=scale, X=slice(0, 100), Y=slice(0, 100))
-                    if test_data is not None and test_data.size > 0:
-                        accessible_scales.append(scale)
-                        del test_data  # 立即清理
-            except:
-                break  # 如果某個scale失敗，停止測試更小的scale
-
-        if len(accessible_scales) > 1:
-            pyramid_info['金字塔檢測方法'].append('scale_factor_test')
-            if pyramid_info['金字塔層數'] == 1:  # 如果前面方法沒檢測到
-                pyramid_info['金字塔層數'] = len(accessible_scales)
-                pyramid_info['金字塔'] = '是'
-            pyramid_info['可訪問縮放層級'] = accessible_scales
-            print(f"    - ✓ 縮放測試檢測到 {len(accessible_scales)} 個可訪問層級: {accessible_scales}")
+                            accessible_scenes.append(scene_idx)
+                            del test_data
+                except:
+                    break
+            
+            if len(accessible_scenes) > 1:
+                pyramid_info['金字塔檢測方法'].append('multi_scene_test')
+                pyramid_info['可訪問Scene索引'] = accessible_scenes
+                print(f"    - ✓ 多Scene測試：成功讀取 {len(accessible_scenes)} 個Scene: {accessible_scenes}")
+            else:
+                print(f"    - 多Scene測試：僅能訪問 {len(accessible_scenes)} 個Scene")
         else:
-            print(f"    - 縮放測試：僅1個層級可訪問 {accessible_scales}")
+            print("    - 跳過多Scene測試（S維度≤1）")
 
     except Exception as e:
-        pyramid_info['scale_test_error'] = str(e)
-        print(f"    - 縮放層級測試失敗: {e}")
+        pyramid_info['scene_test_error'] = str(e)
+        print(f"    - Scene測試失敗: {e}")
 
     # 方法3: 檢查圖塊數量和排列 (針對馬賽克圖像)
     try:
@@ -198,39 +196,13 @@ def analyze_pyramid_levels(czi_file):
         pyramid_info['tile_analysis_error'] = str(e)
         print(f"    - 圖塊分析失敗: {e}")
 
-    # 方法4: XML元數據分析（如果可用）
-    try:
-        metadata_xml = czi_file.meta
-        if metadata_xml and len(metadata_xml) > 100:
-            import xml.etree.ElementTree as ET
-            root = ET.fromstring(metadata_xml)
-
-            # 搜尋金字塔相關標籤
-            pyramid_elements = []
-            for elem in root.iter():
-                tag_lower = elem.tag.lower()
-                if any(keyword in tag_lower for keyword in ['pyramid', 'level', 'resolution', 'scale']):
-                    if elem.text and elem.text.strip():
-                        pyramid_elements.append(f"{elem.tag}: {elem.text}")
-
-            if pyramid_elements:
-                pyramid_info['XML金字塔資訊'] = pyramid_elements[:5]  # 只保留前5個
-                pyramid_info['金字塔檢測方法'].append('xml_metadata')
-                print(f"    - ✓ XML元數據發現 {len(pyramid_elements)} 個金字塔相關元素")
-            else:
-                print("    - XML元數據：未發現金字塔相關資訊")
-        else:
-            print("    - XML元數據不可用或過短")
-    except Exception as e:
-        pyramid_info['xml_analysis_error'] = str(e)
-        print(f"    - XML金字塔分析失敗: {e}")
-
     # 最終結論
     if pyramid_info['金字塔層數'] == 1 and not pyramid_info['金字塔檢測方法']:
         pyramid_info['金字塔'] = '否 (所有檢測方法均未發現多層結構)'
-        pyramid_info['建議'] = '此文件可能僅包含單一解析度影像，直接載入會消耗大量記憶體'
+        pyramid_info['建議'] = '此文件僅包含單一解析度影像，建議使用scale_factor參數縮小後載入以節省記憶體'
+        pyramid_info['說明'] = 'scale_factor是讀取時的縮放參數，不代表檔案內建金字塔結構'
     elif pyramid_info['金字塔層數'] > 1:
-        pyramid_info['建議'] = f'建議使用適當的scale_factor載入，避免直接載入最高解析度'
+        pyramid_info['建議'] = f'檔案包含 {pyramid_info["金字塔層數"]} 層金字塔，可透過S參數選擇不同解析度層級'
 
     print(f"    - 金字塔分析完成：{pyramid_info['金字塔層數']}層，使用方法: {pyramid_info['金字塔檢測方法']}")
 
@@ -286,14 +258,8 @@ def extract_channel_info(czi_file):
 
 
 def extract_coordinate_metadata(czi_file):
-    """改進版座標系統與元數據分析"""
+    """座標系統與元數據分析"""
     coord_info = {}
-
-    # 獲取元數據基本資訊
-    # 經確認，.meta屬性在此案例中不返回完整XML，但我們仍記錄其狀態
-    metadata_xml = czi_file.meta
-    coord_info['元數據來源'] = 'czi.meta property'
-    coord_info['元數據長度'] = len(metadata_xml) if metadata_xml else 0
     
     if czi_file.is_mosaic():
         try:
@@ -319,56 +285,13 @@ def extract_coordinate_metadata(czi_file):
                 'Width': mosaic_bbox.w, 'Height': mosaic_bbox.h
             }
 
-            coord_info['元數據狀態'] = '完整 - 含圖塊座標'
             coord_info['對齊建議'] = '可以使用圖塊座標進行精確拼接'
 
         except Exception as e:
             coord_info['圖塊座標提取錯誤'] = str(e)
             coord_info['對齊建議'] = '圖塊座標提取失敗，建議使用feature-based alignment'
-
-    # 檢查從 .meta 獲取的XML狀態
-    if metadata_xml and len(metadata_xml) > 10:
-        coord_info['XML_Status'] = '有效'
-        try:
-            # 解析XML元數據
-            root = ET.fromstring(metadata_xml)
-            
-            # 尋找stage position資訊
-            stage_positions = []
-            resolution_info = {}
-            
-            # 搜尋各種可能的標籤
-            for elem in root.iter():
-                tag_lower = elem.tag.lower()
-                
-                # 尋找stage position
-                if 'stage' in tag_lower or 'position' in tag_lower:
-                    if elem.text and elem.text.strip():
-                        stage_positions.append(f"{elem.tag}: {elem.text}")
-                
-                # 尋找解析度/像素間距資訊
-                if any(keyword in tag_lower for keyword in ['resolution', 'pixel', 'scaling', 'size']):
-                    if elem.text and elem.text.strip():
-                        try:
-                            value = float(elem.text)
-                            resolution_info[elem.tag] = value
-                        except ValueError:
-                            resolution_info[elem.tag] = elem.text
-            
-            # 記錄找到的資訊
-            if stage_positions:
-                coord_info['XML_Stage_Position'] = stage_positions
-
-            if resolution_info:
-                coord_info['XML_解析度資訊'] = resolution_info
-
-        except ET.ParseError as e:
-            coord_info['XML_解析錯誤'] = str(e)
     else:
-        coord_info['XML_Status'] = '無效或過短'
-        # 如果沒有從 is_mosaic() 得到建議，則使用舊的建議
-        if '對齊建議' not in coord_info:
-            coord_info['對齊建議'] = '無元數據，建議使用feature-based alignment (SIFT、ORB)'
+        coord_info['對齊建議'] = '非馬賽克影像，建議使用feature-based alignment (SIFT、ORB)'
 
     return coord_info
 
@@ -563,7 +486,7 @@ def analyze_single_czi(filepath):
     return analysis_result
 
 
-def generate_analysis_report(all_analyses, output_file="analysis.txt"):
+def generate_analysis_report(all_analyses, output_file="analysis_20X.txt"):
     """
     生成詳細分析報告
     """
@@ -637,7 +560,7 @@ def main():
     
     # 設定目錄和輸出檔案
     picture_dir = Path("E:/Class/tsgh/picture/whole_size/")  # 相對於testing目錄的picture目錄
-    output_file = "analysis.txt"
+    output_file = "analysis_20X.txt"
     
     # 檢查picture目錄
     if not picture_dir.exists():
