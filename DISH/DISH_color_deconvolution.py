@@ -166,7 +166,7 @@ def process_wsi_tissue_mask(
     print("完成!")
 
 
-if __name__ == "__main__"
+if __name__ == "__main__":
     wsi_path = Path("../picture/WSI/DISH_20X_ED7.tiff")
     output_dir = Path("./output")
     process_wsi_tissue_mask(

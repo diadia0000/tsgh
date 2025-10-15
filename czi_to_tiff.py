@@ -168,8 +168,8 @@ class CziToTiffConverter:
 
 def main():
     converter = CziToTiffConverter(
-        input_dir=r"E:\Class\tsgh\picture\whole_size\40X",
-        output_dir=r"E:\Class\tsgh\picture\WSI\40X"
+        #input_dir=r"E:\Class\tsgh\picture\whole_size\40X",
+        #output_dir=r"E:\Class\tsgh\picture\WSI\40X"
     )
     converter.convert_all()
 
