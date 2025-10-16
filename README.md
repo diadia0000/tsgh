@@ -1,334 +1,180 @@
-# 細胞影像對位系統 (Cell Image Registration System)
+# 細胞影像對位系統 (Cell Image Registration System) v2.0
 
-本專案為細胞影像對位 (Image Registration) 應用系統，專門處理同一細胞的三種不同染色影像：
+本專案為一個自動化的全組織病理影像 (Whole Slide Image, WSI) 對位系統，採用先進的 `valis` 函式庫，專為處理同一組織切片的三種不同染色影像而設計：
+- **HE (H&E)** - 蘇木精-伊紅染色 (通常作為對位的基準)
 - **Her2** - HER2 免疫組化染色
-- **HE** - H&E (蘇木精-伊紅) 染色
 - **DISH** - 雙重原位雜交染色
 
-由於人工染色過程會產生偏移、旋轉、平移、縮放及非線性變形，本系統採用多階段配準演算法來精確對齊這些影像。
+此系統透過一個高效、模組化的 Python 工作流程，解決因人工染色過程產生的影像偏移、旋轉、縮放及非線性變形，實現像素級的精準對齊。
 
 ## 系統特色
 
-### 三階段工作流程
-1. **Python 影像轉換** - CZI 格式轉換為 TIFF 格式
-2. **C++ 配準運算** - 四步驟配準演算法 (特徵點對齊 → 互信息對齊 → B-spline FFD → 品質評估)
-3. **PyQt5 GUI 顯示** - 視覺化結果檢視與品質評估
+### 全自動化 Python 工作流程
+本系統以 `valis` 函式庫為核心，取代了傳統複雜的多語言環境，提供一個從影像前處理到結果驗證的完整 Python 解決方案。
 
-### 配準演算法流程
-1. **特徵點粗對齊** - SIFT/ORB + RANSAC
-2. **互信息精準對齊** - 互信息 + 仿射變換
-3. **B-spline 非剛體對齊** - B-spline FFD 像素級對齊
-4. **品質評估** - MI、NMI、TRE 指標計算
+### 高效記憶體管理
+- **無需載入完整影像**: 系統利用 `pyvips` 函式庫，直接在磁碟上對 Gigapixel 等級的 CZI 檔案進行處理，無需將整個高解析度影像載入記憶體。
+- **金字塔層級處理**: 所有耗時的對位運算都在影像金字塔的低解析度層級完成，大幅提升運算速度並降低硬體需求。
 
-### 模組化架構設計
-
-#### Core 核心模組
-- **多階段配準流程**: 從粗對齊到精細配準的完整流程
-- **WSI專用處理**: 針對大型病理切片影像優化
-- **豐富評估指標**: 提供多種配準品質評估方法
-- **細胞級配準**: 支持細胞層級的精確配準
-
-#### GPU 加速模組
-- **CUDA並行計算**: 利用GPU大幅提升處理速度
-- **記憶體優化**: 智能記憶體管理，支持大型影像處理
-- **自動回退機制**: GPU不可用時自動切換到CPU處理
-
-#### IO 處理模組
-- **多格式支持**: 支援WSI、TIFF、CZI等多種醫學影像格式
-- **高效載入**: 針對大型影像優化的分塊載入機制
-- **擴展性設計**: 易於添加新的影像格式支持
-
-### 支援的影像類型
-- **HE 染色** (基準影像)
-- **Her2 免疫組化**
-- **DISH 雙重原位雜交**
+### 四階段模組化工作流程
+1.  **模組 1: 影像前處理 (Preprocessing)** - 在低解析度下讀取影像，進行灰階正規化並產生組織遮罩，為對準做準備。
+2.  **模組 2: 計算對位參數 (Alignment)** - 使用低解析度影像計算剛性與非剛性變換參數，並將結果儲存為一個輕量的 `Transform_Params.h5` 檔案。
+3.  **模組 3: ROI 品質評估 (ROI Evaluation)** - 從原始高解析度影像中，根據計算出的參數提取已對齊的感興趣區域 (ROI)，並計算 MI、NCC 等品質指標。
+4.  **模組 4: 產生對齊縮圖 (Thumbnail Generation)** - 產生一個已對齊的全尺寸三色疊合縮圖，用於快速、直觀地評估全局對位效果。
 
 ## 系統需求
 
 ### 硬體需求
 - **CPU**: Intel i5 或 AMD Ryzen 5 以上
-- **記憶體**: 8GB RAM 以上 (建議 16GB)
-- **GPU**: NVIDIA GPU (支援 CUDA 11.0+) - 可選但建議
-- **儲存空間**: 至少 2GB 可用空間
+- **記憶體**: 16GB RAM 以上
+- **儲存空間**: 至少 10GB 可用空間 (用於存放原始影像與輸出結果)
 
 ### 軟體需求
 - **作業系統**: Windows 10/11, Linux, macOS
-- **編譯器**: 
-  - Windows: Visual Studio 2019/2022 或 MinGW
-  - Linux: GCC 7.0+
-  - macOS: Xcode 12+
-- **CMake**: 3.16 或更新版本
-- **Python**: 3.8+ (用於 GUI 查看器)
+- **Python**: 3.8+
 
 ## 安裝指南
 
-### 1. 安裝依賴庫
+1.  **克隆專案**
+    ```bash
+    git clone <repository-url>
+    cd tsgh
+    ```
 
-#### Windows (使用 vcpkg)
-```bash
-# 安裝 vcpkg
-git clone https://github.com/Microsoft/vcpkg.git
-cd vcpkg
-.\bootstrap-vcpkg.bat
+2.  **安裝 Python 依賴**
+    建議在虛擬環境中安裝，以避免套件版本衝突。
+    ```bash
+    # 建立虛擬環境 (可選)
+    python -m venv venv
+    # 啟動虛擬環境
+    # Windows
+    .\venv\Scripts\activate
+    # Linux / macOS
+    source venv/bin/activate
 
-# 安裝 OpenCV
-.\vcpkg install opencv[contrib,cuda]:x64-windows
-
-# 安裝 CUDA (可選)
-# 從 NVIDIA 官網下載並安裝 CUDA Toolkit 11.8+
-```
-
-#### Linux (Ubuntu/Debian)
-```bash
-# 安裝基本依賴
-sudo apt update
-sudo apt install build-essential cmake git
-
-# 安裝 OpenCV
-sudo apt install libopencv-dev libopencv-contrib-dev
-
-# 安裝 CUDA (可選)
-# 參考 NVIDIA 官方文檔安裝 CUDA Toolkit
-```
-
-### 2. 編譯 C++ 核心
-
-```bash
-# 克隆專案
-git clone <repository-url>
-cd wsi-registration
-
-# 建立編譯目錄
-mkdir build
-cd build
-
-# 配置 CMake
-cmake .. -DCMAKE_BUILD_TYPE=Release
-
-# 編譯
-cmake --build . --config Release
-
-# 執行檔將生成在 dist/ 目錄中
-```
-
-### 3. 安裝 Python GUI 依賴
-
-```bash
-# 安裝 Python 依賴
-pip install -r requirements.txt
-```
+    # 安裝所有必要的套件
+    pip install -r requirements.txt
+    ```
 
 ## 使用方法
 
 ### 快速開始 (推薦)
-
-執行完整三階段工作流程：
-
+執行單一腳本即可完成完整四階段工作流程：
 ```bash
-# Windows
-run_full_workflow.bat
-
-# 或手動執行各階段
+python thriple_image_layer/run_full_pipeline.py
 ```
+此腳本會自動執行從前處理到產生最終縮圖的所有步驟。
 
-### 階段 1: Python 影像轉換
+### 分步執行
+您也可以依照需求，單獨執行每個模組的腳本。
 
+#### 階段 1: 影像前處理
 ```bash
-# 轉換 CZI 檔案為 TIFF 格式
-python convert_czi_to_tiff.py --input picture/ --output picture/tiff/
+python thriple_image_layer/module1_preprocessing.py
 ```
+- **輸入**: `picture/whole_size/40X/` 目錄下的 `*.czi` 檔案。
+- **輸出**: 產生供後續模組使用的內部暫存檔案。
 
-### 階段 2: C++ 配準運算
-
+#### 階段 2: 計算對位參數
 ```bash
-# 編譯專案 (Windows)
-build_and_run.bat
-
-# 或手動編譯
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=../vcpkg/scripts/buildsystems/vcpkg.cmake
-cmake --build . --config Release
-
-# 執行配準
-.\dist\Release\wsi_registration.exe --input ..\picture\tiff\ --output ..\picture\output\ --gpu
+python thriple_image_layer/module2_alignment.py
 ```
+- **輸入**: 模組 1 的處理結果。
+- **輸出**: `thriple_image_layer/output/Transform_Params.h5`
 
-### 階段 3: PyQt5 GUI 查看器
-
+#### 階段 3: ROI 品質評估
 ```bash
-# 啟動 GUI 查看器
-python gui/main.py
-
-# 或先測試 GUI (使用範例資料)
-python test_gui.py
+python thriple_image_layer/module3_roi_evaluation.py
 ```
+- **輸入**: `Transform_Params.h5`
+- **輸出**:
+    - `thriple_image_layer/output/Merged_ROI.png` (高解析度對齊區域疊合圖)
+    - `thriple_image_layer/output/Metrics.csv` (量化評估指標)
 
-GUI 功能：
-- 三區域佈局：檔案清單、影像顯示、結果資訊
-- 基本影像操作：縮放、平移、旋轉
-- 比較模式：雙影像疊合顯示
-- 三圖合成模式：多通道疊合檢視
-- 即時品質評估指標顯示 (MI, NMI, TRE)
-- 重新整理功能：無需重啟即可更新結果
+#### 階段 4: 產生對齊縮圖
+```bash
+python thriple_image_layer/module4_thumbnail.py
+```
+- **輸入**: `Transform_Params.h5`
+- **輸出**: `thriple_image_layer/output/Merged_Thumbnail_12.5pct.png` (全局對齊效果縮圖)
 
-### 3. 參數說明
-
-#### 配準參數
-- `--transform`: 變換類型 (Affine, BSpline)
-- `--metric`: 相似性度量 (MI, NCC, SSD)
-- `--pyramid`: 金字塔層級 (例: 4,2,1)
-- `--grid`: B-spline 網格間距 (例: 32,16,8)
-- `--iterations`: 最大迭代次數
-
-#### GPU 參數
-- `--gpu`: 啟用 GPU 加速
-- `--device`: GPU 設備 ID (預設: 0)
 
 ## 目錄結構與輸出檔案
 
 ### 專案目錄結構
 ```
 tsgh/
-├── picture/                      # 影像資料目錄
-│   ├── *.czi                    # 原始 CZI 檔案
-│   ├── tiff/                    # 轉換後的 TIFF 檔案
-│   └── output/                  # 配準結果輸出
-├── src/                         # C++ 源碼
-│   ├── core/                    # 核心配準演算法
-│   │   ├── CellRegistration.cpp              # 細胞級別配準
-│   │   ├── ImagePreprocessing.cpp            # 圖像預處理
-│   │   ├── RegistrationMetrics.cpp           # 配準評估指標
-│   │   ├── RegistrationStagesBSpline.cpp     # B樣條配準階段
-│   │   ├── RegistrationStagesCore.cpp        # 配準核心邏輯
-│   │   ├── RegistrationStagesOptimization.cpp # 配準優化
-│   │   ├── WSIRegistrationCore.cpp           # WSI配準核心
-│   │   ├── WSIRegistrationMetrics.cpp        # WSI配準指標
-│   │   ├── WSIRegistrationPreprocessing.cpp  # WSI預處理
-│   │   ├── WSIRegistrationStages.cpp         # WSI配準階段管理
-│   │   └── WSIRegistrationTransforms.cpp     # 配準變換實現
-│   ├── gpu/                     # CUDA 加速模組
-│   │   ├── CudaRegistrationCore.cpp          # CUDA配準核心
-│   │   ├── CudaRegistrationUtils.cpp         # CUDA配準工具
-│   │   └── CudaUtils.cpp                     # CUDA通用工具
-│   ├── io/                      # 檔案 I/O 處理
-│   │   ├── WSILoader.cpp                     # WSI圖像載入器
-│   │   └── WSILoaderExtensions.cpp           # WSI載入器擴展
-│   └── main.cpp                 # 主程式入口
-├── gui/                         # PyQt5 GUI 程式
-│   ├── main.py                  # GUI 主程式
-│   ├── viewer.py                # 影像顯示控制
-│   ├── metrics.py               # 評估指標處理
-│   └── ui/                      # Qt Designer UI 檔案
-├── .amazonq/                    # 專案分析文檔
-│   └── rules/                   # 模組結構分析
-│       ├── core.md              # 核心模組分析
-│       ├── gpu.md               # GPU模組分析
-│       └── io.md                # IO模組分析
-└── CMakeLists.txt               # CMake 建置檔案
+├── thriple_image_layer/         # 主要工作流程目錄
+│   ├── module1_preprocessing.py     # 模組1: 影像前處理
+│   ├── module2_alignment.py         # 模組2: 計算對位參數
+│   ├── module3_roi_evaluation.py    # 模組3: ROI 品質評估
+│   ├── module4_thumbnail.py         # 模組4: 產生對齊縮圖
+│   ├── run_full_pipeline.py         # 完整流程執行腳本
+│   └── output/                      # 結果輸出目錄
+│       ├── Transform_Params.h5      # 對位參數檔案
+│       ├── Merged_ROI.png           # 高解析度 ROI 疊合圖
+│       ├── Metrics.csv              # 量化評估指標
+│       └── Merged_Thumbnail_12.5pct.png # 全局對齊縮圖
+│
+├── picture/                     # 影像資料目錄
+│   └── whole_size/
+│       └── 40X/
+│           ├── DISH_40X_2.czi
+│           ├── HE_40X.czi
+│           └── HER2_40X.czi
+│
+├── analyze/                     # 影像分析相關文件
+│   └── analysis_40X.txt
+│
+└── requirements.txt             # Python 依賴列表
 ```
 
-### 輸出檔案
-配準完成後會在 `picture/output/` 目錄生成：
-
-```
-picture/output/
-├── aligned_HE.tiff              # 基準 HE 影像
-├── aligned_Her2.tiff            # 對齊後的 Her2 影像
-├── aligned_DISH.tiff            # 對齊後的 DISH 影像
-├── overlay_triple.tiff          # 三通道疊合影像
-├── registration_metrics.json    # 評估指標 (JSON 格式)
-└── registration_report.txt      # 詳細配準報告
-```
+### 輸出檔案說明
+- **Transform_Params.h5**: 包含所有計算出的變換矩陣和位移場，是對位結果的核心，可被後續模組重複使用。
+- **Merged_ROI.png**: 一個 2048x2048 像素的高解析度疊合圖，用於精確檢查細胞層級的對位細節。
+- **Metrics.csv**: 包含正規化互相關 (NCC) 和互信息 (MI) 指標，量化 HE 影像與另外兩張影像的相似度。
+- **Merged_Thumbnail_12.5pct.png**: 降採樣 8 倍的全尺寸疊合縮圖，用於快速概覽全局對位的準確性。
 
 ## 品質評估指標
 
+### 正規化互相關 (NCC)
+- **範圍**: [-1, 1]
+- **意義**: 衡量兩影像的線性相關性。值越接近 1，表示結構越相似，對位效果越好。
+
 ### 互信息 (MI)
 - **範圍**: [0, +∞)
-- **意義**: 值越高表示兩影像間相關性越強，配準品質越好
-- **典型值**: 0.5-2.0 為良好配準
+- **意義**: 衡量兩影像間資訊量的共享程度，特別適用於不同染色 (多模態) 的影像。值越高表示相關性越強，對位品質越好。
 
-### 正規化互信息 (NMI)
-- **範圍**: [0, 1]
-- **意義**: MI 的正規化版本，消除影像大小影響
-- **品質標準**:
-  - NMI > 0.7: 優秀
-  - 0.5 < NMI ≤ 0.7: 良好
-  - NMI ≤ 0.5: 需要改善
-
-### 目標配準誤差 (TRE)
-- **單位**: 像素
-- **意義**: 配準後的空間誤差，值越小越好
-- **品質標準**:
-  - TRE < 2.0: 優秀
-  - 2.0 ≤ TRE < 5.0: 良好
-  - TRE ≥ 5.0: 需要改善
-
-## 效能優化建議
-
-### 1. 硬體優化
-- 使用 NVIDIA GPU 進行 CUDA 加速
-- 增加系統記憶體以處理大型 WSI
-- 使用 SSD 儲存以提高 I/O 效能
-
-### 2. 參數調整
-- 對於高解析度影像，增加金字塔層級數
-- 調整特徵點數量以平衡精度與速度
-- 根據影像特性選擇合適的相似性度量
-
-### 3. 預處理優化
-- 對螢光影像進行適當的對比度增強
-- 使用色彩正規化改善 H&E 染色一致性
-- 適當的去噪處理以提高特徵檢測品質
+## 效能優化
+本系統的設計已將效能優化考慮在內：
+- **磁碟流式處理**: 歸功於 `valis` 和 `pyvips`，即使是數 GB 大小的 CZI 檔案也能在記憶體有限的機器上流暢處理。
+- **參數化設計**: 所有關鍵步驟，如 ROI 大小、縮圖降採樣率等，都可以在腳本中輕鬆調整，以在速度和精度之間取得平衡。
+- **單一解析度層級優化**: 即使 CZI 檔案僅提供單一最高解析度層級，`valis` 也能在執行期間動態生成所需的低解析度版本進行運算，確保流程高效運行。
 
 ## 故障排除
 
-### 常見問題
+1.  **套件安裝失敗**
+    - 確認 Python 版本符合 `requirements.txt` 中某些套件的要求。
+    - 嘗試更新 `pip` 與 `setuptools`：`pip install --upgrade pip setuptools`。
+    - 在 Windows 上，部分套件可能需要 Visual C++ Build Tools。
 
-1. **CUDA 初始化失敗**
-   - 檢查 NVIDIA 驅動程式版本
-   - 確認 CUDA Toolkit 正確安裝
-   - 檢查 GPU 記憶體是否足夠
+2.  **記憶體不足 (OutOfMemory Error)**
+    - 雖然系統經過優化，但在極端情況下仍可能發生。
+    - 嘗試在 `module3_roi_evaluation.py` 中減小 `get_aligned_roi` 的 `size` 參數 (例如，從 `(2048, 2048)` 降為 `(1024, 1024)`)。
+    - 確保沒有其他耗費大量記憶體的程式正在運行。
 
-2. **配準品質不佳**
-   - 檢查影像預處理是否適當
-   - 調整特徵檢測參數
-   - 嘗試不同的相似性度量
-
-3. **記憶體不足**
-   - 減少影像解析度
-   - 調整瓦片大小參數
-   - 使用更多的金字塔層級
-
-4. **處理速度慢**
-   - 啟用 GPU 加速
-   - 減少最大迭代次數
-   - 使用較粗的網格間距
-
-## 技術支援
-
-如遇到問題，請提供以下資訊：
-- 作業系統版本
-- 硬體配置 (CPU, GPU, 記憶體)
-- 輸入影像資訊 (大小, 格式, 類型)
-- 完整的錯誤訊息
-- 使用的參數設定
-## 
-開發與貢獻
-
-### 專案架構說明
-本專案採用模組化設計，詳細的模組分析文檔位於 `.amazonq/rules/` 目錄：
-- `core.md` - 核心配準算法模組分析
-- `gpu.md` - GPU加速模組分析  
-- `io.md` - 圖像IO處理模組分析
-
-### 代碼結構
-- **核心算法**: 11個核心組件，涵蓋完整的配準流程
-- **GPU加速**: 3個CUDA組件，提供高性能並行計算
-- **IO處理**: 2個專用組件，處理各種醫學影像格式
-
-
+3.  **對位品質不佳**
+    - 檢查 `module1_preprocessing.py` 中的組織遮罩是否正確生成。不正確的遮罩會嚴重影響特徵提取。
+    - 影像內容差異過大 (例如，組織嚴重缺失或變形) 可能導致 `valis` 自動排序失敗。可以嘗試在 `valis.Valis` 初始化時手動指定 `reference_img_f`。
 
 ## 更新日誌
+
+### v2.0.0 (2025-10-17)
+- **架構重構**: 專案完全重寫，採用以 `valis` 函式庫為核心的 Python 工作流程。
+- **模組化設計**: 將流程拆分為四個獨立、可單獨執行的模組。
+- **移除 C++ 依賴**: 簡化安裝與部署流程，不再需要 C++ 編譯器和相關函式庫。
+- **效能提升**: 引入基於 `pyvips` 的高效記憶體管理，實現對超大影像的快速處理。
+- **文件更新**: 全面更新 README 以反映新的架構、使用方法和目錄結構。
 
 ### v1.1.0 (2025-01-13)
 - 重構專案架構，採用模組化設計
