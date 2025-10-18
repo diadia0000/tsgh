@@ -6,72 +6,58 @@ from valis import registration, slide_io
 
 def generate_thumbnail(
     output_dir: Path,
-    level: int = 3
+    level: int = 4,
+    non_rigid: bool = True,
 ) -> None:
     """
-    Module 4: 產生全局對齊縮圖
+    Module 4: 產生對齊疊合縮圖並輸出為 TIFF
 
     Args:
         output_dir: 輸出目錄
-        level: 金字塔層級 (0=最高解析度)
+        level: 金字塔層級 (0=最高解析度，數字越大解析度越低)
+        non_rigid: 是否使用非剛性變換
     """
-    # 初始化 JVM
     try:
         slide_io.init_jvm()
     except:
         pass
     
-    # 載入變換參數
     pickle_path = output_dir / "Transform_Params" / "data" / "Transform_Params_registrar.pickle"
     registrar = registration.load_registrar(str(pickle_path))
 
     ref_slide = registrar.get_ref_slide()
     print(f"使用金字塔 level {level}, 尺寸: {ref_slide.slide_dimensions_wh[level]}")
+    print(f"非剛性變換: {'啟用' if non_rigid else '停用'}")
 
-    # 產生三張對齊後縮圖
-    print("產生對齊後縮圖...")
-    slide_names = sorted(registrar.slide_dict.keys())
-    thumbs = {}
-
-    for name in slide_names:
-        slide_obj = registrar.slide_dict[name]
-        print(f"  處理 {name}...")
-        thumb = slide_obj.warp_slide(
-            level=level,
-            non_rigid=True,
-            crop=True
-        )
-        # 轉換為 numpy
-        if hasattr(thumb, 'height'):
-            from valis import warp_tools
-            thumb = warp_tools.vips2numpy(thumb)
-        thumbs[name] = thumb
-
-    dish_thumb = thumbs['DISH_40X_2']
-    her2_thumb = thumbs['HER2_40X']
-    print(f"縮圖尺寸: {dish_thumb.shape}")
-
-    # 合併為 RGB (RGB=Her2, RGB=DISH)
+    # 手動對齊兩張影像並合併
+    print("生成對齊疊合圖...")
+    dish_obj = registrar.slide_dict['DISH_40X_2']
+    her2_obj = registrar.slide_dict['HER2_40X']
+    
+    dish_thumb = dish_obj.warp_slide(level=level, non_rigid=non_rigid, crop=True)
+    if hasattr(dish_thumb, 'height'):
+        from valis import warp_tools
+        dish_thumb = warp_tools.vips2numpy(dish_thumb)
+    
+    her2_thumb = her2_obj.warp_slide(level=level, non_rigid=non_rigid, crop=True)
+    if hasattr(her2_thumb, 'height'):
+        from valis import warp_tools
+        her2_thumb = warp_tools.vips2numpy(her2_thumb)
+    
     merged = (her2_thumb.astype(np.float32) + dish_thumb.astype(np.float32)) / 2
     merged = np.clip(merged, 0, 255).astype(np.uint8)
-
-    # 儲存
-    merged_img = Image.fromarray(merged)
-    merged_img.save(output_dir / "Merged_DISH_Her2.png")
-    print(f"已儲存: Merged_DISH_Her2.png (Her2 + DISH 平均疊合)")
     
-    # 也儲存單獨的縮圖
-    Image.fromarray(dish_thumb.astype(np.uint8)).save(output_dir / "DISH_thumbnail.png")
-    Image.fromarray(her2_thumb.astype(np.uint8)).save(output_dir / "Her2_thumbnail.png")
-    print("已儲存單獨縮圖")
+    output_path = output_dir / f"Merged_Aligned_lv{level}.tiff"
+    Image.fromarray(merged).save(str(output_path), compression="tiff_deflate")
+    
+    print(f"已儲存: {output_path.name}")
     
 
 if __name__ == "__main__":
     output_dir = Path(r"E:\Class\tsgh\thriple_image_layer\output")
     try:
-        generate_thumbnail(output_dir, level=4)
+        generate_thumbnail(output_dir, level=3, non_rigid=True)
     finally:
-        # 清理 JVM
         try:
             slide_io.kill_jvm()
         except:

@@ -5,7 +5,7 @@ from valis import registration
 def align_images(
     czi_dir: Path,
     output_dir: Path,
-    scale_factor: int = 32
+    reference_img_name: str = "HE_40X.czi"
 ):
     """
     Module 2: 執行影像對準並儲存變換參數
@@ -13,18 +13,20 @@ def align_images(
     Args:
         czi_dir: CZI 檔案目錄
         output_dir: 輸出目錄
-        scale_factor: 縮放因子
+        reference_img_name: 參考影像檔名 (HE 染色圖)
     
     Returns:
         registrar: VALIS 對準器物件
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # 初始化 VALIS
+    # 初始化 VALIS (自動選擇對位演算法)
     registrar = registration.Valis(
         src_dir=str(czi_dir),
         dst_dir=str(output_dir),
-        name="Transform_Params"
+        name="Transform_Params",
+        reference_img_f=reference_img_name,
+        align_to_reference=True
     )
     
     # 執行對準
