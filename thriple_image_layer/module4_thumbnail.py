@@ -47,8 +47,7 @@ def generate_thumbnail(
         non_rigid=non_rigid,
         crop=True,
         compression='deflate',
-        pyramid=True,
-        interp_method='linear'
+        pyramid=True
     )
 
     print("對齊並儲存 HER2 影像...")
@@ -58,8 +57,7 @@ def generate_thumbnail(
         non_rigid=non_rigid,
         crop=True,
         compression='deflate',
-        pyramid=True,
-        interp_method='linear'
+        pyramid=True
     )
 
     # 使用 pyvips 讀取並合併（串流處理，不會一次載入全部記憶體）
