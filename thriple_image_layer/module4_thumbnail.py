@@ -1,7 +1,6 @@
 """Module 4: Full Merged Image Thumbnail"""
 from pathlib import Path
-import numpy as np
-from PIL import Image
+import pyvips
 from valis import registration, slide_io
 
 def generate_thumbnail(
@@ -21,7 +20,7 @@ def generate_thumbnail(
         slide_io.init_jvm()
     except:
         pass
-    
+
     pickle_path = output_dir / "Transform_Params" / "data" / "Transform_Params_registrar.pickle"
     registrar = registration.load_registrar(str(pickle_path))
 
@@ -33,30 +32,62 @@ def generate_thumbnail(
     print("生成對齊疊合圖...")
     dish_obj = registrar.slide_dict['DISH_40X_2']
     her2_obj = registrar.slide_dict['HER2_40X']
-    
-    dish_thumb = dish_obj.warp_slide(level=level, non_rigid=non_rigid, crop=True)
-    if hasattr(dish_thumb, 'height'):
-        from valis import warp_tools
-        dish_thumb = warp_tools.vips2numpy(dish_thumb)
-    
-    her2_thumb = her2_obj.warp_slide(level=level, non_rigid=non_rigid, crop=True)
-    if hasattr(her2_thumb, 'height'):
-        from valis import warp_tools
-        her2_thumb = warp_tools.vips2numpy(her2_thumb)
-    
-    merged = (her2_thumb.astype(np.float32) + dish_thumb.astype(np.float32)) / 2
-    merged = np.clip(merged, 0, 255).astype(np.uint8)
-    
+
+    # 使用 warp_and_save_slide 直接儲存到暫存檔案，避免大型陣列佔用記憶體
+    temp_dir = output_dir / "temp"
+    temp_dir.mkdir(exist_ok=True)
+
+    dish_temp = temp_dir / f"dish_warped_lv{level}.tiff"
+    her2_temp = temp_dir / f"her2_warped_lv{level}.tiff"
+
+    print("對齊並儲存 DISH 影像...")
+    dish_obj.warp_and_save_slide(
+        str(dish_temp),
+        level=level,
+        non_rigid=non_rigid,
+        crop=True,
+        compression='deflate',
+        pyramid=True,
+        interp_method='linear'
+    )
+
+    print("對齊並儲存 HER2 影像...")
+    her2_obj.warp_and_save_slide(
+        str(her2_temp),
+        level=level,
+        non_rigid=non_rigid,
+        crop=True,
+        compression='deflate',
+        pyramid=True,
+        interp_method='linear'
+    )
+
+    # 使用 pyvips 讀取並合併（串流處理，不會一次載入全部記憶體）
+    print("合併影像中...")
+    dish_vips = pyvips.Image.new_from_file(str(dish_temp), access='sequential')
+    her2_vips = pyvips.Image.new_from_file(str(her2_temp), access='sequential')
+
+    merged = (dish_vips.cast('float') + her2_vips.cast('float')) / 2
+    merged = merged.cast('uchar')
+
+    # 儲存為 TIFF
     output_path = output_dir / f"Merged_Aligned_lv{level}.tiff"
-    Image.fromarray(merged).save(str(output_path), compression="tiff_deflate")
-    
+    print("儲存合併影像...")
+    merged.write_to_file(str(output_path), compression='deflate', tile=True,
+                         tile_width=256, tile_height=256, pyramid=True)
+
+    # 清理暫存檔案
+    print("清理暫存檔案...")
+    dish_temp.unlink(missing_ok=True)
+    her2_temp.unlink(missing_ok=True)
+
     print(f"已儲存: {output_path.name}")
-    
+
 
 if __name__ == "__main__":
     output_dir = Path(r"E:\Class\tsgh\thriple_image_layer\output")
     try:
-        generate_thumbnail(output_dir, level=3, non_rigid=True)
+        generate_thumbnail(output_dir, level=2, non_rigid=False)
     finally:
         try:
             slide_io.kill_jvm()
