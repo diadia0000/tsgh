@@ -73,16 +73,8 @@ def generate_aligned_tiles(
     print(f"  HER2: {her2_dims[0]} x {her2_dims[1]} 像素")
     print(f"Level {level} 對齊後工作區域 (W x H): {width_lv_n} x {height_lv_n} 像素")
 
-    # --- 步驟 1: 讀取指定 level 的完整影像 ---
-    print(f"\n--- 讀取 Level {level} 的完整影像 ---")
-    dish_img_full = dish_obj.slide2image(level=level)
-    her2_img_full = her2_obj.slide2image(level=level)
-    print(f"DISH Level {level} 影像尺寸: {dish_img_full.shape}")
-    print(f"HER2 Level {level} 影像尺寸: {her2_img_full.shape}")
-
-    # --- 步驟 2: 使用 warp_img() 配合 crop 參數迭代裁切並對齊 Tile ---
-    # 這個方法會在對齊後的座標空間中指定區域，只對該區域進行變換
-    print(f"\n--- 開始使用 warp_img(crop=...) 方法處理指定區域 ---")
+    # --- 使用 slide2image(xywh=...) 直接切割區域 ---
+    print(f"\n--- 開始使用 slide2image(xywh=...) 方法處理指定區域 ---")
 
     tile_count = 0
 
@@ -99,23 +91,24 @@ def generate_aligned_tiles(
             tile_count += 1
             print(f"處理 Tile #{tile_count}: ({x}, {y}, {w}x{h})...")
 
-            # 使用 warp_img() 配合 crop 參數，只對指定區域進行對齊
-            # crop 參數格式: (x_start, y_start, width, height)
-            # 這會從原始影像中讀取對應區域，然後只對該區域應用變換
+            # 使用 slide2image(xywh=...) 直接切割區域
+            # xywh 參數格式: (top_left_x, top_left_y, width, height)
             try:
-                # 對指定區域進行對齊變換
+                # 直接從原始影像切割指定區域
+                dish_tile_img = dish_obj.slide2image(level=level, xywh=(x, y, w, h))
+                her2_tile_img = her2_obj.slide2image(level=level, xywh=(x, y, w, h))
+
+                # 對切割後的區域進行對齊變換
                 dish_tile = dish_obj.warp_img(
-                    img=dish_img_full,
-                    non_rigid=non_rigid,
-                    crop=(x, y, w, h)
+                    img=dish_tile_img,
+                    non_rigid=non_rigid
                 )
                 her2_tile = her2_obj.warp_img(
-                    img=her2_img_full,
-                    non_rigid=non_rigid,
-                    crop=(x, y, w, h)
+                    img=her2_tile_img,
+                    non_rigid=non_rigid
                 )
 
-                # 轉換為 pyvips.Image (如果是 numpy array)
+                # 轉換為 pyvips.Image
                 if not isinstance(dish_tile, pyvips.Image):
                     dish_tile = warp_tools.numpy2vips(dish_tile)
                 if not isinstance(her2_tile, pyvips.Image):
