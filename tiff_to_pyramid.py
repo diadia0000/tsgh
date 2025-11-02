@@ -21,7 +21,7 @@ def create_pyramid_tiff(input_path, output_path, tile_size=256, compression='jpe
         tile_size (int): 瓷磚大小（預設 256）
         compression (str): 壓縮方式 ('jpeg', 'lzw', 'deflate', 'none')
         quality (int): JPEG 壓縮質量 (1-100)
-        depth (str): 金字塔深度 ('onepixel', 'onetile') 或指定層數
+        depth (str/int): 金字塔深度 ('onepixel', 'onetile') 或指定層數
     """
 
     print(f"讀取圖像: {input_path}")
@@ -53,24 +53,28 @@ def create_pyramid_tiff(input_path, output_path, tile_size=256, compression='jpe
     vips_compression = compression_map.get(compression, pyvips.ForeignTiffCompression.JPEG)
 
     # 計算金字塔層數
+    import math
+    use_subifd = False
+    
     if depth == 'onepixel':
-        # 計算到最小邊為 1 像素
-        import math
+        depth_mode = 'onepixel'
         min_dim = min(image.width, image.height)
-        depth_value = math.ceil(math.log2(min_dim))
-        print(f"金字塔深度: {depth_value} 層 (直到 1 像素)")
+        calc_layers = math.ceil(math.log2(min_dim))
+        print(f"金字塔深度: {calc_layers} 層 (直到 1 像素)")
     elif depth == 'onetile':
-        # 計算到最小邊為一個瓷磚
-        import math
+        depth_mode = 'onetile'
         min_dim = min(image.width, image.height)
-        depth_value = max(0, math.ceil(math.log2(min_dim / tile_size)))
-        print(f"金字塔深度: {depth_value} 層 (直到一個瓷磚)")
+        calc_layers = max(0, math.ceil(math.log2(min_dim / tile_size)))
+        print(f"金字塔深度: {calc_layers} 層 (直到一個瓷磚)")
     else:
         try:
-            depth_value = int(depth)
-            print(f"金字塔深度: {depth_value} 層 (自訂)")
+            subifd_layers = int(depth)
+            use_subifd = True
+            depth_mode = None
+            print(f"金字塔深度: {subifd_layers} 層 (自訂)")
         except:
-            depth_value = 'onepixel'
+            depth_mode = 'onepixel'
+            use_subifd = False
             print(f"金字塔深度: 自動 (直到 1 像素)")
 
     print(f"\n開始生成金字塔 TIFF...")
@@ -87,14 +91,33 @@ def create_pyramid_tiff(input_path, output_path, tile_size=256, compression='jpe
             'tile_width': tile_size,
             'tile_height': tile_size,
             'pyramid': True,
-            'bigtiff': True,
-            'depth': depth_value if isinstance(depth_value, int) else depth
+            'bigtiff': True
         }
+        
+        if use_subifd:
+            save_options['subifd'] = True
+            # 建立金字塔層級
+            pyramid_layers = [image]
+            for i in range(subifd_layers - 1):
+                prev = pyramid_layers[-1]
+                next_layer = prev.shrink(2, 2)
+                pyramid_layers.append(next_layer)
+            
+            # 設定 subifd 頁面
+            if len(pyramid_layers) > 1:
+                save_options['page_height'] = image.height
+        else:
+            save_options['depth'] = depth_mode
 
         if compression == 'jpeg':
             save_options['Q'] = quality
 
-        image.write_to_file(output_path, **save_options)
+        if use_subifd and len(pyramid_layers) > 1:
+            # 使用 arrayjoin 合併所有層級
+            combined = pyvips.Image.arrayjoin(pyramid_layers, across=1)
+            combined.write_to_file(output_path, **save_options)
+        else:
+            image.write_to_file(output_path, **save_options)
 
         print(f"\n✓ 完成！金字塔 TIFF 已保存")
 

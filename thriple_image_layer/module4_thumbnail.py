@@ -52,7 +52,8 @@ def generate_thumbnail(
             level=level,
             non_rigid=non_rigid,
             crop=True,
-            compression='deflate'
+            compression='deflate',
+            tile_wh=4096
         )
 
     # 檢查 HER2 暫存檔案是否存在
@@ -66,14 +67,15 @@ def generate_thumbnail(
             level=level,
             non_rigid=non_rigid,
             crop=True,
-            compression='deflate'
+            compression='deflate',
+            tile_wh=4096
         )
     # 使用 pyvips 讀取並合併（串流處理，不會一次載入全部記憶體）
     print("合併影像中...")
     dish_vips = pyvips.Image.new_from_file(str(dish_temp_ome), access='sequential')
     her2_vips = pyvips.Image.new_from_file(str(her2_temp_ome), access='sequential')
     # 相當於 (0.5 * dish + 0.5 * her2)
-    merged = pyvips.Image.linear([dish_vips, her2_vips], [0.5, 0.5], 0)
+    merged = (dish_vips * 0.5 + her2_vips * 0.5)
     output_path = output_dir / f"Merged_Aligned_lv{level}.tiff"
     merged = merged.cast('uchar')
     print("儲存合併影像...")
@@ -99,7 +101,7 @@ def generate_thumbnail(
 if __name__ == "__main__":
     output_dir = Path(r"E:\Class\tsgh\thriple_image_layer\output")
     try:
-        generate_thumbnail(output_dir, level=5, non_rigid=True)
+        generate_thumbnail(output_dir, level=2, non_rigid=True)
     finally:
         try:
             slide_io.kill_jvm()
