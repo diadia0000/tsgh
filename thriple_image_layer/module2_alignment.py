@@ -1,11 +1,14 @@
 """Module 2: Alignment Pipeline"""
 from pathlib import Path
-from valis import registration
+
+import torch
+from valis import registration, feature_detectors, feature_matcher
+
 
 def align_images(
     czi_dir: Path,
     output_dir: Path,
-    reference_img_name: str = "HE_40X.czi"
+    reference_img_name: str = "HER2_40X.czi"
 ):
     """
     Module 2: 執行影像對準並儲存變換參數
@@ -13,20 +16,40 @@ def align_images(
     Args:
         czi_dir: CZI 檔案目錄
         output_dir: 輸出目錄
-        reference_img_name: 參考影像檔名 (HE 染色圖)
+        reference_img_name: 參考影像檔名 (HER2 染色圖)
     
     Returns:
         registrar: VALIS 對準器物件
     """
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if device == 'cpu':
+        print("警告：找不到 CUDA 裝置，將繼續使用 CPU。")
+    else:
+        print(f"使用裝置：{device}")
+    # 2. 建立一個特徵「偵測器」
+    # LightGlue 推薦搭配 DISK 或 SuperPoint。valis 預設使用 DISK。
+    # 您也可以在這裡指定 device，因為偵測器也需要在 GPU 上運行
+    fd = feature_detectors.DiskFD(num_features=2048, device=device)
+
+    # 3. 建立「匹配器」(LightGlueMatcher)
+    #    在這裡傳入您想要的 device，以及剛剛建立的偵測器
+    #    valis 的 LightGlueMatcher 會把 'device' 參數傳給底層的 kornia 模型
+    matcher = feature_matcher.LightGlueMatcher(
+        fd,  # 告訴 LightGlue 它要搭配哪個偵測器
+        device=device  # <--- 這才是指定 GPU 的關鍵參數！
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
-    
     # 初始化 VALIS (自動選擇對位演算法)
     registrar = registration.Valis(
         src_dir=str(czi_dir),
         dst_dir=str(output_dir),
         name="Transform_Params",
         reference_img_f=reference_img_name,
-        align_to_reference=True
+        align_to_reference=True,
+        max_processed_image_dim_px=2048,
+        max_non_rigid_registration_dim_px=2048,
+        max_image_dim_px=2048,
+        matcher=matcher
     )
     
     # 執行對準

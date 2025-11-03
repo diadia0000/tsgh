@@ -37,7 +37,7 @@ def main():
     # Module 3: Thumbnail
     print("\n[Module 3] 產生全局縮圖...")
     try:
-        generate_thumbnail(output_dir, level=4)
+        generate_thumbnail(output_dir, level=5)
         print("✓ Module 3 完成")
     except Exception as e:
         print(f"✗ Module 3 失敗: {e}")

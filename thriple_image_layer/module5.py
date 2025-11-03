@@ -73,12 +73,13 @@ def generate_aligned_tiles(
     print(f"  HER2: {her2_dims[0]} x {her2_dims[1]} 像素")
     print(f"Level {level} 對齊後工作區域 (W x H): {width_lv_n} x {height_lv_n} 像素")
 
-    # --- 使用 slide2image(xywh=...) 直接切割區域 ---
-    print(f"\n--- 開始使用 slide2image(xywh=...) 方法處理指定區域 ---")
+    # --- 使用黑色填充處理邊界 tile ---
+    print(f"\n--- 開始處理 Tiles（超出範圍使用黑色填充）---")
 
     tile_count = 0
+    import numpy as np
 
-    # x, y 座標是 Level N 上的對齊後座標空間
+    # 遍歷對齊後的座標空間
     for y in range(0, height_lv_n, tile_wh):
         for x in range(0, width_lv_n, tile_wh):
             # 計算當前 Tile 的實際寬高
@@ -91,21 +92,65 @@ def generate_aligned_tiles(
             tile_count += 1
             print(f"處理 Tile #{tile_count}: ({x}, {y}, {w}x{h})...")
 
-            # 使用 slide2image(xywh=...) 直接切割區域
-            # xywh 參數格式: (top_left_x, top_left_y, width, height)
             try:
-                # 直接從原始影像切割指定區域
-                dish_tile_img = dish_obj.slide2image(level=level, xywh=(x, y, w, h))
-                her2_tile_img = her2_obj.slide2image(level=level, xywh=(x, y, w, h))
+                # === 處理 DISH ===
+                # 計算實際可讀取的區域
+                dish_read_x = min(x, dish_dims[0] - 1) if x < dish_dims[0] else dish_dims[0] - 1
+                dish_read_y = min(y, dish_dims[1] - 1) if y < dish_dims[1] else dish_dims[1] - 1
+                dish_read_w = min(w, dish_dims[0] - dish_read_x) if dish_read_x < dish_dims[0] else 0
+                dish_read_h = min(h, dish_dims[1] - dish_read_y) if dish_read_y < dish_dims[1] else 0
+                
+                # 如果完全超出範圍，創建黑色影像
+                if dish_read_w <= 0 or dish_read_h <= 0 or x >= dish_dims[0] or y >= dish_dims[1]:
+                    # 先讀取一小塊來判斷通道數
+                    sample = dish_obj.slide2image(level=level, xywh=(0, 0, 1, 1))
+                    if sample.ndim == 3:
+                        dish_tile_img = np.zeros((h, w, sample.shape[2]), dtype=np.uint8)
+                    else:
+                        dish_tile_img = np.zeros((h, w), dtype=np.uint8)
+                else:
+                    # 讀取有效區域
+                    dish_partial = dish_obj.slide2image(level=level, xywh=(dish_read_x, dish_read_y, dish_read_w, dish_read_h))
+                    # 根據讀取的影像創建對應通道數的黑色影像
+                    if dish_partial.ndim == 3:
+                        dish_tile_img = np.zeros((h, w, dish_partial.shape[2]), dtype=np.uint8)
+                    else:
+                        dish_tile_img = np.zeros((h, w), dtype=np.uint8)
+                    # 將讀取的部分放入正確位置
+                    offset_x = dish_read_x - x
+                    offset_y = dish_read_y - y
+                    dish_tile_img[offset_y:offset_y+dish_read_h, offset_x:offset_x+dish_read_w] = dish_partial
+                
+                # === 處理 HER2 ===
+                her2_read_x = min(x, her2_dims[0] - 1) if x < her2_dims[0] else her2_dims[0] - 1
+                her2_read_y = min(y, her2_dims[1] - 1) if y < her2_dims[1] else her2_dims[1] - 1
+                her2_read_w = min(w, her2_dims[0] - her2_read_x) if her2_read_x < her2_dims[0] else 0
+                her2_read_h = min(h, her2_dims[1] - her2_read_y) if her2_read_y < her2_dims[1] else 0
+                
+                if her2_read_w <= 0 or her2_read_h <= 0 or x >= her2_dims[0] or y >= her2_dims[1]:
+                    sample = her2_obj.slide2image(level=level, xywh=(0, 0, 1, 1))
+                    if sample.ndim == 3:
+                        her2_tile_img = np.zeros((h, w, sample.shape[2]), dtype=np.uint8)
+                    else:
+                        her2_tile_img = np.zeros((h, w), dtype=np.uint8)
+                else:
+                    her2_partial = her2_obj.slide2image(level=level, xywh=(her2_read_x, her2_read_y, her2_read_w, her2_read_h))
+                    if her2_partial.ndim == 3:
+                        her2_tile_img = np.zeros((h, w, her2_partial.shape[2]), dtype=np.uint8)
+                    else:
+                        her2_tile_img = np.zeros((h, w), dtype=np.uint8)
+                    offset_x = her2_read_x - x
+                    offset_y = her2_read_y - y
+                    her2_tile_img[offset_y:offset_y+her2_read_h, offset_x:offset_x+her2_read_w] = her2_partial
 
                 # 對切割後的區域進行對齊變換
                 dish_tile = dish_obj.warp_img(
                     img=dish_tile_img,
-                    non_rigid=non_rigid
+                    non_rigid=non_rigid,
                 )
                 her2_tile = her2_obj.warp_img(
                     img=her2_tile_img,
-                    non_rigid=non_rigid
+                    non_rigid=non_rigid,
                 )
 
                 # 轉換為 pyvips.Image
@@ -132,7 +177,8 @@ def generate_aligned_tiles(
             )
 
     print(f"\n--- Tile 生成完成 ---")
-    print(f"總共生成 {tile_count} 個 Tile，儲存於: {tiles_output_dir}")
+    print(f"總共生成 {tile_count} 個 Tile（超出範圍的區域已用黑色填充）")
+    print(f"儲存於: {tiles_output_dir}")
 
 
 if __name__ == "__main__":
@@ -142,7 +188,7 @@ if __name__ == "__main__":
 
     # --- 驗證層級建議 ---
     # Level 2 適用於高解析度驗證。若記憶體不足，請嘗試 Level 3 或 Level 4。
-    validation_level = 2
+    validation_level = 5
 
     try:
         generate_aligned_tiles(output_dir, level=validation_level, non_rigid=True)

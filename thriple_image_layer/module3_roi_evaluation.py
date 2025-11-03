@@ -80,7 +80,7 @@ def evaluate_roi(
     he_gray = color.rgb2gray(he_roi)
     her2_gray = color.rgb2gray(her2_roi)
     
-    ncc_dish_he = np.corrcoef(he_gray.ravel(), dish_gray.ravel())[0, 1]
+    ncc_dish_her2 = np.corrcoef(her2_gray.ravel(), dish_gray.ravel())[0, 1]
     ncc_her2_he = np.corrcoef(he_gray.ravel(), her2_gray.ravel())[0, 1]
     
     # 將灰階值轉為離散bins計算MI
@@ -88,14 +88,14 @@ def evaluate_roi(
     he_bins = (he_gray * 255).astype(int)
     her2_bins = (her2_gray * 255).astype(int)
     
-    mi_dish_he = mutual_info_score(he_bins.ravel(), dish_bins.ravel())
+    mi_dish_her2 = mutual_info_score(her2_bins.ravel(), dish_bins.ravel())
     mi_her2_he = mutual_info_score(he_bins.ravel(), her2_bins.ravel())
     
     # 輸出指標報告
     df = pd.DataFrame({
-        'Comparison': ['DISH vs HE', 'Her2 vs HE'],
-        'NCC_Score': [ncc_dish_he, ncc_her2_he],
-        'MI_Score': [mi_dish_he, mi_her2_he]
+        'Comparison': ['DISH vs Her2', 'Her2 vs HE'],
+        'NCC_Score': [ncc_dish_her2, ncc_her2_he],
+        'MI_Score': [mi_dish_her2, mi_her2_he]
     })
     
     csv_path = output_dir / "Metrics.csv"
