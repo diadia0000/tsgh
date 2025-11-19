@@ -9,8 +9,8 @@ from module4_thumbnail import generate_thumbnail
 
 def main():
     """執行完整的三模組流程"""
-    czi_dir = Path(r"E:\Class\tsgh\picture\whole_size\40X")
-    output_dir = Path(r"E:\Class\tsgh\thriple_image_layer\output")
+    czi_dir = Path(r"H:\tsgh\picture\whole_size\40X")
+    output_dir = Path(r"H:\tsgh\thriple_image_layer\output")
     
     print("="*60)
     print("開始執行完整流程")
@@ -37,7 +37,7 @@ def main():
     # Module 3: Thumbnail
     print("\n[Module 3] 產生全局縮圖...")
     try:
-        generate_thumbnail(output_dir, level=5)
+        generate_thumbnail(output_dir, level=4)
         print("✓ Module 3 完成")
     except Exception as e:
         print(f"✗ Module 3 失敗: {e}")

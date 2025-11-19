@@ -1,200 +1,418 @@
+"""
+Module 5: GPU-Accelerated Full Resolution Image Warping
+
+This module uses the custom GPUWarpEngine to warp registered images at full
+resolution (Level 0) or any specified pyramid level, processing tiles
+on-the-fly to avoid memory issues.
+
+Key Features:
+- Tile-based processing for gigapixel images
+- GPU acceleration with PyTorch
+- Support for multi-channel merging (DISH + HER2)
+- Efficient inverse mapping without loading full images
+
+Author: AI Assistant
+Date: 2025-05-19
+"""
+
 from pathlib import Path
-from valis import registration, slide_io, warp_tools
-import pyvips
 
-# 2048x2048 像素
-TILE_WH = 2048
+from typing import List, Optional
+import numpy as np
+import torch
+import tifffile
+from tqdm import tqdm
+
+from gpu_warp_engine import GPUWarpEngine
 
 
-def generate_aligned_tiles(
-        output_dir: Path,
-        level: int = 2,  # 預設使用 Level 2 (比 Level 0/1 記憶體消耗少得多)
-        non_rigid: bool = True,
-        tile_wh: int = TILE_WH
-) -> None:
+def warp_and_merge_slides(
+    registrar_path: Path,
+    output_dir: Path,
+    slides_to_warp: List[str],
+    level: int = 2,
+    tile_size: int = 2048,
+    merge: bool = True,
+    compression: str = 'jpeg',
+    quality: int = 90
+):
     """
-    根據 VALIS 註冊結果，將對齊後的 DISH 和 HER2 影像切割成
-    指定大小 (預設 2048x2048) 的 Tile，並儲存到輸出目錄。
-
-    此方法會先將 Level N 的整張 Slide 對齊並載入 pyvips 影像物件，
-    請注意 Level 0 或 Level 1 解析度極高，可能導致記憶體不足 (OOM)。
-    建議使用 Level 2 (約 400x) 進行驗證。
+    Warp multiple slides and optionally merge them into a single RGB image.
 
     Args:
-        output_dir: 輸出目錄。會在此目錄下建立一個 'aligned_tiles_lvX' 子目錄。
-        level: 金字塔層級 (0=最高解析度，數字越大解析度越低)。
-        non_rigid: 是否使用非剛性變換。
-        tile_wh: 輸出 Tile 的邊長（像素）。
+        registrar_path: Path to valis registrar pickle file
+        output_dir: Output directory for warped images
+        slides_to_warp: List of slide names to warp (e.g., ['DISH_40X_2.czi', 'HER2_40X.czi'])
+        level: Pyramid level to process (0=full resolution, 1=half, 2=quarter, etc.)
+        tile_size: Size of tiles for processing
+        merge: Whether to merge warped slides into a single RGB image
+        compression: TIFF compression method
+        quality: Compression quality
     """
-    try:
-        # VALIS 需要 JVM 初始化
-        slide_io.init_jvm()
-    except Exception as e:
-        print(f"VALIS/JVM 初始化失敗: {e}")
-        return
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    pickle_path = output_dir / "Transform_Params" / "data" / "Transform_Params_registrar.pickle"
-    if not pickle_path.exists():
-        print(f"錯誤: 找不到 Registrar 檔案: {pickle_path}")
-        slide_io.kill_jvm()
-        return
+    print("\n" + "="*70)
+    print("MODULE 5: GPU-ACCELERATED IMAGE WARPING")
+    print("="*70)
+    print(f"  Registrar: {registrar_path}")
+    print(f"  Slides to warp: {slides_to_warp}")
+    print(f"  Output level: {level}")
+    print(f"  Tile size: {tile_size}")
+    print(f"  Merge slides: {merge}")
+    print("="*70 + "\n")
 
-    # 載入註冊結果
-    registrar = registration.load_registrar(str(pickle_path))
+    warped_images = {}
 
-    # 設置輸出目錄
-    tiles_output_dir = output_dir / f"aligned_tiles_lv{level}_wh{tile_wh}"
-    tiles_output_dir.mkdir(parents=True, exist_ok=True)
+    # Step 1: Warp each slide individually
+    for slide_name in slides_to_warp:
+        print(f"\n{'─'*70}")
+        print(f"Processing: {slide_name}")
+        print(f"{'─'*70}\n")
 
-    print(f"Tile 輸出目錄: {tiles_output_dir}")
-    print(f"Tile 尺寸: {tile_wh}x{tile_wh} 像素, Level: {level}")
-    print(f"非剛性變換: {'啟用' if non_rigid else '停用'}")
-
-    try:
-        # 取得需要對齊的 Slide 物件
-        dish_obj = registrar.slide_dict['DISH_40X_2']
-        her2_obj = registrar.slide_dict['HER2_40X']
-    except KeyError:
-        print("錯誤: 找不到 DISH_40X_2 或 HER2_40X 投影片物件。請檢查註冊時使用的名稱是否正確。")
-        slide_io.kill_jvm()
-        return
-
-    # 取得指定 level 的原始影像尺寸
-    # slide_dimensions_wh 格式: [[w0, h0], [w1, h1], ...]
-    dish_dims = dish_obj.slide_dimensions_wh[level]
-    her2_dims = her2_obj.slide_dimensions_wh[level]
-
-    # 使用較大的尺寸作為對齊後的工作區域
-    width_lv_n = max(dish_dims[0], her2_dims[0])
-    height_lv_n = max(dish_dims[1], her2_dims[1])
-
-    print(f"Level {level} 原始影像尺寸:")
-    print(f"  DISH: {dish_dims[0]} x {dish_dims[1]} 像素")
-    print(f"  HER2: {her2_dims[0]} x {her2_dims[1]} 像素")
-    print(f"Level {level} 對齊後工作區域 (W x H): {width_lv_n} x {height_lv_n} 像素")
-
-    # --- 使用黑色填充處理邊界 tile ---
-    print(f"\n--- 開始處理 Tiles（超出範圍使用黑色填充）---")
-
-    tile_count = 0
-    import numpy as np
-
-    # 遍歷對齊後的座標空間
-    for y in range(0, height_lv_n, tile_wh):
-        for x in range(0, width_lv_n, tile_wh):
-            # 計算當前 Tile 的實際寬高
-            w = min(tile_wh, width_lv_n - x)
-            h = min(tile_wh, height_lv_n - y)
-
-            if w <= 0 or h <= 0:
-                continue
-
-            tile_count += 1
-            print(f"處理 Tile #{tile_count}: ({x}, {y}, {w}x{h})...")
-
-            try:
-                # === 處理 DISH ===
-                # 計算實際可讀取的區域
-                dish_read_x = min(x, dish_dims[0] - 1) if x < dish_dims[0] else dish_dims[0] - 1
-                dish_read_y = min(y, dish_dims[1] - 1) if y < dish_dims[1] else dish_dims[1] - 1
-                dish_read_w = min(w, dish_dims[0] - dish_read_x) if dish_read_x < dish_dims[0] else 0
-                dish_read_h = min(h, dish_dims[1] - dish_read_y) if dish_read_y < dish_dims[1] else 0
-                
-                # 如果完全超出範圍，創建黑色影像
-                if dish_read_w <= 0 or dish_read_h <= 0 or x >= dish_dims[0] or y >= dish_dims[1]:
-                    # 先讀取一小塊來判斷通道數
-                    sample = dish_obj.slide2image(level=level, xywh=(0, 0, 1, 1))
-                    if sample.ndim == 3:
-                        dish_tile_img = np.zeros((h, w, sample.shape[2]), dtype=np.uint8)
-                    else:
-                        dish_tile_img = np.zeros((h, w), dtype=np.uint8)
-                else:
-                    # 讀取有效區域
-                    dish_partial = dish_obj.slide2image(level=level, xywh=(dish_read_x, dish_read_y, dish_read_w, dish_read_h))
-                    # 根據讀取的影像創建對應通道數的黑色影像
-                    if dish_partial.ndim == 3:
-                        dish_tile_img = np.zeros((h, w, dish_partial.shape[2]), dtype=np.uint8)
-                    else:
-                        dish_tile_img = np.zeros((h, w), dtype=np.uint8)
-                    # 將讀取的部分放入正確位置
-                    offset_x = dish_read_x - x
-                    offset_y = dish_read_y - y
-                    dish_tile_img[offset_y:offset_y+dish_read_h, offset_x:offset_x+dish_read_w] = dish_partial
-                
-                # === 處理 HER2 ===
-                her2_read_x = min(x, her2_dims[0] - 1) if x < her2_dims[0] else her2_dims[0] - 1
-                her2_read_y = min(y, her2_dims[1] - 1) if y < her2_dims[1] else her2_dims[1] - 1
-                her2_read_w = min(w, her2_dims[0] - her2_read_x) if her2_read_x < her2_dims[0] else 0
-                her2_read_h = min(h, her2_dims[1] - her2_read_y) if her2_read_y < her2_dims[1] else 0
-                
-                if her2_read_w <= 0 or her2_read_h <= 0 or x >= her2_dims[0] or y >= her2_dims[1]:
-                    sample = her2_obj.slide2image(level=level, xywh=(0, 0, 1, 1))
-                    if sample.ndim == 3:
-                        her2_tile_img = np.zeros((h, w, sample.shape[2]), dtype=np.uint8)
-                    else:
-                        her2_tile_img = np.zeros((h, w), dtype=np.uint8)
-                else:
-                    her2_partial = her2_obj.slide2image(level=level, xywh=(her2_read_x, her2_read_y, her2_read_w, her2_read_h))
-                    if her2_partial.ndim == 3:
-                        her2_tile_img = np.zeros((h, w, her2_partial.shape[2]), dtype=np.uint8)
-                    else:
-                        her2_tile_img = np.zeros((h, w), dtype=np.uint8)
-                    offset_x = her2_read_x - x
-                    offset_y = her2_read_y - y
-                    her2_tile_img[offset_y:offset_y+her2_read_h, offset_x:offset_x+her2_read_w] = her2_partial
-
-                # 對切割後的區域進行對齊變換
-                dish_tile = dish_obj.warp_img(
-                    img=dish_tile_img,
-                    non_rigid=non_rigid,
-                )
-                her2_tile = her2_obj.warp_img(
-                    img=her2_tile_img,
-                    non_rigid=non_rigid,
-                )
-
-                # 轉換為 pyvips.Image
-                if not isinstance(dish_tile, pyvips.Image):
-                    dish_tile = warp_tools.numpy2vips(dish_tile)
-                if not isinstance(her2_tile, pyvips.Image):
-                    her2_tile = warp_tools.numpy2vips(her2_tile)
-
-            except Exception as e:
-                print(f"錯誤: 處理區域 ({x}, {y}, {w}x{h}) 失敗. {e}")
-                continue
-
-            # 合併 Tiles (簡單平均)
-            merged_tile = (dish_tile * 0.5 + her2_tile * 0.5)
-            merged_tile = merged_tile.cast('uchar')
-
-            # 儲存 (使用 deflate 壓縮)
-            tile_filename = f"Merged_Tile_lv{level}_x{x}_y{y}_w{w}_h{h}.tiff"
-            output_path = tiles_output_dir / tile_filename
-
-            merged_tile.write_to_file(
-                str(output_path),
-                compression='deflate'
+        try:
+            # Initialize GPU engine
+            engine = GPUWarpEngine(
+                registrar_path=registrar_path,
+                slide_name=slide_name,
+                device='cuda',
+                use_non_rigid=True
             )
 
-    print(f"\n--- Tile 生成完成 ---")
-    print(f"總共生成 {tile_count} 個 Tile（超出範圍的區域已用黑色填充）")
-    print(f"儲存於: {tiles_output_dir}")
+            # Output path for individual warped image
+            output_path = output_dir / f"{Path(slide_name).stem}_warped_lv{level}.tiff"
+
+            # Warp the slide
+            engine.warp_full_slide(
+                output_path=output_path,
+                level=level,
+                tile_size=tile_size,
+                compression=compression,
+                quality=quality
+            )
+
+            # Store warped image path for tile-by-tile merging
+            if merge:
+                warped_images[slide_name] = output_path  # ✅ Store path instead of loading full image
+
+            print(f"\n✓ Successfully warped: {slide_name}")
+
+        except Exception as e:
+            print(f"\n✗ Error warping {slide_name}: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # Clear GPU cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    # Step 2: Merge warped images if requested (tile-by-tile to avoid OOM)
+    if merge and len(warped_images) > 0:
+        print(f"\n{'─'*70}")
+        print("Merging warped images (tile-by-tile)...")
+        print(f"{'─'*70}\n")
+
+        merge_output = output_dir / f"Merged_Aligned_lv{level}.tiff"
+
+        # Use tile-by-tile merge to avoid loading full images
+        merge_channels_tiled(
+            warped_paths=warped_images,
+            output_path=merge_output,
+            slide_names=slides_to_warp,
+            tile_size=tile_size,
+            compression=compression,
+            quality=quality
+        )
+
+        print(f"✓ Merged image saved: {merge_output}")
+
+    print("\n" + "="*70)
+    print("MODULE 5 COMPLETE")
+    print(f"Results saved to: {output_dir}")
+    print("="*70 + "\n")
+
+
+def merge_channels_tiled(
+    warped_paths: dict,
+    output_path: Path,
+    slide_names: List[str],
+    tile_size: int = 2048,
+    channel_mapping: Optional[dict] = None,
+    compression: str = 'jpeg',
+    quality: int = 90
+) -> None:
+    """
+    Merge multiple warped images into a single RGB image using tile-by-tile processing.
+
+    This avoids loading full gigapixel images into memory, making it suitable for
+    Level 0 (full resolution) processing.
+
+    Args:
+        warped_paths: Dictionary of {slide_name: Path to warped TIFF}
+        output_path: Output path for merged image
+        slide_names: Ordered list of slide names
+        tile_size: Size of tiles for processing
+        channel_mapping: Optional mapping of slide names to RGB channels
+                        Default: First image -> R, Second -> G, Third -> B
+        compression: TIFF compression method
+        quality: Compression quality for JPEG
+    """
+    if not warped_paths:
+        raise ValueError("No warped images to merge")
+
+    # Default channel mapping: assign each image to a different channel
+    if channel_mapping is None:
+        channel_mapping = {}
+        for i, name in enumerate(slide_names[:3]):  # Max 3 channels for RGB
+            channel_mapping[name] = i
+
+    print(f"Merging {len(warped_paths)} images (tile-by-tile):")
+    for slide_name in warped_paths.keys():
+        if slide_name in channel_mapping:
+            channel = channel_mapping[slide_name]
+            print(f"  - {slide_name} -> Channel {channel} ({'RGB'[channel]})")
+
+    # Open all input files (read metadata only)
+    readers = {}
+    for slide_name, path in warped_paths.items():
+        if slide_name in channel_mapping:
+            readers[slide_name] = tifffile.TiffFile(path)
+
+    # Get dimensions from first image
+    first_reader = list(readers.values())[0]
+    first_page = first_reader.pages[0]
+    H, W = first_page.shape[:2]
+
+    print(f"  - Output dimensions: {H} x {W}")
+    print(f"  - Tile size: {tile_size}")
+
+    # Calculate tile grid
+    n_tiles_x = (W + tile_size - 1) // tile_size
+    n_tiles_y = (H + tile_size - 1) // tile_size
+    total_tiles = n_tiles_x * n_tiles_y
+
+    print(f"  - Tile grid: {n_tiles_x} x {n_tiles_y} = {total_tiles} tiles\n")
+
+    # Process tiles with progress bar
+    merged_tiles = []
+
+    with tqdm(total=total_tiles, desc="Merging tiles") as pbar:
+        for ty in range(n_tiles_y):
+            row_tiles = []
+            for tx in range(n_tiles_x):
+                # Calculate tile coordinates
+                x = tx * tile_size
+                y = ty * tile_size
+                tw = min(tile_size, W - x)
+                th = min(tile_size, H - y)
+
+                # Initialize output tile
+                merged_tile = np.zeros((th, tw, 3), dtype=np.uint8)
+
+                # Read from each image and write to corresponding channel
+                for slide_name, reader in readers.items():
+                    if slide_name not in channel_mapping:
+                        continue
+
+                    channel = channel_mapping[slide_name]
+
+                    # Read tile from this image
+                    tile = reader.pages[0].asarray()[y:y+th, x:x+tw]
+
+                    # Convert to grayscale if needed
+                    if tile.ndim == 3 and tile.shape[2] >= 3:
+                        # Average RGB channels
+                        gray = np.mean(tile[:, :, :3], axis=2).astype(np.uint8)
+                    elif tile.ndim == 3:
+                        gray = tile[:, :, 0]
+                    else:
+                        gray = tile
+
+                    # Write to output channel
+                    merged_tile[:, :, channel] = gray
+
+                row_tiles.append(merged_tile)
+                pbar.update(1)
+
+            # Concatenate row
+            row_img = np.concatenate(row_tiles, axis=1)
+            merged_tiles.append(row_img)
+
+    # Concatenate all rows
+    print("\nAssembling final image...")
+    merged_img = np.concatenate(merged_tiles, axis=0)
+
+    # Write output
+    print(f"Writing output to {output_path}...")
+    tifffile.imwrite(
+        output_path,
+        merged_img,
+        compression=compression,
+        compressionargs={'level': quality} if compression == 'jpeg' else None,
+        photometric='rgb',
+        tile=(tile_size, tile_size),
+        metadata={'axes': 'YXC'}
+    )
+
+    # Close all readers
+    for reader in readers.values():
+        reader.close()
+
+    print(f"✓ Merge complete: {merged_img.shape}")
+
+
+def merge_channels(
+    warped_images: dict,
+    slide_names: List[str],
+    channel_mapping: Optional[dict] = None
+) -> np.ndarray:
+    """
+    Merge multiple warped images into a single RGB image (in-memory version).
+
+    ⚠️ WARNING: This function loads entire images into memory.
+    For large images (Level 0-1), use merge_channels_tiled instead.
+
+    Args:
+        warped_images: Dictionary of {slide_name: warped_image_array}
+        slide_names: Ordered list of slide names
+        channel_mapping: Optional mapping of slide names to RGB channels
+                        Default: First image -> R, Second -> G, Third -> B
+
+    Returns:
+        Merged RGB image as numpy array (H, W, 3)
+    """
+    if not warped_images:
+        raise ValueError("No warped images to merge")
+
+    # Get output shape from first image
+    first_img = list(warped_images.values())[0]
+    output_shape = first_img.shape[:2] + (3,)
+    merged = np.zeros(output_shape, dtype=np.uint8)
+
+    # Default channel mapping: assign each image to a different channel
+    if channel_mapping is None:
+        channel_mapping = {}
+        for i, name in enumerate(slide_names[:3]):  # Max 3 channels for RGB
+            channel_mapping[name] = i
+
+    print(f"Merging {len(warped_images)} images:")
+    for slide_name, img in warped_images.items():
+        if slide_name not in channel_mapping:
+            continue
+
+        channel = channel_mapping[slide_name]
+
+        # Convert to grayscale if needed
+        if img.ndim == 3 and img.shape[2] >= 3:
+            # Take first channel or convert to grayscale
+            gray = np.mean(img[:, :, :3], axis=2).astype(np.uint8)
+        elif img.ndim == 3:
+            gray = img[:, :, 0]
+        else:
+            gray = img
+
+        merged[:, :, channel] = gray
+        print(f"  - {slide_name} -> Channel {channel} ({'RGB'[channel]})")
+
+    return merged
+
+
+def warp_single_tile_demo(
+    registrar_path: Path,
+    slide_name: str,
+    tile_x: int = 0,
+    tile_y: int = 0,
+    tile_size: int = 2048,
+    level: int = 2,
+    output_path: Optional[Path] = None
+):
+    """
+    Demonstration function to warp a single tile and optionally save it.
+
+    This is useful for testing and debugging the GPU warp engine.
+
+    Args:
+        registrar_path: Path to registrar pickle
+        slide_name: Name of slide to warp
+        tile_x: X coordinate of tile
+        tile_y: Y coordinate of tile
+        tile_size: Size of tile
+        level: Pyramid level
+        output_path: Optional path to save tile
+
+    Returns:
+        Warped tile as numpy array
+    """
+    print(f"\n{'='*60}")
+    print(f"Single Tile Warp Demo")
+    print(f"{'='*60}")
+    print(f"  Slide: {slide_name}")
+    print(f"  Tile: ({tile_x}, {tile_y}, {tile_size}x{tile_size})")
+    print(f"  Level: {level}")
+    print(f"{'='*60}\n")
+
+    # Initialize engine
+    engine = GPUWarpEngine(
+        registrar_path=registrar_path,
+        slide_name=slide_name,
+        device='cuda',
+        use_non_rigid=True
+    )
+
+    # Process tile
+    print(f"Processing tile...")
+    tile = engine.process_tile(level, tile_x, tile_y, tile_size, tile_size)
+
+    print(f"✓ Tile processed: shape={tile.shape}, dtype={tile.dtype}")
+
+    # Save if requested
+    if output_path:
+        tifffile.imwrite(output_path, tile, photometric='rgb')
+        print(f"✓ Tile saved to: {output_path}")
+
+    return tile
+
+
+def main():
+    """
+    Main execution function for Module 5.
+
+    This processes the standard pipeline slides (HER2, DISH, HE) and generates
+    aligned full-resolution images.
+    """
+    # Paths
+    registrar_path = Path(r"H:\tsgh\thriple_image_layer\output\Transform_Params\data\Transform_Params_registrar.pickle")
+    output_dir = Path(r"H:\tsgh\thriple_image_layer\output")
+
+    # Verify registrar exists
+    if not registrar_path.exists():
+        print(f"✗ Error: Registrar not found at {registrar_path}")
+        print("  Please run Module 2 (alignment) first.")
+        return
+
+    # Configuration
+    slides_to_warp = [
+        "HER2_40X.czi",   # Reference (usually not warped, but included)
+        "DISH_40X_2.czi"  # Needs warping
+    ]
+
+    # Processing parameters
+    level = 2  # Start with Level 2 for faster processing
+    tile_size = 2048
+
+    # Run warping
+    warp_and_merge_slides(
+        registrar_path=registrar_path,
+        output_dir=output_dir,
+        slides_to_warp=slides_to_warp,
+        level=level,
+        tile_size=tile_size,
+        merge=True,
+        compression='deflate'
+    )
+
+    print("\n✓ Module 5 execution complete!")
 
 
 if __name__ == "__main__":
-    # --- 請修改此處的路徑 ---
-    # 假設您的註冊結果儲存於 E:\Class\tsgh\thriple_image_layer\output
-    output_dir = Path(r"E:\Class\tsgh\thriple_image_layer\output")
+    main()
 
-    # --- 驗證層級建議 ---
-    # Level 2 適用於高解析度驗證。若記憶體不足，請嘗試 Level 3 或 Level 4。
-    validation_level = 5
-
-    try:
-        generate_aligned_tiles(output_dir, level=validation_level, non_rigid=True)
-    finally:
-        # 清理 JVM
-        try:
-            slide_io.kill_jvm()
-        except:
-            pass

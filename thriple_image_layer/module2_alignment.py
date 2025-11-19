@@ -46,9 +46,6 @@ def align_images(
         name="Transform_Params",
         reference_img_f=reference_img_name,
         align_to_reference=True,
-        max_processed_image_dim_px=2048,
-        max_non_rigid_registration_dim_px=2048,
-        max_image_dim_px=2048,
         matcher=matcher
     )
     
@@ -60,8 +57,8 @@ def align_images(
     return registrar
 
 if __name__ == "__main__":
-    czi_dir = Path(r"E:\Class\tsgh\picture\whole_size\40X")
-    output_dir = Path(r"E:\Class\tsgh\thriple_image_layer\output")
+    czi_dir = Path(r"H:\tsgh\picture\whole_size\40X")
+    output_dir = Path(r"H:\tsgh\thriple_image_layer\output")
     
     registrar = align_images(czi_dir, output_dir)
     print(f"\n對準完成，結果儲存於: {output_dir}")

@@ -6,8 +6,6 @@ from valis import registration, slide_io
 def generate_thumbnail(
     output_dir: Path,
     level: int = 4,
-    non_rigid: bool = True,
-    blend_mode: str = 'max',
 ) -> None:
     """
     Module 4: 產生對齊疊合縮圖並輸出為 TIFF
@@ -16,7 +14,6 @@ def generate_thumbnail(
         output_dir: 輸出目錄
         level: 金字塔層級 (0=最高解析度，數字越大解析度越低)
         non_rigid: 是否使用非剛性變換
-        blend_mode: 混合模式 ('max', 'color', 'screen', 'average')
     """
     try:
         slide_io.init_jvm()
@@ -28,7 +25,6 @@ def generate_thumbnail(
 
     ref_slide = registrar.get_ref_slide()
     print(f"使用金字塔 level {level}, 尺寸: {ref_slide.slide_dimensions_wh[level]}")
-    print(f"非剛性變換: {'啟用' if non_rigid else '停用'}")
 
     # 手動對齊兩張影像並合併
     print("生成對齊疊合圖...")
@@ -56,11 +52,10 @@ def generate_thumbnail(
         dish_obj.warp_and_save_slide(
             str(dish_temp),
             level=level,
-            non_rigid=non_rigid,
-            crop=True,
+            non_rigid=True,
+            crop="overlap",
             compression='deflate',
             interp_method=interp,
-            tile_wh=4096
         )
 
     # 檢查 HER2 暫存檔案是否存在
@@ -72,59 +67,40 @@ def generate_thumbnail(
         her2_obj.warp_and_save_slide(
             str(her2_temp),
             level=level,
-            non_rigid=non_rigid,
-            crop=True,
+            non_rigid=False,
+            crop="overlap",
             compression='deflate',
             interp_method=interp
         )
     # 使用 pyvips 讀取並合併（串流處理，不會一次載入全部記憶體）
-    print(f"合併影像中 (模式: {blend_mode})...")
+    print("合併影像中 (Alpha 混合 + 對比度自適應增強)...")
     dish_vips = pyvips.Image.new_from_file(str(dish_temp_ome), access='sequential')
     her2_vips = pyvips.Image.new_from_file(str(her2_temp_ome), access='sequential')
+
+    # 對每張影像進行 CLAHE (對比度限制自適應直方圖均衡化)
+    # 使用 hist_local 進行局部對比度增強，保留細節
+    dish_enhanced = dish_vips.hist_local(50, 50)
+    her2_enhanced = her2_vips.hist_local(50, 50)
     
-    # 根據混合模式選擇合併方式
-    if blend_mode == 'max':
-        # 最大值投影 - 保留最高對比度
-        merged = dish_vips.max(her2_vips)
-    elif blend_mode == 'color':
-        # 色彩通道疊合 - DISH(綠) + HER2(紅)
-        zero_channel = pyvips.Image.black(dish_vips.width, dish_vips.height)
-        merged = her2_vips.bandjoin([dish_vips, zero_channel])
-    elif blend_mode == 'screen':
-        # Screen 混合 - 保留亮部細節
-        dish_norm = dish_vips / 255.0
-        her2_norm = her2_vips / 255.0
-        merged = (1 - (1 - dish_norm) * (1 - her2_norm)) * 255
-    else:  # 'average'
-        # 加權平均 (原始方法)
-        merged = (dish_vips * 0.5 + her2_vips * 0.5)
+    # 使用 Alpha 混合保留兩張影像的完整資訊
+    # 權重: DISH=0.5, Her2=0.5 (可調整以突顯特定染色)
+    merged = (dish_enhanced * 0.5 + her2_enhanced * 0.5).cast('uchar')
     output_path = output_dir / f"Merged_Aligned_lv{level}.tiff"
-    merged = merged.cast('uchar')
     print("儲存合併影像...")
     merged.write_to_file(
         str(output_path),
-        compression='defaults',      # 使用 JPEG 壓縮（比 deflate 更小）
-        Q=95,                    # JPEG 品質 (1-100)
-        tile=True,
-        tile_width=256,
-        tile_height=256,
         pyramid=True,
-        bigtiff=True             # 啟用 BigTIFF 格式
+        bigtiff=True
     )
 
-    # 清理暫存檔案
-    print("清理暫存檔案...")
-    dish_temp_ome.unlink(missing_ok=True)
-    her2_temp_ome.unlink(missing_ok=True)
-
     print(f"已儲存: {output_path.name}")
+    print(f"影像尺寸: {merged.width} x {merged.height}, 通道數: {merged.bands}")
 
 
 if __name__ == "__main__":
-    output_dir = Path(r"E:\Class\tsgh\thriple_image_layer\output")
+    output_dir = Path(r"H:\tsgh\thriple_image_layer\output")
     try:
-        # 推薦使用 'max' 或 'color' 模式以獲得更好的視覺效果
-        generate_thumbnail(output_dir, level=2, non_rigid=True, blend_mode='max')
+        generate_thumbnail(output_dir, level=1)
     finally:
         try:
             slide_io.kill_jvm()

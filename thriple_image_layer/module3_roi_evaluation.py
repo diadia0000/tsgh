@@ -104,7 +104,7 @@ def evaluate_roi(
     print(f"\n評估結果:\n{df}")
 
 if __name__ == "__main__":
-    output_dir = Path(r"E:\Class\tsgh\thriple_image_layer\output")
+    output_dir = Path(r"H:\tsgh\thriple_image_layer\output")
     try:
         evaluate_roi(output_dir)
     finally:
