@@ -7,6 +7,7 @@ def generate_thumbnail(
     output_dir: Path,
     level: int = 4,
     non_rigid: bool = True,
+    blend_mode: str = 'max',
 ) -> None:
     """
     Module 4: 產生對齊疊合縮圖並輸出為 TIFF
@@ -15,6 +16,7 @@ def generate_thumbnail(
         output_dir: 輸出目錄
         level: 金字塔層級 (0=最高解析度，數字越大解析度越低)
         non_rigid: 是否使用非剛性變換
+        blend_mode: 混合模式 ('max', 'color', 'screen', 'average')
     """
     try:
         slide_io.init_jvm()
@@ -41,6 +43,10 @@ def generate_thumbnail(
     dish_temp_ome = temp_dir / f"dish_warped_lv{level}.ome.tiff"
     her2_temp_ome = temp_dir / f"her2_warped_lv{level}.ome.tiff"
 
+    # 根據層級選擇插值方法: level>=3 用 bilinear (快速), level<3 用 lanczos (高品質)
+    interp = "bilinear" if level >= 3 else "lanczos"
+    print(f"插值方法: {interp}")
+
     # 檢查 DISH 暫存檔案是否存在
     if dish_temp_ome.exists():
         print(f"找到現有的 DISH 暫存檔案，跳過重新生成: {dish_temp_ome.name}")
@@ -53,6 +59,7 @@ def generate_thumbnail(
             non_rigid=non_rigid,
             crop=True,
             compression='deflate',
+            interp_method=interp,
             tile_wh=4096
         )
 
@@ -68,20 +75,35 @@ def generate_thumbnail(
             non_rigid=non_rigid,
             crop=True,
             compression='deflate',
-            tile_wh=4096
+            interp_method=interp
         )
     # 使用 pyvips 讀取並合併（串流處理，不會一次載入全部記憶體）
-    print("合併影像中...")
+    print(f"合併影像中 (模式: {blend_mode})...")
     dish_vips = pyvips.Image.new_from_file(str(dish_temp_ome), access='sequential')
     her2_vips = pyvips.Image.new_from_file(str(her2_temp_ome), access='sequential')
-    # 相當於 (0.5 * dish + 0.5 * her2)
-    merged = (dish_vips * 0.5 + her2_vips * 0.5)
+    
+    # 根據混合模式選擇合併方式
+    if blend_mode == 'max':
+        # 最大值投影 - 保留最高對比度
+        merged = dish_vips.max(her2_vips)
+    elif blend_mode == 'color':
+        # 色彩通道疊合 - DISH(綠) + HER2(紅)
+        zero_channel = pyvips.Image.black(dish_vips.width, dish_vips.height)
+        merged = her2_vips.bandjoin([dish_vips, zero_channel])
+    elif blend_mode == 'screen':
+        # Screen 混合 - 保留亮部細節
+        dish_norm = dish_vips / 255.0
+        her2_norm = her2_vips / 255.0
+        merged = (1 - (1 - dish_norm) * (1 - her2_norm)) * 255
+    else:  # 'average'
+        # 加權平均 (原始方法)
+        merged = (dish_vips * 0.5 + her2_vips * 0.5)
     output_path = output_dir / f"Merged_Aligned_lv{level}.tiff"
     merged = merged.cast('uchar')
     print("儲存合併影像...")
     merged.write_to_file(
         str(output_path),
-        compression='jpeg',      # 使用 JPEG 壓縮（比 deflate 更小）
+        compression='defaults',      # 使用 JPEG 壓縮（比 deflate 更小）
         Q=95,                    # JPEG 品質 (1-100)
         tile=True,
         tile_width=256,
@@ -101,7 +123,8 @@ def generate_thumbnail(
 if __name__ == "__main__":
     output_dir = Path(r"E:\Class\tsgh\thriple_image_layer\output")
     try:
-        generate_thumbnail(output_dir, level=2, non_rigid=True)
+        # 推薦使用 'max' 或 'color' 模式以獲得更好的視覺效果
+        generate_thumbnail(output_dir, level=2, non_rigid=True, blend_mode='max')
     finally:
         try:
             slide_io.kill_jvm()
