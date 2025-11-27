@@ -48,7 +48,7 @@ def generate_tiles(
 
 if __name__ == "__main__":
     input_tiff = Path(r"H:\tsgh\thriple_image_layer\output\Merged_Aligned_lv1.tiff")
-    output_dir = Path(r"D:\output\level1_tile")
+    output_dir = Path(r"G:\output\level1_tile")
 
     # SSD 用 4，NVMe 可用 8
     generate_tiles(input_tiff, output_dir, tile_width=2056, tile_height=2464, workers=7)

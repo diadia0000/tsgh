@@ -84,7 +84,7 @@ def generate_thumbnail(
             level=level,
             non_rigid=True,
             crop="overlap",
-            compression='deflate'
+            compression='lzw'
         )
 
     # 檢查 HER2 暫存檔案是否存在
@@ -98,7 +98,7 @@ def generate_thumbnail(
             level=level,
             non_rigid=False,
             crop="overlap",
-            compression='deflate'
+            compression='lzw'
         )
     # 使用 pyvips 讀取並合併（串流處理，不會一次載入全部記憶體）
     print("合併影像中 (多尺度拉普拉斯金字塔融合)...")
@@ -107,12 +107,13 @@ def generate_thumbnail(
     
     # 使用拉普拉斯金字塔融合保留細節
     merged = laplacian_blend(dish_vips, her2_vips, levels=5)
-    output_path = output_dir / f"Merged_Aligned_lv{level}.tiff"
+    output_path = f"G:\output\Merged_Aligned_lv{level}.tiff"
     print("儲存合併影像...")
     merged.write_to_file(
         str(output_path),
         pyramid=True,
-        bigtiff=True
+        bigtiff=True,
+        compression='lzw'
     )
 
     print(f"已儲存: {output_path.name}")
@@ -122,7 +123,7 @@ def generate_thumbnail(
 if __name__ == "__main__":
     output_dir = Path(r"H:\tsgh\thriple_image_layer\output")
     try:
-        generate_thumbnail(output_dir, level=1)
+        generate_thumbnail(output_dir, level=0)
     finally:
         try:
             slide_io.kill_jvm()
