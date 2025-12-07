@@ -1,5 +1,7 @@
 """Module 2: Alignment Pipeline"""
 from pathlib import Path
+import pickle
+import os
 
 import torch
 from valis import registration, feature_detectors, feature_matcher
@@ -54,6 +56,22 @@ def align_images(
     rigid_registrar, non_rigid_registrar, error_df = registrar.register()
     
     print("對準完成，變換參數已儲存")
+
+    # 明確地將 registrar 物件保存為 pickle 檔案
+    pickle_dir = output_dir / "Transform_Params" / "data"
+    pickle_dir.mkdir(parents=True, exist_ok=True)
+    pickle_path = pickle_dir / "Transform_Params_registrar.pickle"
+
+    # 根據 AI 檔案生成規則：如果檔案已存在則先刪除
+    if os.path.exists(pickle_path):
+        print(f"正在刪除舊的 pickle 檔案: {pickle_path}")
+        os.remove(pickle_path)
+
+    print(f"正在保存 registrar 物件到: {pickle_path}")
+    with open(pickle_path, 'wb') as f:
+        pickle.dump(registrar, f, protocol=pickle.HIGHEST_PROTOCOL)
+    print("✓ Registrar 物件已成功保存為 pickle 檔案")
+
     return registrar
 
 if __name__ == "__main__":

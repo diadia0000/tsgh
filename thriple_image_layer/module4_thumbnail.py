@@ -106,7 +106,7 @@ def generate_thumbnail(
     her2_vips = pyvips.Image.new_from_file(str(her2_temp_ome), access='sequential')
     
     # 使用拉普拉斯金字塔融合保留細節
-    merged = laplacian_blend(dish_vips, her2_vips, levels=5)
+    merged = laplacian_blend(dish_vips, her2_vips, levels=6)
     output_path = f"G:\output\Merged_Aligned_lv{level}.tiff"
     print("儲存合併影像...")
     merged.write_to_file(
@@ -116,13 +116,14 @@ def generate_thumbnail(
         compression='lzw'
     )
 
-    print(f"已儲存: {output_path.name}")
+    print(f"已儲存: {output_path}")
     print(f"影像尺寸: {merged.width} x {merged.height}, 通道數: {merged.bands}")
 
 
 if __name__ == "__main__":
     output_dir = Path(r"H:\tsgh\thriple_image_layer\output")
     try:
+        pyvips.cache_set_max(0)
         generate_thumbnail(output_dir, level=0)
     finally:
         try:

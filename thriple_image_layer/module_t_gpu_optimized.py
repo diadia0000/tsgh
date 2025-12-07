@@ -1,372 +1,394 @@
 from pathlib import Path
-from valis import registration, slide_io
 import numpy as np
 import torch
 import torch.nn.functional as F
 import time
-from concurrent.futures import ThreadPoolExecutor
-from queue import Queue
-import threading
+import gc
+import pyvips
+# 匯入 valis 模組
+from valis import registration, slide_io
 
-TILE_WIDTH = 2056
-TILE_HEIGHT = 2464
+TILE_WIDTH = 4096
+TILE_HEIGHT = 4096
+
+
+def get_transformation_matrix(registrar, slide_name: str, level: int) -> np.ndarray:
+    """從 registrar 物件中提取指定 slide 的剛性變換矩陣。"""
+    slide_obj = registrar.slide_dict[slide_name]
+
+    # 仿射變換矩陣 (通常是 3x3)
+    M = slide_obj.M.copy()
+
+    # 考慮 level 縮放
+    level_scale = slide_obj.slide_dimensions_wh[0][0] / slide_obj.slide_dimensions_wh[level][0]
+
+    # 調整變換矩陣以適應 level
+    # 縮放矩陣
+    S = np.array([
+        [1 / level_scale, 0, 0],
+        [0, 1 / level_scale, 0],
+        [0, 0, 1]
+    ])
+    # 反向縮放矩陣
+    S_inv = np.array([
+        [level_scale, 0, 0],
+        [0, level_scale, 0],
+        [0, 0, 1]
+    ])
+
+    # 新的變換矩陣 M' = S * M * S_inv
+    M_scaled = S @ M @ S_inv
+
+    return M_scaled
 
 
 def extract_and_warp_batch_gpu(
     tiles_batch: list,
+    rigid_matrix_gpu: torch.Tensor,
     bk_dxdy_gpu: torch.Tensor,
     coords_batch: list,
-    level_scale: float,
+    level_scale_non_rigid: float,
     device: torch.device
-) -> list:
+) -> tuple[list, list]:
     """
-    批次處理多個 tiles，提高 GPU 利用率。
+    批次處理：按尺寸分組，最大化 GPU 利用率。
+    按照 VALIS 底層算法順序：先剛性變換，再非剛性變換。
+
+    VALIS 順序 (warp_tools.py line 1021-1232):
+    1. affine_warped = img.affine(M, ...)  # 剛性變換
+    2. warped = affine_warped.mapim(dxdy, ...)  # 非剛性變換
     """
-    results = []
-    
     with torch.no_grad():
-        for tile, (x, y, w, h) in zip(tiles_batch, coords_batch):
-            # 提取局部變形場
-            field_h, field_w = bk_dxdy_gpu.shape[2:]
-            field_x = int(x * level_scale)
-            field_y = int(y * level_scale)
+        # 按尺寸分組
+        size_groups = {}
+        for i, (tile, coord) in enumerate(zip(tiles_batch, coords_batch)):
+            size_key = tile.shape[:2]
+            if size_key not in size_groups:
+                size_groups[size_key] = []
+            size_groups[size_key].append((i, tile, coord))
+        
+        results = [None] * len(tiles_batch)
+        
+        for size_key, group in size_groups.items():
+            indices, tiles, coords = zip(*group)
             
-            x_start = max(0, field_x - 2)
-            y_start = max(0, field_y - 2)
-            x_end = min(field_w, field_x + int(w * level_scale) + 6)
-            y_end = min(field_h, field_y + int(h * level_scale) + 6)
+            batch_tensors = []
+            for tile in tiles:
+                tile_copy = np.array(tile, copy=True)
+                if tile_copy.ndim == 2:
+                    t = torch.from_numpy(tile_copy).unsqueeze(0).unsqueeze(0)
+                else:
+                    t = torch.from_numpy(tile_copy).permute(2, 0, 1).unsqueeze(0)
+                batch_tensors.append(t)
             
-            local_field = bk_dxdy_gpu[:, :, y_start:y_end, x_start:x_end]
-            local_field_resized = F.interpolate(
-                local_field, size=(h, w), mode='bilinear', align_corners=False
-            )
-            
-            # 轉換 tile 到 GPU (複製避免只讀警告)
-            tile_copy = np.array(tile, copy=True)
-            if tile_copy.ndim == 2:
-                tile_tensor = torch.from_numpy(tile_copy).unsqueeze(0).unsqueeze(0).float().to(device)
-            else:
-                tile_tensor = torch.from_numpy(tile_copy).permute(2, 0, 1).unsqueeze(0).float().to(device)
-            
-            # 建立變形網格
-            grid_y, grid_x = torch.meshgrid(
-                torch.linspace(-1, 1, h, device=device),
-                torch.linspace(-1, 1, w, device=device),
-                indexing='ij'
-            )
-            
-            norm_dx = local_field_resized[0, 0] / (w / 2)
-            norm_dy = local_field_resized[0, 1] / (h / 2)
-            
-            warped_grid = torch.stack([
-                grid_x + norm_dx,
-                grid_y + norm_dy
-            ], dim=-1).unsqueeze(0)
-            
-            # GPU 變形
-            warped = F.grid_sample(
-                tile_tensor, warped_grid,
+            tiles_tensor = torch.cat(batch_tensors, dim=0).float().to(device, non_blocking=True)
+            B, C, H, W = tiles_tensor.shape
+
+            # ===== 步驟 1: 剛性變換 (Affine/Rigid Transformation) =====
+            affine_grid = F.affine_grid(rigid_matrix_gpu[:, :2], size=(B, C, H, W), align_corners=False)
+            affine_warped = F.grid_sample(
+                tiles_tensor, affine_grid,
                 mode='bilinear', padding_mode='zeros', align_corners=False
             )
-            
-            # 轉回 CPU
-            if tile.ndim == 2:
-                result = warped[0, 0].cpu().numpy()
+
+            # ===== 步驟 2: 非剛性變換 (Non-rigid Deformation) =====
+            if bk_dxdy_gpu is not None:
+                # 提取非剛性變形場（相對於已經剛性變換後的圖像）
+                batch_fields = []
+                for (x, y, w, h) in coords:
+                    # 變形場的座標需要相對於變換後的空間
+                    field_x = int(x * level_scale_non_rigid)
+                    field_y = int(y * level_scale_non_rigid)
+                    field_w_scaled = int(w * level_scale_non_rigid)
+                    field_h_scaled = int(h * level_scale_non_rigid)
+
+                    x_start = max(0, min(field_x, bk_dxdy_gpu.shape[3] - 1))
+                    y_start = max(0, min(field_y, bk_dxdy_gpu.shape[2] - 1))
+                    x_end = min(bk_dxdy_gpu.shape[3], field_x + max(1, field_w_scaled))
+                    y_end = min(bk_dxdy_gpu.shape[2], field_y + max(1, field_h_scaled))
+
+                    local_field = bk_dxdy_gpu[:, :, y_start:y_end, x_start:x_end]
+                    local_field_resized = F.interpolate(
+                        local_field, size=(H, W), mode='bilinear', align_corners=False
+                    )
+                    batch_fields.append(local_field_resized)
+
+                fields_tensor = torch.cat(batch_fields, dim=0) * (1.0 / level_scale_non_rigid)
+
+                # 創建像素網格索引 (等同於 pyvips 的 xyz)
+                y_coords = torch.arange(H, device=device).view(H, 1).expand(H, W)
+                x_coords = torch.arange(W, device=device).view(1, W).expand(H, W)
+
+                # 應用位移場 (等同於 pyvips 的 mapim)
+                displaced_x = x_coords + fields_tensor[:, 0]
+                displaced_y = y_coords + fields_tensor[:, 1]
+
+                # 正規化到 [-1, 1] 範圍 (grid_sample 的要求)
+                norm_x = 2.0 * displaced_x / (W - 1) - 1.0
+                norm_y = 2.0 * displaced_y / (H - 1) - 1.0
+                non_rigid_grid = torch.stack([norm_x, norm_y], dim=-1)
+
+                # 對剛性變換後的圖像應用非剛性變換
+                warped_batch = F.grid_sample(
+                    affine_warped, non_rigid_grid,
+                    mode='bilinear', padding_mode='zeros', align_corners=False
+                )
             else:
-                result = warped[0].permute(1, 2, 0).cpu().numpy()
+                # 如果沒有非剛性變換，直接使用剛性變換的結果
+                warped_batch = affine_warped
+
+            warped_np = warped_batch.cpu().numpy()
             
-            results.append(result.astype(tile.dtype))
-    
-    return results
+            for i, (idx, tile) in enumerate(zip(indices, tiles)):
+                if tile.ndim == 2:
+                    result = warped_np[i, 0]
+                else:
+                    result = warped_np[i].transpose(1, 2, 0)
+                results[idx] = result.astype(tile.dtype)
+        
+        valid_flags = [True] * len(results)
+        return results, valid_flags
 
 
 def generate_aligned_tiles(
+    input_params_dir: Path,
     output_dir: Path,
-    level: int = 2,
+    level: int = 0,
     non_rigid: bool = True,
     tile_width: int = TILE_WIDTH,
     tile_height: int = TILE_HEIGHT,
     use_gpu: bool = True,
-    batch_size: int = 4,  # 批次大小
-    num_workers: int = 2   # I/O 執行緒數
+    batch_size: int = 4,
+    num_workers: int = 2
 ) -> None:
     """
-    使用 GPU 批次處理和多執行緒 I/O 優化。
+    使用 pyvips 讀取，GPU 批次處理，並用 pyvips 寫入 BigTIFF。
     """
-    try:
-        slide_io.init_jvm()
-    except Exception as e:
-        print(f"VALIS/JVM 初始化失敗: {e}")
-        return
+    if level != 0:
+        print("警告: 此腳本已為 Level 0 進行優化。其他 level 可能無法正確工作。")
 
-    pickle_path = output_dir / "Transform_Params" / "data" / "Transform_Params_registrar.pickle"
+    pickle_path = input_params_dir / "Transform_Params" / "data" / "Transform_Params_registrar.pickle"
     if not pickle_path.exists():
         print(f"錯誤: 找不到 Registrar 檔案: {pickle_path}")
-        slide_io.kill_jvm()
         return
 
-    registrar = registration.load_registrar(str(pickle_path))
-    tiles_output_dir = Path(f"G:\\output\\level0_tile\\aligned_tiles_lv{level}_{tile_width}x{tile_height}")
-    tiles_output_dir.mkdir(parents=True, exist_ok=True)
-
-    print(f"Tile 輸出目錄: {tiles_output_dir}")
-    print(f"Tile 尺寸: {tile_width}x{tile_height} 像素, Level: {level}")
-    print(f"批次大小: {batch_size}, I/O 執行緒: {num_workers}")
+    # 使用 valis 提供的方法初始化 JVM
+    print("初始化 JVM...")
+    try:
+        slide_io.init_jvm()
+        print("[OK] JVM 初始化成功")
+    except:
+        print("[WARNING] JVM 可能已經啟動，繼續執行...")
+        pass
 
     try:
-        dish_obj = registrar.slide_dict['DISH_40X_2']
-        her2_obj = registrar.slide_dict['HER2_40X']
-    except KeyError:
-        print("錯誤: 找不到投影片物件")
-        slide_io.kill_jvm()
-        return
+        # 載入 registrar
+        print("正在載入 Registrar...")
+        registrar = registration.load_registrar(str(pickle_path))
+        print("[OK] Registrar 載入成功")
 
-    her2_dims = her2_obj.slide_dimensions_wh[level]
-    dish_dims = dish_obj.slide_dimensions_wh[level]
+        final_output_path = output_dir / f"Merged_Aligned_lv{level}.tiff"
+        # 根據使用者指示，如果檔案已存在則刪除
+        if final_output_path.exists():
+            print(f"正在刪除已存在的輸出檔案: {final_output_path}")
+            final_output_path.unlink()
 
-    # Use the minimum dimensions to ensure all tiles are valid for both images
-    width_lv_n = min(her2_dims[0], dish_dims[0])
-    height_lv_n = min(her2_dims[1], dish_dims[1])
+        print(f"最終輸出將儲存於: {final_output_path}")
+        print(f"Tile 尺寸: {tile_width}x{tile_height} 像素, Level: {level}")
+        print(f"批次大小: {batch_size}")
 
-    print(f"Level {level} 參考影像尺寸:")
-    print(f"  HER2: {her2_dims[0]} x {her2_dims[1]} 像素")
-    print(f"  DISH: {dish_dims[0]} x {dish_dims[1]} 像素")
-    print(f"  使用: {width_lv_n} x {height_lv_n} 像素 (取較小值)")
+        try:
+            dish_obj = registrar.slide_dict['DISH_40X_2']
+            her2_obj = registrar.slide_dict['HER2_40X']
+        except KeyError:
+            print("錯誤: 找不到 'DISH_40X_2' 或 'HER2_40X' 投影片物件")
+            return
 
-    # 設置 GPU
-    device = torch.device('cuda' if use_gpu and torch.cuda.is_available() else 'cpu')
-    print(f"使用設備: {device}")
-    
-    if device.type == 'cuda':
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
-        print(f"GPU 記憶體: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+        # 使用 valis 的 slide reader 來讀取 .czi 檔案
+        print(f"開啟投影片: {her2_obj.src_f}")
+        her2_reader = her2_obj.slide
+        print(f"開啟投影片: {dish_obj.src_f}")
+        dish_reader = dish_obj.slide
 
-    # 載入變形場到 GPU
-    bk_dxdy_gpu = None
-    if non_rigid and hasattr(dish_obj, 'bk_dxdy') and dish_obj.bk_dxdy is not None:
-        print("\n載入 B-spline 變形場到 GPU...")
-        bk_dxdy_np = dish_obj.bk_dxdy
-        
-        if isinstance(bk_dxdy_np, (list, tuple)):
-            bk_dxdy_np = np.stack(bk_dxdy_np, axis=0)
-        elif bk_dxdy_np.ndim == 3 and bk_dxdy_np.shape[2] == 2:
-            bk_dxdy_np = bk_dxdy_np.transpose(2, 0, 1)
-        
-        print(f"原始變形場形狀: {bk_dxdy_np.shape}")
-        
-        if bk_dxdy_np.ndim == 3:
-            bk_dxdy_gpu = torch.from_numpy(bk_dxdy_np).unsqueeze(0).float().to(device)
+        # 獲取 Level 0 的尺寸
+        width_lv_n, height_lv_n = her2_obj.slide_dimensions_wh[level]
+
+        print(f"Level {level} 參考影像尺寸 (HER2): {width_lv_n} x {height_lv_n} 像素")
+
+        # 設置 GPU
+        device = torch.device('cuda' if use_gpu and torch.cuda.is_available() else 'cpu')
+        print(f"使用設備: {device}")
+        if device.type == 'cuda':
+            print(f"GPU: {torch.cuda.get_device_name(0)}")
+
+        # 提取剛性變換矩陣
+        print("\n提取剛性變換矩陣...")
+        rigid_matrix = get_transformation_matrix(registrar, 'DISH_40X_2', level)
+        rigid_matrix_gpu = torch.from_numpy(rigid_matrix[:2]).unsqueeze(0).float().to(device)
+        print(f"DISH->HER2 的 Level {level} 剛性變換矩陣:\n{rigid_matrix[:2]}")
+
+        # 載入非剛性變形場到 GPU
+        bk_dxdy_gpu = None
+        level_scale_non_rigid = 1.0
+        if non_rigid and hasattr(dish_obj, 'bk_dxdy') and dish_obj.bk_dxdy is not None:
+            print("\n載入 B-spline 變形場到 GPU...")
+            bk_dxdy_np = dish_obj.bk_dxdy
+
+            if isinstance(bk_dxdy_np, (list, tuple)):
+                bk_dxdy_np = np.stack(bk_dxdy_np, axis=0)
+            elif bk_dxdy_np.ndim == 3 and bk_dxdy_np.shape[2] == 2:
+                bk_dxdy_np = bk_dxdy_np.transpose(2, 0, 1)
+
+            if bk_dxdy_np.ndim == 3:
+                bk_dxdy_gpu = torch.from_numpy(bk_dxdy_np).unsqueeze(0).float().to(device)
+            else:
+                bk_dxdy_gpu = torch.from_numpy(bk_dxdy_np).float().to(device)
+
+            # 變形場是相對於哪個 level 計算的？通常是較低的 level。
+            # 我們需要知道這個 level 的尺寸來計算縮放比例。
+            # 使用 DISH 的 processed_img_shape 作為參考
+            reg_img_shape_rc = dish_obj.processed_img_shape_rc
+            reg_img_h, reg_img_w = reg_img_shape_rc
+            level_scale_non_rigid = reg_img_h / height_lv_n
+            print(f"GPU 變形場尺寸: {bk_dxdy_gpu.shape}")
+            print(f"非剛性變形場縮放比例: {level_scale_non_rigid:.4f}")
         else:
-            bk_dxdy_gpu = torch.from_numpy(bk_dxdy_np).float().to(device)
-        
-        print(f"GPU 變形場尺寸: {bk_dxdy_gpu.shape}")
-        level_scale = bk_dxdy_gpu.shape[2] / height_lv_n
-    else:
-        print("\n未找到非剛性變形場")
-        level_scale = 1.0
+            print("\n未找到或不使用非剛性變形場")
 
-    # 生成所有 tile 座標 (修正邊界檢查)
-    tile_coords = []
-    for y in range(0, height_lv_n, tile_height):
-        for x in range(0, width_lv_n, tile_width):
-            # 確保不超出邊界
-            if x >= width_lv_n or y >= height_lv_n:
-                continue
-            w = min(tile_width, width_lv_n - x)
-            h = min(tile_height, height_lv_n - y)
-            if w > 0 and h > 0:
-                tile_coords.append((x, y, w, h))
-    
-    total_tiles = len(tile_coords)
-    print(f"\n總共需要處理 {total_tiles} 個 tiles")
-    
-    if level == 0:
-        est_hours = total_tiles * 7 / 3600
-        print(f"\n警告: Level 0 的 I/O 非常慢！")
-        print(f"  預估時間: ~{est_hours:.1f} 小時")
-        print(f"  強烈建議使用 level=2 (加速 14x) 或 level=3 (加速 70x)\n")
-    
-    # Helper function for parallel loading
-    def load_tile_pair(coord_idx):
-        """Load both HER2 and DISH tiles for a given coordinate index."""
-        idx, (x, y, w, h) = coord_idx
+        # 生成 tile 座標
+        tile_coords = []
+        for y in range(0, height_lv_n, tile_height):
+            for x in range(0, width_lv_n, tile_width):
+                w = min(tile_width, width_lv_n - x)
+                h = min(tile_height, height_lv_n - y)
+                if w > 0 and h > 0:
+                    tile_coords.append((x, y, w, h))
 
-        # Validate dimensions before attempting to load
-        if w <= 0 or h <= 0:
-            return idx, None, None, f"Invalid tile dimensions: w={w}, h={h}"
+        total_tiles = len(tile_coords)
+        print(f"\n總共需要處理 {total_tiles} 個 tiles")
 
-        try:
-            her2_tile = her2_obj.slide2image(level=level, xywh=(x, y, w, h))
-            if hasattr(her2_tile, 'numpy'):
-                her2_tile = her2_tile.numpy()
-            
-            # Additional validation: check actual loaded tile size
-            if her2_tile.shape[0] == 0 or her2_tile.shape[1] == 0:
-                return idx, None, None, f"Loaded tile has zero dimension: {her2_tile.shape}"
+        # 建立一個空的 pyvips 影像來存放合併後的結果
+        # 使用 float32 以避免在混合時精度損失
+        output_image = pyvips.Image.black(width_lv_n, height_lv_n, bands=3)
 
-            dish_tile = dish_obj.slide2image(level=level, xywh=(x, y, w, h))
-            if hasattr(dish_tile, 'numpy'):
-                dish_tile = dish_tile.numpy()
-            
-            # Validate dish tile as well
-            if dish_tile.shape[0] == 0 or dish_tile.shape[1] == 0:
-                return idx, None, None, f"Loaded tile has zero dimension: {dish_tile.shape}"
+        # 主處理循環
+        start_time = time.time()
+        for i in range(0, total_tiles, batch_size):
+            batch_start_time = time.time()
+            batch_coords = tile_coords[i:i+batch_size]
 
-            return idx, her2_tile, dish_tile, None
-        except Exception as e:
-            return idx, None, None, str(e)
-    
-    # Producer-Consumer: Prefetch queue
-    prefetch_queue = Queue(maxsize=2)
-    stop_prefetch = threading.Event()
-    
-    def prefetch_worker():
-        """Background thread to prefetch next batch while GPU processes current."""
-        batch_idx = 0
-        batches_queued = 0
-        with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            while not stop_prefetch.is_set() and batch_idx * batch_size < total_tiles:
-                batch_start = batch_idx * batch_size
-                batch_end = min(batch_start + batch_size, total_tiles)
-                batch_coords = tile_coords[batch_start:batch_end]
-                
-                # Parallel load within batch
-                io_start = time.time()
-                indexed_coords = list(enumerate(batch_coords))
-                futures = executor.map(load_tile_pair, indexed_coords)
-                
-                # Collect results in order
-                results = list(futures)
-                results.sort(key=lambda x: x[0])  # Ensure order preservation
-                
-                her2_tiles = []
-                dish_tiles = []
-                valid_coords = []
-                for idx, her2, dish, error in results:
-                    if error:
-                        print(f"Warning: Skipping tile {batch_coords[idx]}: {error}")
-                        continue
-                    else:
-                        her2_tiles.append(her2)
-                        dish_tiles.append(dish)
-                        valid_coords.append(batch_coords[idx])
+            # 讀取批次
+            io_start = time.time()
+            her2_tiles = []
+            dish_tiles = []
+            for x, y, w, h in batch_coords:
+                # 使用 valis slide reader 的 read_region 方法
+                # read_region(location, level, size) - location 是 (x, y)，size 是 (w, h)
+                her2_region = np.array(her2_reader.read_region((x, y), level, (w, h)))
+                dish_region = np.array(dish_reader.read_region((x, y), level, (w, h)))
 
-                io_time = time.time() - io_start
+                # 移除 alpha 通道（如果有的話）
+                if her2_region.shape[2] == 4:
+                    her2_region = her2_region[:, :, :3]
+                if dish_region.shape[2] == 4:
+                    dish_region = dish_region[:, :, :3]
 
-                # Always increment batch_idx
-                batch_idx += 1
+                her2_tiles.append(her2_region)
+                dish_tiles.append(dish_region)
+            io_time = time.time() - io_start
 
-                # Put batch in queue only if there are valid tiles
-                if valid_coords:
-                    try:
-                        prefetch_queue.put((valid_coords, her2_tiles, dish_tiles, io_time), timeout=30)
-                        batches_queued += 1
-                    except:
-                        print("Warning: Prefetch queue timeout")
-                        break
-
-        print(f"Prefetch worker finished: {batches_queued} batches queued")
-        prefetch_queue.put(None)  # Sentinel to signal completion
-    
-    # Start prefetch thread
-    prefetch_thread = threading.Thread(target=prefetch_worker, daemon=True)
-    prefetch_thread.start()
-    
-    # Main processing loop
-    tile_count = 0
-    start_time = time.time()
-    batch_num = 0
-    last_progress_time = time.time()
-
-    while True:
-        # Get prefetched batch with timeout
-        try:
-            batch_data = prefetch_queue.get(timeout=300)  # 5 minutes timeout
-        except:
-            print("\nError: Queue timeout - no data received for 5 minutes")
-            print(f"Processed {tile_count}/{total_tiles} tiles before timeout")
-            break
-
-        if batch_data is None:  # Sentinel received
-            break
-        
-        batch_coords, her2_tiles, dish_tiles, io_time = batch_data
-        batch_num += 1
-        
-        # GPU 批次處理
-        gpu_start = time.time()
-        if bk_dxdy_gpu is not None:
-            warped_tiles = extract_and_warp_batch_gpu(
-                dish_tiles, bk_dxdy_gpu, batch_coords, level_scale, device
+            # GPU 批次處理
+            gpu_start = time.time()
+            warped_tiles, _ = extract_and_warp_batch_gpu(
+                dish_tiles, rigid_matrix_gpu, bk_dxdy_gpu, batch_coords, level_scale_non_rigid, device
             )
-        else:
-            warped_tiles = dish_tiles
-        gpu_time = time.time() - gpu_start
-        
-        # 儲存
+            gpu_time = time.time() - gpu_start
+
+            # 合併與插入
+            insert_start = time.time()
+            for j, (x, y, w, h) in enumerate(batch_coords):
+                # 將 warped_tile 和 her2_tile 轉為 pyvips 影像
+                warped_vips = pyvips.Image.new_from_memory(warped_tiles[j].astype(np.float32), w, h, 3, 'float')
+                her2_vips = pyvips.Image.new_from_memory(her2_tiles[j].astype(np.float32), w, h, 3, 'float')
+
+                # 混合
+                merged_vips = (warped_vips * 0.5 + her2_vips * 0.5)
+
+                # 插入到輸出影像
+                output_image = output_image.insert(merged_vips, x, y)
+            insert_time = time.time() - insert_start
+
+            # 清理記憶體
+            del her2_tiles, dish_tiles, warped_tiles
+            gc.collect()
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+
+            # 進度報告
+            processed_tiles = i + len(batch_coords)
+            elapsed = time.time() - start_time
+            tiles_per_sec = processed_tiles / elapsed
+            eta = (total_tiles - processed_tiles) / tiles_per_sec if tiles_per_sec > 0 else 0
+
+            print(f"批次 {i//batch_size + 1}/{(total_tiles + batch_size - 1)//batch_size}: "
+                  f"Tiles {processed_tiles}/{total_tiles} | "
+                  f"總耗時: {time.time() - batch_start_time:.2f}s (I/O: {io_time:.2f}s, GPU: {gpu_time:.2f}s, Insert: {insert_time:.2f}s) | "
+                  f"速度: {tiles_per_sec:.2f} tiles/s | ETA: {eta:.0f}s")
+
+        # 儲存最終影像
+        print("\n所有 tile 處理完畢，正在儲存最終的大圖檔...")
         save_start = time.time()
-        from PIL import Image
-        for i, (x, y, w, h) in enumerate(batch_coords):
-            tile_count += 1
-            merged = (warped_tiles[i].astype(np.float32) * 0.5 + 
-                     her2_tiles[i].astype(np.float32) * 0.5).astype(np.uint8)
-            
-            tile_filename = f"Merged_Tile_lv{level}_x{x}_y{y}_w{w}_h{h}.tiff"
-            output_path = tiles_output_dir / tile_filename
-            # 使用無壓縮加速儲存 (70s -> 5s)
-            Image.fromarray(merged).save(output_path, compression=None)
-        
-        save_time = time.time() - save_start
-        
-        # 進度報告
-        elapsed = time.time() - start_time
-        tiles_per_sec = tile_count / elapsed
-        eta = (total_tiles - tile_count) / tiles_per_sec if tiles_per_sec > 0 else 0
-        
-        print(f"Batch {batch_num}/{(total_tiles + batch_size - 1)//batch_size}: "
-              f"Tiles {tile_count}/{total_tiles} | "
-              f"I/O: {io_time:.2f}s | GPU: {gpu_time:.2f}s | Save: {save_time:.2f}s | "
-              f"Speed: {tiles_per_sec:.1f} tiles/s | ETA: {eta:.0f}s")
-        
-        # 更新最後進度時間
-        last_progress_time = time.time()
-
-        # 清理
-        torch.cuda.empty_cache()
-    
-    # Stop prefetch thread
-    stop_prefetch.set()
-    prefetch_thread.join(timeout=5)
-
-    total_time = time.time() - start_time
-    print(f"\n完成！總時間: {total_time:.1f}s, 平均速度: {total_tiles/total_time:.2f} tiles/s")
-    print(f"儲存於: {tiles_output_dir}")
-    
-    # 清理 GPU
-    if bk_dxdy_gpu is not None:
-        del bk_dxdy_gpu
-        torch.cuda.empty_cache()
-
-
-if __name__ == "__main__":
-    output_dir = Path(r"H:\tsgh\thriple_image_layer\output")
-    
-    try:
-        # 關鍵修正: 使用 level=2 或 3 以減少 I/O 瓶頸
-        # Level 0: 283637x228733 像素 -> 每個 tile 讀取 ~7秒
-        # Level 2: ~70909x57183 像素 -> 每個 tile 讀取 ~0.5秒 (14x 加速)
-        # Level 3: ~35454x28591 像素 -> 每個 tile 讀取 ~0.1秒 (70x 加速)
-        
-        generate_aligned_tiles(
-            output_dir, 
-            level=0,
-            non_rigid=True, 
-            use_gpu=True,
-            batch_size=64,  # 增加 batch size
-            num_workers=7  # 增加並行度
+        output_image.cast('uchar').write_to_file(
+            str(final_output_path),
+            tile=True,
+            pyramid=True,
+            compression='jpeg',
+            Q=90,
+            bigtiff=True
         )
+        save_time = time.time() - save_start
+        print(f"影像儲存完畢，耗時: {save_time:.2f}s")
+
+        total_time = time.time() - start_time
+        print(f"\n完成！總時間: {total_time:.1f}s, 平均速度: {total_tiles/total_time:.2f} tiles/s")
+        print(f"儲存於: {final_output_path}")
+
+        # 清理 GPU 記憶體
+        if device.type == 'cuda':
+            del rigid_matrix_gpu
+            if bk_dxdy_gpu is not None:
+                del bk_dxdy_gpu
+            torch.cuda.empty_cache()
+            print("GPU 記憶體已清理")
+
     finally:
+        print("關閉 JVM...")
         try:
             slide_io.kill_jvm()
         except:
             pass
+
+
+
+if __name__ == "__main__":
+    # 確保 pyvips 的快取設定不會過度使用記憶體
+    pyvips.cache_set_max(100)  # 最多快取 100 個操作
+    pyvips.cache_set_max_mem(1024 * 1024 * 1024) # 1 GB vips 快取記憶體
+
+    # 定義輸入參數目錄和輸出目錄
+    input_params_dir = Path(r"H:\tsgh\thriple_image_layer\output")
+    output_dir = Path(r"G:\output\level0")
+
+    # 確保輸出目錄存在
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"所有輸出將儲存於: {output_dir}")
+
+    generate_aligned_tiles(
+        input_params_dir,
+        output_dir,
+        level=0,
+        non_rigid=True,
+        use_gpu=True,
+        batch_size=16,   # Level 0 tile 很大，需要較小的 batch size
+        num_workers=6
+    )
