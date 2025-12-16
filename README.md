@@ -60,7 +60,7 @@
     source venv/bin/activate
 
     # 安裝所有必要的套件
-    pip install -r requirements.txt
+    pip install -r requirements.txt.txt
     ```
 
 3.  **驗證 CUDA 安裝 (可選)**

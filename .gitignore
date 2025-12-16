@@ -11,3 +11,4 @@ docs/
 __pycache__/
 minconda
 output/
+*.npy
