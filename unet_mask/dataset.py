@@ -33,7 +33,9 @@ class LargeImagePseudoMaskDataset(Dataset):
         image_root: Path, 
         mask_root: Path, 
         transform=None, 
-        cache_ext: str = '.png'
+        cache_ext: str = '.png',
+        filter_empty: bool = True,
+        min_cell_percentage: float = 0.1
     ):
         """
         初始化資料集
@@ -43,20 +45,66 @@ class LargeImagePseudoMaskDataset(Dataset):
             mask_root: Mask 快取儲存目錄
             transform: Albumentations 資料增強流程
             cache_ext: 快取 mask 的檔案副檔名
+            filter_empty: 是否過濾掉全黑（沒有細胞）的 mask
+            min_cell_percentage: 細胞（類別1+2）最小佔比（%），低於此值的樣本會被過濾
         """
         self.image_root = Path(image_root)
         self.mask_root = Path(mask_root)
         self.transform = transform
         self.cache_ext = cache_ext
+        self.filter_empty = filter_empty
+        self.min_cell_percentage = min_cell_percentage
         
         # 收集所有支援格式的圖像檔案
-        self.samples = sorted([
+        all_samples = sorted([
             p for p in self.image_root.rglob('*') 
             if p.suffix.lower() in ('.png', '.jpg', '.jpeg', '.tif', '.tiff')
         ])
         
-        if not self.samples:
+        if not all_samples:
             print(f"警告：在 {image_root} 下找不到任何圖像")
+            self.samples = []
+            return
+        
+        # 如果需要過濾，檢查每個 mask
+        if filter_empty:
+            print(f"正在過濾空白 mask（最小細胞佔比: {min_cell_percentage}%）...")
+            self.samples = []
+            filtered_count = 0
+            
+            for img_path in all_samples:
+                # 計算對應的 mask 路徑
+                try:
+                    rel = img_path.relative_to(self.image_root)
+                except ValueError:
+                    rel = Path(img_path.name)
+                mask_path = (self.mask_root / rel).with_suffix(self.cache_ext)
+                
+                # 如果 mask 存在，檢查是否有內容
+                if mask_path.exists():
+                    try:
+                        mask = np.array(Image.open(mask_path))
+                        # 計算非背景像素的佔比
+                        total_pixels = mask.size
+                        cell_pixels = np.sum(mask > 0)
+                        cell_percentage = (cell_pixels / total_pixels) * 100
+                        
+                        if cell_percentage >= min_cell_percentage:
+                            self.samples.append(img_path)
+                        else:
+                            filtered_count += 1
+                    except:
+                        # 讀取失敗，保留樣本（之後會重新生成）
+                        self.samples.append(img_path)
+                else:
+                    # mask 不存在，保留樣本（之後會生成）
+                    self.samples.append(img_path)
+            
+            print(f"  過濾前: {len(all_samples)} 個樣本")
+            print(f"  過濾後: {len(self.samples)} 個樣本")
+            print(f"  已移除: {filtered_count} 個空白樣本 ({filtered_count/len(all_samples)*100:.1f}%)")
+        else:
+            self.samples = all_samples
 
     def __len__(self):
         return len(self.samples)
@@ -84,7 +132,13 @@ class LargeImagePseudoMaskDataset(Dataset):
         if mask_path.exists():
             try:
                 mask = np.array(Image.open(mask_path))
-            except Exception:
+                # 檢查 mask 值是否合法，若包含無效值（如 255）則重新生成
+                if mask.max() >= NUM_CLASSES:
+                    print(f"發現無效 Mask（值為 {mask.max()}），重新生成: {mask_path.name}")
+                    mask = generate_pseudo_mask_v2(img_path)
+                    Image.fromarray(mask).save(mask_path)
+            except Exception as e:
+                print(f"讀取 Mask 失敗: {e}，重新生成")
                 # 快取讀取失敗，重新生成
                 mask = generate_pseudo_mask_v2(img_path)
                 Image.fromarray(mask).save(mask_path)

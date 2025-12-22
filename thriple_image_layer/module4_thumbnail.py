@@ -105,9 +105,23 @@ def generate_thumbnail(
     dish_vips = pyvips.Image.new_from_file(str(dish_temp_ome), access='sequential')
     her2_vips = pyvips.Image.new_from_file(str(her2_temp_ome), access='sequential')
     
+    # 記錄原始尺寸（用於最終裁剪）
+    target_width = dish_vips.width
+    target_height = dish_vips.height
+    print(f"目標尺寸: {target_width} x {target_height}")
+    
     # 使用拉普拉斯金字塔融合保留細節
-    merged = laplacian_blend(dish_vips, her2_vips, levels=6)
-    output_path = f"G:\output\Merged_Aligned_lv{level}.tiff"
+    merged = laplacian_blend(dish_vips, her2_vips, levels=5)
+    
+    print(f"融合後尺寸: {merged.width} x {merged.height}")
+    
+    # 如果融合後尺寸不同，裁剪到目標尺寸
+    if merged.width != target_width or merged.height != target_height:
+        print(f"裁剪到目標尺寸: {target_width} x {target_height}")
+        # 從左上角裁剪（0, 0）
+        merged = merged.crop(0, 0, target_width, target_height)
+    
+    output_path = output_dir / f"Merged_Aligned_lv{level}.tiff"
     print("儲存合併影像...")
     merged.write_to_file(
         str(output_path),
@@ -121,10 +135,10 @@ def generate_thumbnail(
 
 
 if __name__ == "__main__":
-    output_dir = Path(r"H:\tsgh\thriple_image_layer\output")
+    output_dir = Path("/home/sec312/tsgh/thriple_image_layer/output")
     try:
         pyvips.cache_set_max(0)
-        generate_thumbnail(output_dir, level=0)
+        generate_thumbnail(output_dir, level=1)
     finally:
         try:
             slide_io.kill_jvm()

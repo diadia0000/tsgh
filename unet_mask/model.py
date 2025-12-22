@@ -73,18 +73,22 @@ class MultiClassSegmentationLoss(nn.Module):
         回傳：
             組合損失值
         """
-        # Dice Loss 需要 one-hot target
-        dice = self.dice_loss(pred, target)
-        
-        # Cross Entropy 需要 class indices target
+        # 將 one-hot 轉換為 class indices
         target_indices = target.argmax(dim=1)  # [B, H, W]
+        
+        # Dice Loss（from_logits=True 表示 pred 是 logits）
+        dice = self.dice_loss(pred, target_indices)
+        
+        # Cross Entropy
         ce = self.ce_loss(pred, target_indices)
         
         return dice + ce
 
 
-# 建立損失函數實例（給細胞膜較高權重，因為它通常面積最小）
-combined_loss = MultiClassSegmentationLoss(class_weights=[1.0, 1.5, 2.0])
+# 建立損失函數實例
+# 根據統計：背景 88.6%, 細胞內 2.1%, 細胞膜 9.3%
+# 大幅提高細胞類別權重以應對極度不平衡
+combined_loss = MultiClassSegmentationLoss(class_weights=[1.0, 5.0, 10.0])
 
 
 # ================= 評估指標 =================
