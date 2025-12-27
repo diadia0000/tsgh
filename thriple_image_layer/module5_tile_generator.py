@@ -144,15 +144,15 @@ if __name__ == "__main__":
     dish_tiff = output_base / "temp" / "dish_warped_lv1.ome.tiff"
     merged_tiff = output_base / "Merged_Aligned_lv1.tiff"
     
-    output_dir = output_base / "tiles_lv1"
+    output_dir = output_base / "tiles_lv1-1024"
     
-    # 切割 tiles（使用 512x512，適合 UNet 訓練）
+    # 切割 tiles（使用 1024x1024）
     generate_triple_tiles(
         her2_tiff=her2_tiff,
         dish_tiff=dish_tiff,
         merged_tiff=merged_tiff,
         output_base_dir=output_dir,
-        tile_width=512,
-        tile_height=512,
+        tile_width=1024,
+        tile_height=1024,
         workers=16  # 根據您的 CPU 核心數調整
     )

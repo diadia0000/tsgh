@@ -1,91 +1,71 @@
-#!/usr/bin/env python3
-"""測試修改後的 mask 生成效果"""
-import sys
-import numpy as np
+import os
 import cv2
-import matplotlib.pyplot as plt
-from pathlib import Path
+import numpy as np
+from skimage import io, color, morphology
 
-# 添加路徑
-sys.path.insert(0, str(Path(__file__).parent))
+# 路徑設定
+INPUT_DIR = "/home/sec312/tsgh/unet_mask/tile/"
+OUTPUT_DIR = "/home/sec312/tsgh/unet_mask/test_output/"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-from unet_mask.mask_generation import generate_pseudo_mask_v2
+def get_her2_membrane_mask(her2_path):
+    # 1. 讀取 HER2 影像 (假設內含 Brown 與 Blue)
+    img = io.imread(her2_path)[:, :, :3]
+    
+    # 2. 顏色解捲機：使用標準 HED 矩陣 (H:藍, E:無效, D:棕)
+    # 在這裡我們只取 DAB 通道 (index 2)
+    ihc_hed = color.separate_stains(img, color.hed_from_rgb)
+    dab_channel = ihc_hed[:, :, 2]
+    
+    # 3. 轉為 0-255 方便 OpenCV 處理
+    # 注意：這裡使用百分位數 (percentile) 縮放，可以避免極端亮點影響二值化
+    v_min, v_max = np.percentile(dab_channel, (0, 99.5))
+    dab_rescaled = np.clip((dab_channel - v_min) / (v_max - v_min), 0, 1)
+    dab_8bit = (dab_rescaled * 255).astype(np.uint8)
+    
+    # 4. 二值化：提取細胞膜
+    # 使用 Otsu 加上一個小的偏移量，確保只抓到比較深的咖啡色 (陽性膜)
+    thresh, _ = cv2.threshold(dab_8bit, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    mask = (dab_8bit > (thresh * 0.9)).astype(np.uint8) * 255
+    
+    # 5. 形態學處理：連接斷裂的膜、去除雜訊
+    # 閉運算：填補細胞膜的小細孔
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask_closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    
+    # 移除過小的雜點 (非細胞結構)
+    mask_final = morphology.remove_small_objects(mask_closed.astype(bool), min_size=100)
+    
+    return dab_8bit, mask_final.astype(np.uint8) * 255
 
-def test_single_image(image_path):
-    """測試單張圖片的 mask 生成"""
-    print(f"測試圖片: {image_path}")
+def main():
+    her2_name = "tile_x60928_y30720_her2.tiff"
+    dish_name = "tile_x60928_y30720_dish.tiff"
     
-    # 讀取圖片
-    img = cv2.imread(str(image_path))
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    her2_path = os.path.join(INPUT_DIR, her2_name)
+    dish_path = os.path.join(INPUT_DIR, dish_name)
     
-    # 生成 mask
-    mask = generate_pseudo_mask_v2(Path(image_path))
+    # 執行處理
+    print(f"正在分析 {her2_name}...")
+    dab_gray, membrane_mask = get_her2_membrane_mask(her2_path)
     
-    # 統計各類別像素數量
-    bg_pixels = np.sum(mask == 0)
-    inside_pixels = np.sum(mask == 1)
-    membrane_pixels = np.sum(mask == 2)
-    total_pixels = mask.size
+    # 讀取 DISH 影像用於疊合
+    dish_rgb = io.imread(dish_path)[:, :, :3]
     
-    print(f"\nMask 統計:")
-    print(f"  背景 (0): {bg_pixels:,} ({bg_pixels/total_pixels*100:.1f}%)")
-    print(f"  細胞內部 (1): {inside_pixels:,} ({inside_pixels/total_pixels*100:.1f}%)")
-    print(f"  細胞膜 (2): {membrane_pixels:,} ({membrane_pixels/total_pixels*100:.1f}%)")
+    # 儲存結果
+    # 1. 解捲後的咖啡色灰階圖
+    cv2.imwrite(os.path.join(OUTPUT_DIR, "step1_dab_channel.png"), dab_gray)
     
-    # 視覺化
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    # 2. 細胞膜 Mask
+    cv2.imwrite(os.path.join(OUTPUT_DIR, "step2_membrane_mask.png"), membrane_mask)
     
-    # 原圖
-    axes[0, 0].imshow(img_rgb)
-    axes[0, 0].set_title('原始圖像')
-    axes[0, 0].axis('off')
+    # 3. Final Overlay: 將 Mask 變成半透明紅色疊在 DISH 上
+    overlay = dish_rgb.copy()
+    overlay[membrane_mask > 0] = overlay[membrane_mask > 0] * 0.6 + np.array([255, 0, 0]) * 0.4
     
-    # Mask（三類別）
-    axes[0, 1].imshow(mask, cmap='jet', vmin=0, vmax=2)
-    axes[0, 1].set_title('三類別 Mask\n(0=背景, 1=細胞內, 2=細胞膜)')
-    axes[0, 1].axis('off')
+    io.imsave(os.path.join(OUTPUT_DIR, "final_overlay_on_dish.tiff"), overlay.astype(np.uint8))
     
-    # 疊加顯示
-    overlay = img_rgb.copy()
-    overlay[mask == 1] = [100, 255, 100]  # 淺綠 = 細胞內部
-    overlay[mask == 2] = [255, 100, 100]  # 淺紅 = 細胞膜
-    axes[0, 2].imshow(overlay)
-    axes[0, 2].set_title('疊加顯示')
-    axes[0, 2].axis('off')
-    
-    # 分別顯示三個類別
-    axes[1, 0].imshow(mask == 0, cmap='gray')
-    axes[1, 0].set_title(f'類別 0：背景\n({bg_pixels/total_pixels*100:.1f}%)')
-    axes[1, 0].axis('off')
-    
-    axes[1, 1].imshow(mask == 1, cmap='gray')
-    axes[1, 1].set_title(f'類別 1：細胞內部\n({inside_pixels/total_pixels*100:.1f}%)')
-    axes[1, 1].axis('off')
-    
-    axes[1, 2].imshow(mask == 2, cmap='gray')
-    axes[1, 2].set_title(f'類別 2：細胞膜\n({membrane_pixels/total_pixels*100:.1f}%)')
-    axes[1, 2].axis('off')
-    
-    plt.tight_layout()
-    
-    # 保存結果
-    output_path = Path(image_path).parent / f"{Path(image_path).stem}_test_result.png"
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    print(f"\n結果已保存到: {output_path}")
-    
-    plt.show()
+    print(f"驗證圖已存至: {OUTPUT_DIR}")
 
 if __name__ == "__main__":
-    # 從訓練數據中選一張圖片測試
-    test_dir = Path("unet_mask/process/train-512-lv1/strong")
-    
-    if test_dir.exists():
-        # 找第一張圖片
-        test_images = list(test_dir.glob("*.tiff")) + list(test_dir.glob("*.png"))
-        if test_images:
-            test_single_image(str(test_images[0]))
-        else:
-            print(f"在 {test_dir} 中找不到測試圖片")
-    else:
-        print(f"測試目錄不存在: {test_dir}")
+    main()
