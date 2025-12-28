@@ -13,3 +13,4 @@ minconda
 output/
 *.npy
 *.pt
+*.pth

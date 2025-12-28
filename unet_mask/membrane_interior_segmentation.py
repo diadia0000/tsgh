@@ -40,46 +40,63 @@ def generate_dab_mask_bool(img):
     return mask == 0
 
 
-def segment_membrane_interior(dab_mask, membrane_thickness=5, min_interior_size=100):
+def segment_membrane_interior(dab_mask, min_interior_size=100, min_hole_size=50):
     """
     將 DAB mask 分割為細胞膜和細胞內部
     
+    修正邏輯：
+    - 整個 DAB 區域 = 細胞膜 (Membrane)
+    - 被膜包圍的空洞 = 細胞內部 (Interior)
+    - 其他區域 = 背景 (Background)
+    
     Args:
         dab_mask: 二值化 DAB mask (True = DAB 陽性)
-        membrane_thickness: 細胞膜厚度 (pixels)
-        min_interior_size: 最小內部區域大小
+        min_interior_size: 最小內部區域大小 (小於此值視為噪點)
+        min_hole_size: 最小空洞大小 (小於此值不視為內部)
         
     Returns:
         segmentation: (H, W) 標籤圖
-            0 = 背景
-            1 = 細胞內部 (Interior)
-            2 = 細胞膜 (Membrane)
+            0 = 背景 (Background)
+            1 = 細胞內部 (Interior) - 被膜包圍的空洞
+            2 = 細胞膜 (Membrane) - DAB 染色區域
     """
     dab_mask = dab_mask.astype(bool)
     
-    # 對每個連通區域分別處理
-    labeled = measure.label(dab_mask)
-    regions = measure.regionprops(labeled)
-    
+    # 初始化分割結果
     segmentation = np.zeros(dab_mask.shape, dtype=np.uint8)
     
-    for region in regions:
-        region_mask = labeled == region.label
+    # Step 1: DAB 陽性區域 = 細胞膜 (2)
+    segmentation[dab_mask] = 2
+    
+    # Step 2: 找出被膜包圍的空洞 (細胞內部)
+    # 使用 binary_fill_holes 填充整個 DAB 區域，然後與原始 mask 做差集
+    filled = ndimage.binary_fill_holes(dab_mask)
+    holes = filled & ~dab_mask  # 被填充的區域 = 空洞 = 細胞內部
+    
+    # Step 3: 過濾太小的空洞 (可能是噪點)
+    if min_hole_size > 0:
+        holes = morphology.remove_small_objects(holes, min_size=min_hole_size)
+    
+    # Step 4: 標記細胞內部 (1)
+    segmentation[holes] = 1
+    
+    # Step 5: 處理邊緣觸碰的情況
+    # 如果一個區域接觸影像邊緣，它不應該被視為「內部」
+    # 使用連通區域分析，移除接觸邊緣的「內部」區域
+    interior_labeled = measure.label(segmentation == 1)
+    
+    for region in measure.regionprops(interior_labeled):
+        # 檢查該區域是否接觸影像邊緣
+        minr, minc, maxr, maxc = region.bbox
+        touches_edge = (minr == 0 or minc == 0 or 
+                       maxr == dab_mask.shape[0] or maxc == dab_mask.shape[1])
         
-        # 計算該區域的「厚度」- 用距離變換
-        distance = ndimage.distance_transform_edt(region_mask)
-        max_distance = np.max(distance)
-        
-        # 如果區域太小或太薄，全部視為膜
-        if max_distance < membrane_thickness or region.area < min_interior_size:
-            segmentation[region_mask] = 2  # 全是膜
-        else:
-            # 內部 = 距離邊界超過 membrane_thickness 的區域
-            interior = distance > membrane_thickness
-            membrane = region_mask & ~interior
-            
-            segmentation[interior] = 1  # 內部
-            segmentation[membrane] = 2  # 膜
+        if touches_edge:
+            # 接觸邊緣的區域改為背景
+            segmentation[interior_labeled == region.label] = 0
+        elif region.area < min_interior_size:
+            # 太小的內部區域也改為背景 (可能是噪點)
+            segmentation[interior_labeled == region.label] = 0
     
     return segmentation
 
@@ -125,7 +142,7 @@ def create_3class_mask(segmentation):
 
 def run_segmentation_test(membrane_thickness=5):
     """執行分割測試"""
-    her2_path = os.path.join(INPUT_DIR, "tile_x60928_y30720_her2.tiff")
+    her2_path = os.path.join(INPUT_DIR, "tile_x49152_y98304_her2.tiff")
     
     print("=" * 50)
     print("HER2 細胞膜與內部分割")

@@ -105,7 +105,7 @@ def create_overlay(original_img, mask, color=(255, 0, 0), alpha=0.4):
 
 def run_test():
     """測試 mask 生成"""
-    her2_path = os.path.join(INPUT_DIR, "tile_x0_y43008_her2.tiff")
+    her2_path = os.path.join(INPUT_DIR, "tile_x2048_y16384_her2.tiff")
     
     print("=" * 50)
     print("HER2 DAB Mask 生成")
