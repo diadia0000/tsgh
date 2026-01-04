@@ -320,7 +320,3 @@ volumes:
 - **aicspylibczi**: Allen Institute for Cell Science CZI reader
 - **pyvips**: Python binding for libvips image processing library
 - **PyTorch**: Deep learning framework
-
-## 聯絡資訊
-
-如有問題或建議，請透過 GitHub Issues 回報。
