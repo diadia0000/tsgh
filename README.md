@@ -303,7 +303,7 @@ volumes:
 - **新增 HER2 遮罩分析模組**: 使用色彩解卷積進行染色區域分割
 - **文件更新**: 更新 README 反映最新專案結構
 
-### v2.1.0 (2025-01-XX)
+### v2.1.0 (2025-11-11)
 - **新增模組 5**: 高效切割影像磚功能
 - **GPU 加速**: 整合 LightGlue + DISK 特徵匹配
 - **融合技術升級**: 採用拉普拉斯金字塔融合技術
@@ -320,7 +320,3 @@ volumes:
 - **aicspylibczi**: Allen Institute for Cell Science CZI reader
 - **pyvips**: Python binding for libvips image processing library
 - **PyTorch**: Deep learning framework
-
-## 聯絡資訊
-
-如有問題或建議，請透過 GitHub Issues 回報。
