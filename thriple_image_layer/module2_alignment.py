@@ -25,21 +25,21 @@ def align_images(
     """
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     if device == 'cpu':
-        print("警告：找不到 CUDA 裝置，將繼續使用 CPU。")
+        print("using cpu")
     else:
         print(f"使用裝置：{device}")
-    # 2. 建立一個特徵「偵測器」
-    # LightGlue 推薦搭配 DISK 或 SuperPoint。valis 預設使用 DISK。
-    # 您也可以在這裡指定 device，因為偵測器也需要在 GPU 上運行
-    fd = feature_detectors.DiskFD(num_features=2048, device=device)
-
-    # 3. 建立「匹配器」(LightGlueMatcher)
-    #    在這裡傳入您想要的 device，以及剛剛建立的偵測器
-    #    valis 的 LightGlueMatcher 會把 'device' 參數傳給底層的 kornia 模型
-    matcher = feature_matcher.LightGlueMatcher(
-        fd,  # 告訴 LightGlue 它要搭配哪個偵測器
-        device=device  # <--- 這才是指定 GPU 的關鍵參數！
+    
+    # 使用 BRISK 特徵檢測器 + 傳統 Matcher
+    # BRISK 是穩定的傳統特徵檢測器，不會造成影像扭曲
+    fd = feature_detectors.BriskFD()
+    
+    matcher = feature_matcher.Matcher(
+        feature_detector=fd,
+        match_filter_method='GMS',      # Grid-based Motion Statistics 過濾
+        gms_threshold=25,               # 較高閾值確保匹配品質
+        ransac_thresh=5
     )
+    
     output_dir.mkdir(parents=True, exist_ok=True)
     # 初始化 VALIS (自動選擇對位演算法)
     registrar = registration.Valis(
@@ -75,8 +75,8 @@ def align_images(
     return registrar
 
 if __name__ == "__main__":
-    czi_dir = Path(r"H:\tsgh\picture\whole_size\40X")
-    output_dir = Path(r"H:\tsgh\thriple_image_layer\output")
+    czi_dir = Path(r"E:\Class\tsgh\picture\whole_size\40X")
+    output_dir = Path(r"E:\Class\tsgh\thriple_image_layer\output")
     
     registrar = align_images(czi_dir, output_dir)
     print(f"\n對準完成，結果儲存於: {output_dir}")
