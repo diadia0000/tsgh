@@ -290,7 +290,8 @@ class CheckpointManager:
         scheduler,
         scaler,
         epoch: int,
-        metrics: Dict[str, float]
+        metrics: Dict[str, float],
+        model_config: Dict[str, any] = None
     ) -> bool:
         """
         保存 Checkpoint
@@ -331,7 +332,8 @@ class CheckpointManager:
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
                 "scaler_state_dict": scaler.state_dict() if scaler else None,
-                "metrics": metrics
+                "metrics": metrics,
+                "model_config": model_config or {}
             }
             
             filename = f"checkpoint_epoch{epoch:03d}_{self.monitor_metric}_{current_metric:.4f}.pth"
@@ -417,6 +419,102 @@ class TrainingLogger:
               f"內部: {train_metrics['iou_Interior']:.4f}, 膜: {train_metrics['iou_Membrane']:.4f}")
         print(f"  驗證 IoU - 背景: {val_metrics['iou_Background']:.4f}, "
               f"內部: {val_metrics['iou_Interior']:.4f}, 膜: {val_metrics['iou_Membrane']:.4f}")
+
+
+class TeeLogger:
+    """
+    同時將輸出導向 terminal 和 txt 檔案的日誌記錄器
+    
+    使用方式:
+        logger = TeeLogger(log_dir, experiment_name)
+        logger.start()  # 開始捕獲所有 print 輸出
+        ... 訓練過程 ...
+        logger.stop()   # 停止捕獲，恢復正常輸出
+    """
+    
+    def __init__(self, log_dir: str, experiment_name: str = None):
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        
+        if experiment_name is None:
+            experiment_name = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        self.experiment_name = experiment_name
+        self.txt_log_file = self.log_dir / f"{experiment_name}_console.txt"
+        
+        self._original_stdout = None
+        self._original_stderr = None
+        self._file = None
+    
+    def start(self):
+        """開始捕獲輸出"""
+        import sys
+        
+        self._original_stdout = sys.stdout
+        self._original_stderr = sys.stderr
+        self._file = open(self.txt_log_file, "w", encoding="utf-8", buffering=1)  # line buffering
+        
+        sys.stdout = _TeeStream(self._original_stdout, self._file)
+        sys.stderr = _TeeStream(self._original_stderr, self._file)
+        
+        # 寫入開始時間
+        start_msg = f"=" * 60 + "\n"
+        start_msg += f"訓練日誌開始時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        start_msg += f"日誌檔案: {self.txt_log_file}\n"
+        start_msg += f"=" * 60 + "\n"
+        self._file.write(start_msg)
+        self._file.flush()
+    
+    def stop(self):
+        """停止捕獲輸出，恢復正常"""
+        import sys
+        
+        if self._original_stdout is not None:
+            sys.stdout = self._original_stdout
+        if self._original_stderr is not None:
+            sys.stderr = self._original_stderr
+        
+        if self._file is not None:
+            # 寫入結束時間
+            end_msg = f"\n" + "=" * 60 + "\n"
+            end_msg += f"訓練日誌結束時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            end_msg += f"=" * 60 + "\n"
+            self._file.write(end_msg)
+            self._file.close()
+            self._file = None
+    
+    def __enter__(self):
+        """支援 with 語法"""
+        self.start()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """支援 with 語法"""
+        self.stop()
+        return False
+
+
+class _TeeStream:
+    """
+    內部類別：同時寫入兩個串流
+    """
+    
+    def __init__(self, stream1, stream2):
+        self.stream1 = stream1  # terminal
+        self.stream2 = stream2  # file
+    
+    def write(self, data):
+        self.stream1.write(data)
+        self.stream2.write(data)
+        self.stream1.flush()
+        self.stream2.flush()
+    
+    def flush(self):
+        self.stream1.flush()
+        self.stream2.flush()
+    
+    def isatty(self):
+        return self.stream1.isatty()
 
 
 def clear_cuda_cache():

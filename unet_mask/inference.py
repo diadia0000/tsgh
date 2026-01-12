@@ -32,31 +32,45 @@ def get_inference_transform():
     ])
 
 
-def load_model(checkpoint_path: str, device: torch.device = None):
+def load_model(checkpoint_path: str, device: torch.device = None, encoder_name: str = None):
     """
     載入訓練好的模型
     
     Args:
         checkpoint_path: checkpoint 檔案路徑
         device: 計算設備
+        encoder_name: encoder 名稱 (若未指定則從 checkpoint 讀取)
         
     Returns:
         model: 載入權重後的模型
     """
     device = device or config.device
     
-    print(f"載入模型: {checkpoint_path}")
+    print(f"載入 Checkpoint: {checkpoint_path}")
+    
+    # 先載入 checkpoint 以讀取模型配置
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    # 從 checkpoint 讀取模型配置 (優先使用 checkpoint 中的設定)
+    model_config = checkpoint.get("model_config", {})
+    
+    if encoder_name is None:
+        encoder_name = model_config.get("encoder_name", config.encoder_name)
+    
+    num_classes = model_config.get("num_classes", config.num_classes)
+    
+    print(f"使用 Encoder: {encoder_name}")
+    print(f"類別數量: {num_classes}")
     
     # 建立模型
     model = smp.UnetPlusPlus(
-        encoder_name=config.encoder_name,
+        encoder_name=encoder_name,
         encoder_weights=None,  # 不使用預訓練權重，使用 checkpoint
         in_channels=3,
-        classes=config.num_classes
+        classes=num_classes
     )
     
     # 載入權重
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device)
     model.eval()

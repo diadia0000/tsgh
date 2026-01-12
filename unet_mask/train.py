@@ -33,6 +33,7 @@ from utils import (
     MetricsTracker,
     CheckpointManager,
     TrainingLogger,
+    TeeLogger,
     clear_cuda_cache
 )
 
@@ -180,6 +181,16 @@ def train(args):
     """
     主訓練流程
     """
+    # 建立實驗名稱
+    experiment_name = f"her2_unetpp_{config.encoder_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    # 建立 TeeLogger - 同時輸出到 terminal 和 txt 檔案
+    tee_logger = TeeLogger(
+        log_dir=config.log_dir,
+        experiment_name=experiment_name
+    )
+    tee_logger.start()
+    
     print("=" * 60)
     print("HER2 語義分割訓練")
     print("=" * 60)
@@ -253,7 +264,6 @@ def train(args):
     print(f"混合精度訓練 (AMP): {'啟用' if config.use_amp else '停用'}")
     
     # 建立 Checkpoint 管理器
-    experiment_name = f"her2_unetpp_swin_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     checkpoint_manager = CheckpointManager(
         save_dir=config.model_save_dir,
         monitor_metric="val_miou",
@@ -261,7 +271,7 @@ def train(args):
         save_top_k=config.save_top_k
     )
     
-    # 建立訓練日誌
+    # 建立訓練日誌 (JSON 格式)
     logger = TrainingLogger(
         log_dir=config.log_dir,
         experiment_name=experiment_name
@@ -296,15 +306,21 @@ def train(args):
         logger.log_epoch(epoch, train_metrics, val_metrics, current_lr)
         logger.print_epoch_summary(epoch, train_metrics, val_metrics, current_lr)
         
-        # 保存 Checkpoint
+        # 保存 Checkpoint (包含模型架構資訊)
         val_miou = val_metrics["miou"]
         save_metrics = {"val_miou": val_miou, **val_metrics}
+        model_config = {
+            "encoder_name": config.encoder_name,
+            "model_name": config.model_name,
+            "num_classes": config.num_classes,
+            "encoder_weights": config.encoder_weights,
+        }
         is_best = checkpoint_manager.save_checkpoint(
-            model, optimizer, scheduler, scaler, epoch, save_metrics
+            model, optimizer, scheduler, scaler, epoch, save_metrics, model_config
         )
         
         if is_best:
-            print("  🎉 新的最佳模型！")
+            print("new best model!")
             best_val_miou = val_miou
             early_stopping_counter = 0
         else:
@@ -324,7 +340,8 @@ def train(args):
     print("=" * 60)
     print(f"最佳驗證 mIoU: {best_val_miou:.4f}")
     print(f"模型保存位置: {config.model_save_dir}")
-    print(f"訓練日誌: {logger.log_file}")
+    print(f"訓練日誌 (JSON): {logger.log_file}")
+    print(f"訓練日誌 (TXT): {tee_logger.txt_log_file}")
     
     # 在測試集上評估最佳模型
     if test_loader is not None:
@@ -337,6 +354,10 @@ def train(args):
         print(f"  mIoU: {test_metrics['miou']:.4f}")
         print(f"  IoU - 背景: {test_metrics['iou_Background']:.4f}, "
               f"內部: {test_metrics['iou_Interior']:.4f}, 膜: {test_metrics['iou_Membrane']:.4f}")
+    
+    # 停止 TeeLogger
+    tee_logger.stop()
+    print(f"\n訓練日誌已保存至: {tee_logger.txt_log_file}")
 
 
 def main():

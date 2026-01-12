@@ -48,7 +48,7 @@ class Config:
     # - SMP 原生支援，穩定性高
     # - 參數效率高，效能優秀
     model_name: str = "unetplusplus"
-    encoder_name: str = "efficientnet-b4"
+    encoder_name: str = "densenet121"
     # 預訓練權重
     encoder_weights: str = "imagenet"
     # 是否使用輔助分類器
@@ -80,7 +80,7 @@ class Config:
     # 總訓練 epochs
     epochs: int = 100
     # Batch size (針對 32GB 顯存優化，1024 解析度下預計可設為 4-8)
-    batch_size: int = 8
+    batch_size: int = 6
     # DataLoader num_workers (根據 CPU 核心數設定)
     num_workers: int = 16
     # 是否 pin_memory
