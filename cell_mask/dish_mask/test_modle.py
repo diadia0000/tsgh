@@ -17,8 +17,8 @@ warnings.filterwarnings('ignore', message='.*shaped series shape.*')
 TEST_IMAGE_DIR = "/home/sec312/tsgh/dish_mask/test_picture/dish"
 MODEL_DIR = "/home/sec312/tsgh/dish_mask/models"
 OUTPUT_DIR = "/home/sec312/tsgh/dish_mask/test_output"
-MODEL_NAME = "dish_cellpose"
-N_TEST_IMAGES = 10
+MODEL_NAME = "dish_cellpose_v5"
+N_TEST_IMAGES = 5
 
 
 def find_model_path():
@@ -90,7 +90,7 @@ def main():
     total_objects = 0
     for i, img_path in enumerate(test_images):
         img = imread(img_path)
-        masks, flows, _ = model.eval(img, diameter=None)
+        masks, flows, _ = model.eval(img, diameter=None, augment=True, tile_overlap=0.1, bsize=256)
         n_obj = len(np.unique(masks)) - 1
         total_objects += n_obj
         

@@ -105,14 +105,14 @@ if __name__ == "__main__":
     
     her2_tiff = output_base / "HER2_region.tiff"
     dish_tiff = output_base / "DISH_region.tiff"
-    output_dir = output_base / "tiles_region-2048"
+    output_dir = output_base / "tiles_region-1024"
     
-    # 切割 tiles（使用 2048x2048)
+    # 切割 tiles（使用 1024x1024)
     generate_triple_tiles(
         her2_tiff=her2_tiff,
         dish_tiff=dish_tiff,
         output_base_dir=output_dir,
-        tile_width=2048,
-        tile_height=2048,
+        tile_width=1024,
+        tile_height=1024,
         workers=16  # 根據您的 CPU 核心數調整
     )
