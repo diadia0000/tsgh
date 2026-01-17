@@ -45,10 +45,11 @@ class ROIEvaluator:
         roi_size: ROI 尺寸 (width, height)
     """
     
-    DEFAULT_MODALITY_PATHS = {
-        "HER2": "HER2_registered.ome.tiff",
-        "DISH": "DISH_registered.ome.tiff",
-        "HE": "HE_registered.ome.tiff",
+    # wsireg 輸出的命名規則: project_name-modality_registered.ome.tiff
+    DEFAULT_MODALITY_PATTERNS = {
+        "HER2": "*-HER2_registered.ome.tiff",
+        "DISH": "*-DISH_to_HER2_registered.ome.tiff",
+        "HE": "*-HE_to_HER2_registered.ome.tiff",
     }
     
     def __init__(
@@ -77,25 +78,17 @@ class ROIEvaluator:
         """
         image_paths = {}
         
-        # WSIReg 輸出目錄結構：output_dir/project_name/modality_registered.ome.tiff
-        project_dir = self.output_dir / "thriple_registration"
+        # 新目錄結構：output_dir/registered/
+        search_dir = self.output_dir / "registered"
         
-        if not project_dir.exists():
+        if not search_dir.exists():
             # 嘗試直接在 output_dir 尋找
-            project_dir = self.output_dir
+            search_dir = self.output_dir
         
-        for modality, default_name in self.DEFAULT_MODALITY_PATHS.items():
-            # 嘗試找到對應檔案
-            expected_path = project_dir / default_name
-            
-            if expected_path.exists():
-                image_paths[modality] = expected_path
-            else:
-                # 嘗試其他命名模式
-                pattern = f"*{modality}*.ome.tiff"
-                matches = list(project_dir.glob(pattern))
-                if matches:
-                    image_paths[modality] = matches[0]
+        for modality, pattern in self.DEFAULT_MODALITY_PATTERNS.items():
+            matches = list(search_dir.glob(pattern))
+            if matches:
+                image_paths[modality] = matches[0]
         
         return image_paths
     
@@ -254,15 +247,19 @@ class ROIEvaluator:
         # Step 4: 保存結果
         print("\n[4/4] 保存評估結果...")
         
+        # 保存到 registered 子目錄
+        save_dir = self.output_dir / "registered"
+        save_dir.mkdir(parents=True, exist_ok=True)
+        
         # 保存合併影像
         merged = self._create_merged_visualization()
-        merged_path = self.output_dir / "Merged_ROI.png"
+        merged_path = save_dir / "Merged_ROI.png"
         Image.fromarray(merged).save(merged_path)
         print(f"  ✓ 已保存: {merged_path.name}")
         
         # 保存指標 CSV
         df = result.to_dataframe()
-        csv_path = self.output_dir / "Metrics.csv"
+        csv_path = save_dir / "Metrics.csv"
         df.to_csv(csv_path, index=False)
         print(f"  ✓ 已保存: {csv_path.name}")
         
@@ -294,5 +291,8 @@ def evaluate_roi(
 
 
 if __name__ == "__main__":
-    output_dir = Path("/home/sec312/tsgh/thriple_image_layer/output")
+    from config import create_default_config
+    config = create_default_config()
+    # 使用 config 的 output_dir 的父目錄 (因為 registered 是子目錄)
+    output_dir = config.output_dir.parent
     evaluate_roi(output_dir)

@@ -2,18 +2,20 @@
 WSIReg 完整配準流程執行腳本
 
 執行四模組流程：
-0. CZI 預處理（降採樣轉 TIFF）
-1. 影像配準 (WSIReg)
-2. ROI 品質評估
-3. 縮圖生成
+1. CZI 預處理（降採樣轉 TIFF） - module1_preprocess.py
+2. 影像配準 (WSIReg) - module2_wsireg_alignment.py  
+3. ROI 品質評估 - module3_wsireg_evaluation.py
+4. 縮圖生成 - module4_wsireg_thumbnail.py
+
+前提條件：Module 1 已執行，HER2_processed.tif 等檔案已存在於 output 目錄
 """
 from pathlib import Path
 import sys
 import argparse
 import pyvips
 
-from config import RegistrationConfig, ElastixParams, ModalityConfig
-from module1_preprocess import preprocess_czi_files
+from config import create_default_config, RegistrationConfig, ElastixParams, ModalityConfig
+from module1_preprocess import CziPreprocessor
 from module2_wsireg_alignment import WSIRegAligner
 from module3_wsireg_evaluation import ROIEvaluator
 from module4_wsireg_thumbnail import ThumbnailGenerator, ThumbnailConfig
@@ -25,18 +27,21 @@ def parse_args() -> argparse.Namespace:
         description="WSIReg 全玻片影像配準流程"
     )
     
+    # 使用 config.py 的預設值
+    default_config = create_default_config()
+    
     parser.add_argument(
         "--input-dir",
         type=Path,
-        default=Path("/home/sec312/tsgh/picture/czi/40X"),
-        help="CZI 影像輸入目錄"
+        default=default_config.input_dir,
+        help="預處理後的 TIFF 輸入目錄 (Module 1 輸出)"
     )
     
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("/home/sec312/tsgh/thriple_image_layer/output"),
-        help="配準結果輸出目錄"
+        default=default_config.output_dir.parent,  # output 目錄 (非 registered)
+        help="輸出目錄"
     )
     
     parser.add_argument(
@@ -63,8 +68,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--thumbnail-level",
         type=int,
-        default=4,
-        help="縮圖金字塔層級"
+        default=0,  # 影像已經是 level 1，使用 level 0 保持原解析度
+        help="縮圖金字塔層級 (0=原解析度)"
     )
     
     parser.add_argument(
@@ -94,132 +99,69 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_preprocess(
-    input_dir: Path,
-    output_dir: Path,
-    downsampling: int
-) -> Path:
-    """執行預處理模組
+def run_preprocess(config: RegistrationConfig) -> None:
+    """執行預處理模組 (Module 1)
     
-    Returns:
-        預處理輸出目錄
+    將 CZI 轉換為 BigTIFF
     """
     print("\n" + "=" * 60)
-    print("[Module 0] CZI 預處理...")
-    print("=" * 60)
-    
-    preprocess_dir = output_dir / "preprocessed"
-    
-    # CZI 檔案列表
-    czi_files = ["HER2_40X.czi", "DISH_40X_2.czi", "HE_40X.czi"]
-    
-    try:
-        preprocess_czi_files(
-            input_dir=input_dir,
-            output_dir=preprocess_dir,
-            filenames=czi_files,
-            downsampling=downsampling
-        )
-        print("✓ Module 0 完成")
-        return preprocess_dir
-    except Exception as e:
-        print(f"✗ Module 0 失敗: {e}")
-        raise
-
-
-def create_tiff_config(
-    preprocess_dir: Path,
-    output_dir: Path,
-    downsampling: int,
-    elastix_params: ElastixParams
-) -> RegistrationConfig:
-    """創建使用預處理 TIFF 的配置"""
-    
-    # 計算輸出解析度 (原始 40X = 0.25 µm/px)
-    input_res = 0.25 * downsampling  # 降採樣後的解析度
-    
-    config = RegistrationConfig(
-        project_name="thriple_registration",
-        input_dir=preprocess_dir,
-        output_dir=output_dir,
-        elastix_params=elastix_params,
-        modalities=[
-            ModalityConfig(
-                name="HER2",
-                filename=f"HER2_40X_ds{downsampling}.tiff",
-                resolution=input_res,
-                output_resolution=None,  # 保持輸入解析度
-                downsampling=1,  # 已經降採樣過，不需要再降
-                channel_names=["HER2"],
-                channel_colors=["red"]
-            ),
-            ModalityConfig(
-                name="DISH",
-                filename=f"DISH_40X_2_ds{downsampling}.tiff",
-                resolution=input_res,
-                output_resolution=None,
-                downsampling=1,
-                channel_names=["DISH"],
-                channel_colors=["blue"]
-            ),
-            ModalityConfig(
-                name="HE",
-                filename=f"HE_40X_ds{downsampling}.tiff",
-                resolution=input_res,
-                output_resolution=None,
-                downsampling=1,
-                channel_names=["HE"],
-                channel_colors=["green"]
-            ),
-        ]
-    )
-    
-    return config
-
-
-def run_alignment(config: RegistrationConfig) -> None:
-    """執行配準模組"""
-    print("\n" + "=" * 60)
-    print("[Module 1] 執行影像配準...")
+    print("[Module 1] CZI 預處理...")
     print("=" * 60)
     
     try:
-        aligner = WSIRegAligner(config)
-        aligner.run()
+        processor = CziPreprocessor(config)
+        processor.run()
         print("✓ Module 1 完成")
     except Exception as e:
         print(f"✗ Module 1 失敗: {e}")
         raise
 
 
-def run_evaluation(output_dir: Path) -> None:
-    """執行評估模組"""
+
+
+def run_alignment(config: RegistrationConfig) -> None:
+    """執行配準模組 (Module 2)"""
     print("\n" + "=" * 60)
-    print("[Module 2] 評估 ROI 品質...")
+    print("[Module 2] 執行影像配準...")
     print("=" * 60)
     
     try:
-        evaluator = ROIEvaluator(output_dir)
-        evaluator.run()
+        aligner = WSIRegAligner(config)
+        aligner.run()
         print("✓ Module 2 完成")
     except Exception as e:
         print(f"✗ Module 2 失敗: {e}")
         raise
 
 
-def run_thumbnail(output_dir: Path, level: int) -> None:
-    """執行縮圖生成模組"""
+def run_evaluation(output_dir: Path) -> None:
+    """執行評估模組 (Module 3)"""
     print("\n" + "=" * 60)
-    print("[Module 3] 產生全局縮圖...")
+    print("[Module 3] 評估 ROI 品質...")
     print("=" * 60)
     
     try:
-        config = ThumbnailConfig(level=level)
-        generator = ThumbnailGenerator(output_dir, config)
-        generator.run()
+        evaluator = ROIEvaluator(output_dir)
+        evaluator.run()
         print("✓ Module 3 完成")
     except Exception as e:
         print(f"✗ Module 3 失敗: {e}")
+        raise
+
+
+def run_thumbnail(output_dir: Path, level: int) -> None:
+    """執行縮圖生成模組 (Module 4)"""
+    print("\n" + "=" * 60)
+    print("[Module 4] 產生全局縮圖...")
+    print("=" * 60)
+    
+    try:
+        thumb_config = ThumbnailConfig(level=level)
+        generator = ThumbnailGenerator(output_dir, thumb_config)
+        generator.run()
+        print("✓ Module 4 完成")
+    except Exception as e:
+        print(f"✗ Module 4 失敗: {e}")
         raise
 
 
@@ -234,62 +176,47 @@ def main() -> int:
     
     args = parse_args()
     
-    print("=" * 60)
-    print("WSIReg 配準流程 (記憶體優化版)")
-    print("=" * 60)
-    print(f"\n輸入目錄:      {args.input_dir}")
-    print(f"輸出目錄:      {args.output_dir}")
-    print(f"預處理降採樣:  {args.preprocess_downsampling}x")
-    print(f"網格間距:      {args.grid_spacing}")
-    print(f"正則化權重:    {args.bending_weight}")
+    # 使用預設配置並根據參數調整
+    config = create_default_config()
+    config.elastix_params.grid_spacing = args.grid_spacing
+    config.elastix_params.bending_energy_weight = args.bending_weight
     
-    # 建立 elastix 配置
-    elastix_params = ElastixParams(
-        grid_spacing=args.grid_spacing,
-        bending_energy_weight=args.bending_weight,
-    )
+    print("=" * 60)
+    print("WSIReg 配準流程")
+    print("=" * 60)
+    print(f"\n輸入目錄:      {config.input_dir}")
+    print(f"配準輸出目錄:  {config.output_dir}")
+    print(f"網格間距:      {config.elastix_params.grid_spacing}")
+    print(f"正則化權重:    {config.elastix_params.bending_energy_weight}")
     
     try:
-        # Module 0: 預處理
+        # Module 1: 預處理 (CZI -> BigTIFF)
         if not args.skip_preprocess:
-            preprocess_dir = run_preprocess(
-                args.input_dir,
-                args.output_dir,
-                args.preprocess_downsampling
-            )
+            run_preprocess(config)
         else:
-            preprocess_dir = args.output_dir / "preprocessed"
-            print("\n[跳過] Module 0 預處理")
+            print("\n[跳過] Module 1 預處理")
         
-        # 創建使用預處理 TIFF 的配置
-        config = create_tiff_config(
-            preprocess_dir,
-            args.output_dir,
-            args.preprocess_downsampling,
-            elastix_params
-        )
-        
-        # Module 1: 配準
+        # Module 2: 配準
         if not args.skip_alignment:
             run_alignment(config)
         else:
-            print("\n[跳過] Module 1 配準")
+            print("\n[跳過] Module 2 配準")
         
-        # Module 2: 評估
+        # Module 3: 評估
         if not args.skip_evaluation:
             run_evaluation(args.output_dir)
         else:
-            print("\n[跳過] Module 2 評估")
+            print("\n[跳過] Module 3 評估")
         
-        # Module 3: 縮圖
+        # Module 4: 縮圖
         if not args.skip_thumbnail:
             run_thumbnail(args.output_dir, args.thumbnail_level)
         else:
-            print("\n[跳過] Module 3 縮圖")
+            print("\n[跳過] Module 4 縮圖")
         
         print("\n" + "=" * 60)
         print("完整流程執行完畢")
-        print(f"結果儲存於: {args.output_dir}")
+        print(f"結果儲存於: {config.output_dir}")
         print("=" * 60)
         
         return 0

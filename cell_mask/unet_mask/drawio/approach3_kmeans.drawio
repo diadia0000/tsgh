@@ -1,0 +1,103 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="方案3: K-Means 自動聚類分離" id="kmeans">
+    <mxGraphModel dx="1434" dy="844" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="1000" background="#000000" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        
+        <!-- Title -->
+        <mxCell id="title" value="方案 3: K-Means 自動聚類分離 (無需手動閾值)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=24;fontStyle=1;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="350" y="20" width="700" height="40" as="geometry"/>
+        </mxCell>
+        
+        <!-- Input -->
+        <mxCell id="input" value="&lt;b&gt;HER2 RGB 圖片&lt;/b&gt;&lt;br&gt;1024×1024×3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1e3a5f;strokeColor=#4a90d9;strokeWidth=2;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="40" y="120" width="180" height="80" as="geometry"/>
+        </mxCell>
+        
+        <!-- Step 1: Color Conversion -->
+        <mxCell id="step1" value="&lt;b&gt;1. RGB → LAB 轉換&lt;/b&gt;&lt;br&gt;&lt;br&gt;L: 亮度 (0-100)&lt;br&gt;A: 紅-綠 軸&lt;br&gt;B: 黃-藍 軸&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;LAB 更適合色彩聚類&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3d2453;strokeColor=#9673a6;strokeWidth=2;fontSize=12;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="280" y="100" width="200" height="120" as="geometry"/>
+        </mxCell>
+        
+        <!-- Step 2: Reshape -->
+        <mxCell id="step2" value="&lt;b&gt;2. Reshape 為像素矩陣&lt;/b&gt;&lt;br&gt;&lt;br&gt;(H×W, 3)&lt;br&gt;每行 = 一個像素&lt;br&gt;每列 = L, A, B 值" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3d2453;strokeColor=#9673a6;strokeWidth=2;fontSize=12;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="540" y="100" width="200" height="120" as="geometry"/>
+        </mxCell>
+        
+        <!-- Step 3: K-Means -->
+        <mxCell id="step3" value="&lt;b&gt;3. K-Means 聚類 (K=4)&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#aaaaaa&quot;&gt;自動分成 4 群:&lt;/font&gt;&lt;br&gt;• 白色背景&lt;br&gt;• 藍色細胞核&lt;br&gt;• 淡棕色區域&lt;br&gt;• 深棕色膜&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;無需手動設定閾值&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#5c4a1f;strokeColor=#d4a838;strokeWidth=2;fontSize=12;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="800" y="80" width="220" height="160" as="geometry"/>
+        </mxCell>
+        
+        <!-- Step 4: Cluster Identification -->
+        <mxCell id="step4" value="&lt;b&gt;4. 自動識別棕色群&lt;/b&gt;&lt;br&gt;&lt;br&gt;分析聚類中心:&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;棕色條件:&lt;/font&gt;&lt;br&gt;• A 通道 &amp;gt; 128 (偏紅)&lt;br&gt;• B 通道 &amp;gt; 128 (偏黃)&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#ff6666&quot;&gt;藍色排除:&lt;/font&gt;&lt;br&gt;• B 通道 &amp;lt; 128 (偏藍)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#5c4a1f;strokeColor=#d4a838;strokeWidth=2;fontSize=12;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="80" width="220" height="160" as="geometry"/>
+        </mxCell>
+        
+        <!-- Step 5: Generate Mask -->
+        <mxCell id="step5" value="&lt;b&gt;5. 生成二分類 Mask&lt;/b&gt;&lt;br&gt;&lt;br&gt;將屬於棕色群的像素&lt;br&gt;設為 1 (咖啡色膜)&lt;br&gt;其餘設為 0 (非膜)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1f4d1f;strokeColor=#4ad94a;strokeWidth=2;fontSize=12;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="800" y="300" width="220" height="100" as="geometry"/>
+        </mxCell>
+        
+        <!-- Step 6: Morphology -->
+        <mxCell id="step6" value="&lt;b&gt;6. 形態學後處理&lt;/b&gt;&lt;br&gt;&lt;br&gt;• remove_small_objects&lt;br&gt;• binary_closing&lt;br&gt;• remove_small_holes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1f4d1f;strokeColor=#4ad94a;strokeWidth=2;fontSize=12;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="520" y="300" width="220" height="100" as="geometry"/>
+        </mxCell>
+        
+        <!-- Output -->
+        <mxCell id="output" value="&lt;b&gt;咖啡色膜 Mask&lt;/b&gt;&lt;br&gt;(0-1 二分類)&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;✓ 精確分離咖啡色&lt;/font&gt;&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;✓ 自動排除藍色核&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1e3a5f;strokeColor=#4a90d9;strokeWidth=2;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="200" y="290" width="200" height="120" as="geometry"/>
+        </mxCell>
+        
+        <!-- Arrows -->
+        <mxCell id="a1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#FFFFFF;" edge="1" parent="1" source="input" target="step1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="a2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#FFFFFF;" edge="1" parent="1" source="step1" target="step2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="a3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#FFFFFF;" edge="1" parent="1" source="step2" target="step3">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="a4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#FFFFFF;" edge="1" parent="1" source="step3" target="step4">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="a5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#FFFFFF;" edge="1" parent="1" source="step4" target="step5">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1190" y="270"/>
+              <mxPoint x="910" y="270"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="a6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#FFFFFF;" edge="1" parent="1" source="step5" target="step6">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="a7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#FFFFFF;" edge="1" parent="1" source="step6" target="output">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        
+        <!-- Pros/Cons -->
+        <mxCell id="pros" value="&lt;b&gt;✅ 優點&lt;/b&gt;&lt;br&gt;&lt;br&gt;• 完全自動化，無需調參&lt;br&gt;• 自適應不同染色強度&lt;br&gt;• LAB 色域自然分離棕/藍&lt;br&gt;• 可處理異質性圖片" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1d3a1d;strokeColor=#82b366;strokeWidth=2;align=left;verticalAlign=top;fontSize=12;fontColor=#FFFFFF;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="40" y="450" width="240" height="130" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="cons" value="&lt;b&gt;⚠️ 缺點&lt;/b&gt;&lt;br&gt;&lt;br&gt;• 計算較慢 (需聚類運算)&lt;br&gt;• K 值需要預設 (通常 4)&lt;br&gt;• 極端情況可能不穩定" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4a1a1a;strokeColor=#b85450;strokeWidth=2;align=left;verticalAlign=top;fontSize=12;fontColor=#FFFFFF;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="320" y="450" width="240" height="130" as="geometry"/>
+        </mxCell>
+        
+        <!-- LAB Color Space Diagram -->
+        <mxCell id="lab_explain" value="&lt;b&gt;LAB 色域說明&lt;/b&gt;&lt;br&gt;&lt;br&gt;A 軸: ← 綠 ... 紅 →&lt;br&gt;B 軸: ← 藍 ... 黃 →&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#d4a838&quot;&gt;棕色: A↑ + B↑&lt;/font&gt;&lt;br&gt;&lt;font color=&quot;#4a90d9&quot;&gt;藍色: B↓&lt;/font&gt;&lt;br&gt;&lt;font color=&quot;#cccccc&quot;&gt;白色: L↑&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2a2a2a;strokeColor=#999999;strokeWidth=2;align=left;verticalAlign=top;fontSize=12;fontColor=#FFFFFF;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="600" y="450" width="200" height="160" as="geometry"/>
+        </mxCell>
+        
+        <!-- Pseudocode -->
+        <mxCell id="code" value="&lt;b&gt;偽代碼&lt;/b&gt;&lt;br&gt;&lt;br&gt;lab = cv2.cvtColor(img, COLOR_RGB2LAB)&lt;br&gt;pixels = lab.reshape(-1, 3)&lt;br&gt;kmeans = KMeans(n_clusters=4)&lt;br&gt;labels = kmeans.fit_predict(pixels)&lt;br&gt;centers = kmeans.cluster_centers_&lt;br&gt;&lt;br&gt;# 找棕色群: A&amp;gt;128 AND B&amp;gt;128&lt;br&gt;brown = (centers[:,1]&amp;gt;128) &amp;amp; (centers[:,2]&amp;gt;128)&lt;br&gt;mask = np.isin(labels, brown_labels)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2a2a2a;strokeColor=#999999;strokeWidth=2;align=left;verticalAlign=top;fontSize=11;fontColor=#FFFFFF;spacingLeft=10;fontFamily=Courier New;" vertex="1" parent="1">
+          <mxGeometry x="840" y="450" width="350" height="180" as="geometry"/>
+        </mxCell>
+        
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

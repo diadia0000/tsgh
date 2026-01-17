@@ -22,10 +22,13 @@ class BlendMode(Enum):
 
 @dataclass
 class ThumbnailConfig:
-    """縮圖生成配置"""
+    """縮圖生成配置
     
-    # 金字塔層級 (0=最高解析度)
-    level: int = 4
+    注意：輸入影像已經是 level 1 (20X)，設定 level=0 表示使用原始解析度
+    """
+    
+    # 金字塔層級 (0=最高解析度，即輸入的 level 1)
+    level: int = 0
     
     # 融合模式
     blend_mode: BlendMode = BlendMode.LAPLACIAN
@@ -65,17 +68,19 @@ class ThumbnailGenerator:
         """尋找配準後的 OME-TIFF 檔案"""
         image_paths = {}
         
-        project_dir = self.output_dir / "thriple_registration"
-        if not project_dir.exists():
-            project_dir = self.output_dir
+        # 新目錄結構：output_dir/registered/
+        search_dir = self.output_dir / "registered"
+        if not search_dir.exists():
+            search_dir = self.output_dir
         
+        # wsireg 輸出的命名規則
         patterns = {
-            "DISH": "*DISH*.ome.tiff",
-            "HER2": "*HER2*.ome.tiff",
+            "DISH": "*-DISH_to_HER2_registered.ome.tiff",
+            "HER2": "*-HER2_registered.ome.tiff",
         }
         
         for name, pattern in patterns.items():
-            matches = list(project_dir.glob(pattern))
+            matches = list(search_dir.glob(pattern))
             if matches:
                 image_paths[name] = matches[0]
         
@@ -244,10 +249,13 @@ class ThumbnailGenerator:
         
         print(f"  融合後: {merged.width} x {merged.height}")
         
-        # Step 4: 保存輸出
+        # Step 4: 保存輸出到 registered 子目錄
         print("\n[4/4] 保存縮圖...")
+        save_dir = self.output_dir / "registered"
+        save_dir.mkdir(parents=True, exist_ok=True)
+        
         output_name = self.config.output_pattern.format(level=self.config.level)
-        output_path = self.output_dir / output_name
+        output_path = save_dir / output_name
         
         merged.write_to_file(
             str(output_path),
@@ -294,5 +302,8 @@ def generate_thumbnail(
 if __name__ == "__main__":
     pyvips.cache_set_max(0)
     
-    output_dir = Path("/home/sec312/tsgh/thriple_image_layer/output")
+    from config import create_default_config
+    config = create_default_config()
+    # 使用 config 的 output_dir 的父目錄 (因為 registered 是子目錄)
+    output_dir = config.output_dir.parent
     generate_thumbnail(output_dir, level=1)

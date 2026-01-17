@@ -266,9 +266,12 @@ def align_images(
 
 
 if __name__ == "__main__":
-    # 測試配準流程
-    input_dir = Path("/home/sec312/tsgh/picture/whole_size/40X")
-    output_dir = Path("/home/sec312/tsgh/thriple_image_layer/output")
+    # 測試配準流程 (使用 config.py 的預設設定)
+    config = create_default_config()
     
-    reg_graph = align_images(input_dir, output_dir)
-    print(f"\n配準完成，結果儲存於: {output_dir}")
+    print(f"輸入目錄: {config.input_dir}")
+    print(f"輸出目錄: {config.output_dir}")
+    
+    aligner = WSIRegAligner(config)
+    reg_graph = aligner.run()
+    print(f"\n配準完成，結果儲存於: {config.output_dir}")

@@ -11,13 +11,16 @@ from typing import Optional
 
 @dataclass
 class ModalityConfig:
-    """單一影像模態的配置"""
+    """單一影像模態的配置
+    
+    註意：Module 1 輸出的已經是 level 1 (20X, 0.5 µm/px) 影像
+    """
     
     name: str
     filename: str
-    resolution: float = 0.25  # 輸入解析度 µm/px (40X)
-    output_resolution: Optional[float] = 0.5  # 輸出解析度 µm/px (20X = level 1)
-    downsampling: int = 16  # 配準時降採樣倍率 (4 = 使用 1/4 解析度配準，節省記憶體)
+    resolution: float = 0.5  # 輸入解析度 µm/px (Module 1 輸出的 level 1 = 20X)
+    output_resolution: Optional[float] = None  # None = 保持輸入解析度，不再降低
+    downsampling: int = 8  # 配準時降採樣倍率 (僅用於配準計算，輸出保持原解析度)
     channel_names: list[str] = field(default_factory=lambda: ["default"])
     channel_colors: list[str] = field(default_factory=lambda: ["gray"])
     preprocessing: Optional[dict] = None
@@ -79,11 +82,11 @@ class RegistrationConfig:
     # 專案名稱
     project_name: str = "thriple_registration"
     
-    # 輸入目錄
-    input_dir: Path = Path("/home/sec312/tsgh/picture/czi/40X")
+    # 輸入目錄 (Module 2 讀取 Module 1 輸出的 TIFF)
+    input_dir: Path = Path("/home/sec312/tsgh/thriple_image_layer/output")
     
-    # 輸出目錄
-    output_dir: Path = Path("/home/sec312/tsgh/thriple_image_layer/output")
+    # 輸出目錄 (配準結果)
+    output_dir: Path = Path("/home/sec312/tsgh/thriple_image_layer/output/registered")
     
     # 參考模態名稱
     reference_modality: str = "HER2"
@@ -105,23 +108,36 @@ class RegistrationConfig:
             self.registration_paths = self._default_paths()
     
     def _default_modalities(self) -> list[ModalityConfig]:
-        """預設的影像模態配置"""
+        """預設的影像模態配置
+        
+        Module 1 輸出的 *_processed.tif 已經是 level 1 (20X, 0.5 µm/px)
+        因此 resolution=0.5, output_resolution=None (不再降低)
+        """
         return [
             ModalityConfig(
                 name="HER2",
-                filename="HER2_40X.czi",
+                filename="HER2_processed.tif",
+                resolution=0.5,  # level 1 = 20X
+                output_resolution=None,  # 保持原解析度
+                downsampling=8,  # 配準時的降採樣
                 channel_names=["HER2"],
                 channel_colors=["red"]
             ),
             ModalityConfig(
                 name="DISH",
-                filename="DISH_40X.czi",
+                filename="DISH_processed.tif",
+                resolution=0.5,
+                output_resolution=None,
+                downsampling=8,
                 channel_names=["DISH"],
                 channel_colors=["blue"]
             ),
             ModalityConfig(
                 name="HE",
-                filename="HE_40X.czi",
+                filename="HE_processed.tif",
+                resolution=0.5,
+                output_resolution=None,
+                downsampling=8,
                 channel_names=["HE"],
                 channel_colors=["green"]
             ),
