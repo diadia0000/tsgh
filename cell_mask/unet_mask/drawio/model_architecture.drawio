@@ -1,0 +1,49 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="模型配置" id="model">
+    <mxGraphModel dx="1434" dy="844" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1000" pageHeight="600" background="#000000" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        
+        <mxCell id="title" value="模型架構簡圖 (二分類版)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=24;fontStyle=1;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="300" y="30" width="400" height="40" as="geometry"/>
+        </mxCell>
+        
+        <!-- Architecture -->
+        <mxCell id="arch" value="&lt;b&gt;Unet++&lt;/b&gt;&lt;br&gt;&lt;br&gt;Encoder: DenseNet121&lt;br&gt;Input: 1024x1024x3&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;&lt;b&gt;Output: 2 Classes&lt;/b&gt;&lt;/font&gt;&lt;br&gt;(0=非膜, 1=咖啡色膜)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1a3d5c;strokeColor=#4d9de0;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="60" y="120" width="200" height="140" as="geometry"/>
+        </mxCell>
+        
+        <!-- Loss -->
+        <mxCell id="loss" value="&lt;b&gt;Loss Function&lt;/b&gt;&lt;br&gt;&lt;br&gt;0.5 * Dice Loss&lt;br&gt;+&lt;br&gt;0.5 * CE Loss&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#aaaaaa&quot;&gt;(Binary Classification)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4a1a1a;strokeColor=#b85450;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="320" y="120" width="200" height="140" as="geometry"/>
+        </mxCell>
+        
+        <!-- Optimization -->
+        <mxCell id="opt" value="&lt;b&gt;Optimization&lt;/b&gt;&lt;br&gt;&lt;br&gt;AdamW (lr=1e-4)&lt;br&gt;CosineAnnealingLR&lt;br&gt;AMP Enabled&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#aaaaaa&quot;&gt;Class Weights: [0.5, 2.0]&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4a4000;strokeColor=#d6b656;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="580" y="120" width="200" height="140" as="geometry"/>
+        </mxCell>
+        
+        <!-- Arrows -->
+        <mxCell id="arrow1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;strokeWidth=2;strokeColor=#FFFFFF;" edge="1" parent="1" source="arch" target="loss">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="arrow2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;strokeWidth=2;strokeColor=#FFFFFF;" edge="1" parent="1" source="loss" target="opt">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        
+        <!-- Task Simplification Note -->
+        <mxCell id="note" value="&lt;b&gt;&lt;font color=&quot;#00ff00&quot;&gt;任務簡化說明&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;br&gt;• 原本: 3 分類 (背景/膜內部/咖啡色膜)&lt;br&gt;• 現在: 2 分類 (非膜/咖啡色膜)&lt;br&gt;&lt;br&gt;• 優勢: 模型專注於單一任務，收斂更穩定&lt;br&gt;• 後處理: 推論時用 mask 排除膜區域" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1d3a1d;strokeColor=#82b366;fontSize=12;fontColor=#FFFFFF;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="60" y="300" width="320" height="130" as="geometry"/>
+        </mxCell>
+        
+        <!-- Bottom Info -->
+        <mxCell id="hardware" value="Hardware: RTX 5090 (32GB) | Batch: 6 (Acc: 4) | Workers: 16 | 專注分離咖啡色膜" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2a2a2a;strokeColor=#999999;fontSize=12;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="60" y="460" width="720" height="40" as="geometry"/>
+        </mxCell>
+        
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

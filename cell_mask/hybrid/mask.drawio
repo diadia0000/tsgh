@@ -1,0 +1,98 @@
+<mxfile host="65bd71144e">
+    <diagram id="zaeFybyKThCK4KTMnQ7Z" name="Hybrid Cell Mask Pipeline (二分類版)">
+        <mxGraphModel dx="895" dy="578" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1300" pageHeight="1700" background="#1a1a1a" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="title" value="&lt;font color=&quot;#ffffff&quot;&gt;&lt;b&gt;Hybrid Cell Mask Pipeline (二分類簡化版)&lt;/b&gt;&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;" vertex="1" parent="1">
+                    <mxGeometry x="300" y="20" width="400" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="her2_input" value="&lt;font color=&quot;#ffffff&quot;&gt;&lt;b&gt;HER2 圖片&lt;/b&gt;&lt;br&gt;cell_mask/hybrid/her2/&lt;br&gt;1024×1024 TIFF&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1e3a5f;strokeColor=#4a90d9;strokeWidth=2;" vertex="1" parent="1">
+                    <mxGeometry x="80" y="100" width="180" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#888888;" edge="1" parent="1" source="her2_input" target="unet_model">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="unet_model" value="&lt;font color=&quot;#ffffff&quot;&gt;&lt;b&gt;UNet++ 二分類模型&lt;/b&gt;&lt;br&gt;her2_unet.pth&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;&lt;b&gt;輸出 2 類 mask:&lt;/b&gt;&lt;/font&gt;&lt;br&gt;• 0 = 非膜 (背景+內部)&lt;br&gt;• 1 = 咖啡色膜&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#5c4a1f;strokeColor=#d4a838;strokeWidth=2;" vertex="1" parent="1">
+                    <mxGeometry x="60" y="240" width="220" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#888888;" edge="1" parent="1" source="unet_model" target="step1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="step1" value="&lt;font color=&quot;#ffffff&quot;&gt;&lt;b&gt;步驟 1: HER2 Mask 處理&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;mask == 0 (非膜區域)&lt;br&gt;→ &lt;b&gt;保留原始像素&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#ff6666&quot;&gt;mask == 1 (咖啡色膜)&lt;br&gt;→ &lt;b&gt;變成黑色 (0,0,0)&lt;/b&gt;&lt;/font&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#5c1f1f;strokeColor=#d94a4a;strokeWidth=2;" vertex="1" parent="1">
+                    <mxGeometry x="40" y="430" width="260" height="140" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#888888;" edge="1" parent="1" source="step1" target="her2_result">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="her2_result" value="&lt;font color=&quot;#ffffff&quot;&gt;&lt;b&gt;HER2 處理後圖片&lt;/b&gt;&lt;br&gt;&lt;br&gt;🖤 咖啡色膜區域 → 黑色&lt;br&gt;🎨 非膜區域保持原色&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3d1f5c;strokeColor=#9b4ad9;strokeWidth=2;" vertex="1" parent="1">
+                    <mxGeometry x="70" y="630" width="200" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="dish_input" value="&lt;font color=&quot;#ffffff&quot;&gt;&lt;b&gt;Dish 圖片&lt;/b&gt;&lt;br&gt;cell_mask/hybrid/dish/&lt;br&gt;1024×1024 TIFF&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1e3a5f;strokeColor=#4a90d9;strokeWidth=2;" vertex="1" parent="1">
+                    <mxGeometry x="540" y="100" width="180" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#888888;" edge="1" parent="1" source="dish_input" target="cellpose_model">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="cellpose_model" value="&lt;font color=&quot;#ffffff&quot;&gt;&lt;b&gt;Cellpose 模型&lt;/b&gt;&lt;br&gt;dish_cellpose_v5&lt;br&gt;&lt;br&gt;輸出:&lt;br&gt;• 細胞區域 mask&lt;br&gt;• 細胞輪廓&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#5c4a1f;strokeColor=#d4a838;strokeWidth=2;" vertex="1" parent="1">
+                    <mxGeometry x="520" y="240" width="220" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#888888;" edge="1" parent="1" source="cellpose_model" target="step2">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="step2" value="&lt;font color=&quot;#ffffff&quot;&gt;&lt;b&gt;步驟 2: Dish Mask 處理&lt;/b&gt;&lt;br&gt;&lt;br&gt;細胞區域 (mask &amp;gt; 0)&lt;br&gt;→ &lt;font color=&quot;#66ff66&quot;&gt;&lt;b&gt;保持原始像素&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;br&gt;背景區域 (mask == 0)&lt;br&gt;→ &lt;font color=&quot;#66ccff&quot;&gt;&lt;b&gt;變成白色 (255,255,255)&lt;/b&gt;&lt;/font&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1f4d1f;strokeColor=#4ad94a;strokeWidth=2;" vertex="1" parent="1">
+                    <mxGeometry x="500" y="430" width="260" height="140" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#888888;" edge="1" parent="1" source="step2" target="dish_result">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="dish_result" value="&lt;font color=&quot;#ffffff&quot;&gt;&lt;b&gt;Dish 處理後圖片&lt;/b&gt;&lt;br&gt;&lt;br&gt;⬜ 白色背景&lt;br&gt;🎨 細胞保持原色&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3d1f5c;strokeColor=#9b4ad9;strokeWidth=2;" vertex="1" parent="1">
+                    <mxGeometry x="530" y="630" width="200" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="step3" value="&lt;font color=&quot;#ffffff&quot;&gt;&lt;b&gt;步驟 3: 圖片疊合&lt;/b&gt;&lt;br&gt;&lt;br&gt;疊合策略:&lt;br&gt;HER2 非黑色區域 → 優先顯示&lt;br&gt;其餘區域 → 顯示 Dish 圖片&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#aaaaaa&quot;&gt;(HER2 非膜區域覆蓋在 Dish 上)&lt;/font&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#5c3d1f;strokeColor=#d98c4a;strokeWidth=2;" vertex="1" parent="1">
+                    <mxGeometry x="300" y="790" width="200" height="140" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#888888;" edge="1" parent="1" source="step3" target="cellpose_final">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="cellpose_final" value="&lt;font color=&quot;#ffffff&quot;&gt;&lt;b&gt;&lt;font color=&quot;#00ff00&quot;&gt;步驟 4: Cellpose 細胞分離&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;br&gt;融合圖片 → Cellpose&lt;br&gt;Instance Segmentation&lt;br&gt;&lt;br&gt;&lt;b&gt;輸出: 個別細胞 Mask&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1e3a5f;strokeColor=#4a90d9;strokeWidth=2;" vertex="1" parent="1">
+                    <mxGeometry x="260" y="990" width="280" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="final_result" value="&lt;font color=&quot;#ffffff&quot;&gt;&lt;b&gt;最終輸出&lt;/b&gt;&lt;br&gt;&lt;br&gt;📁 cell_mask/hybrid/output/&lt;br&gt;&lt;br&gt;🧫 個別細胞分離結果&lt;br&gt;📊 可用於紅黑點分析&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1f4d1f;strokeColor=#4ad94a;strokeWidth=2;" vertex="1" parent="1">
+                    <mxGeometry x="260" y="1170" width="280" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#888888;" edge="1" parent="1" source="cellpose_final" target="final_result">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="legend" value="&lt;font color=&quot;#ffffff&quot;&gt;&lt;b&gt;圖例說明&lt;/b&gt;&lt;br&gt;&lt;br&gt;🔵 藍色: 輸入資料&lt;br&gt;🟡 黃色: AI 模型&lt;br&gt;🔴 紅色: HER2 處理&lt;br&gt;🟢 綠色: Dish 處理&lt;br&gt;🟠 橘色: 疊合步驟&lt;br&gt;🟣 紫色: 中間結果&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2d2d2d;strokeColor=#666666;strokeWidth=2;align=left;spacingLeft=10;" vertex="1" parent="1">
+                    <mxGeometry x="780" y="100" width="160" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="model_note" value="&lt;font color=&quot;#ffffff&quot;&gt;&lt;b&gt;模型檔案&lt;/b&gt;&lt;br&gt;&lt;br&gt;📦 her2_unet.pth&lt;br&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;UNet++ EfficientNet-B4&lt;br&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#00ff00&quot;&gt;&lt;b&gt;二分類語義分割&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;br&gt;📦 dish_cellpose_v5&lt;br&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;Cellpose 細胞分割&lt;br&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;實例分割&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2d2d2d;strokeColor=#666666;strokeWidth=2;align=left;spacingLeft=10;" vertex="1" parent="1">
+                    <mxGeometry x="780" y="290" width="200" height="180" as="geometry"/>
+                </mxCell>
+                <mxCell id="key_insight" value="&lt;font color=&quot;#ffffff&quot;&gt;&lt;b&gt;&lt;font color=&quot;#00ff00&quot;&gt;核心改進&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#ff6666&quot;&gt;舊: 三分類 (0/1/2)&lt;/font&gt;&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;新: 二分類 (0/1)&lt;/font&gt;&lt;br&gt;&lt;br&gt;• UNet++ 專注分離咖啡色膜&lt;br&gt;• Cellpose 負責細胞分離&lt;br&gt;• 職責明確，減少誤差&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2d2d2d;strokeColor=#666666;strokeWidth=2;align=left;spacingLeft=10;" vertex="1" parent="1">
+                    <mxGeometry x="780" y="510" width="200" height="180" as="geometry"/>
+                </mxCell>
+                <mxCell id="17" value="" style="edgeStyle=segmentEdgeStyle;endArrow=classic;html=1;curved=0;rounded=0;endSize=8;startSize=8;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="her2_result">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="470" y="770" as="sourcePoint"/>
+                        <mxPoint x="300" y="860" as="targetPoint"/>
+                        <Array as="points">
+                            <mxPoint x="170" y="860"/>
+                            <mxPoint x="300" y="860"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="19" value="" style="edgeStyle=segmentEdgeStyle;endArrow=classic;html=1;curved=0;rounded=0;endSize=8;startSize=8;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1.018;entryY=0.574;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" target="step3">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="640" y="730" as="sourcePoint"/>
+                        <mxPoint x="770" y="860" as="targetPoint"/>
+                        <Array as="points">
+                            <mxPoint x="640" y="860"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

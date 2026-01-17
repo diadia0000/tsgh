@@ -1,0 +1,58 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="訓練流程" id="training">
+    <mxGraphModel dx="1434" dy="844" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1000" pageHeight="600" background="#000000" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        
+        <mxCell id="title" value="訓練核心流程" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=24;fontStyle=1;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="300" y="30" width="400" height="40" as="geometry"/>
+        </mxCell>
+        
+        <!-- Modules -->
+        <mxCell id="dataset" value="&lt;b&gt;DataLoader&lt;/b&gt;&lt;br&gt;&lt;br&gt;Train/Val Split&lt;br&gt;Augmentation&lt;br&gt;Batching" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1d3a1d;strokeColor=#82b366;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="80" y="150" width="180" height="120" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="model" value="&lt;b&gt;Model (Unet++)&lt;/b&gt;&lt;br&gt;&lt;br&gt;Forward Pass&lt;br&gt;AMP Mixed Precision" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4a1a1a;strokeColor=#b85450;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="320" y="150" width="180" height="120" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="loss" value="&lt;b&gt;Optimization&lt;/b&gt;&lt;br&gt;&lt;br&gt;Loss (Dice+CE)&lt;br&gt;Backward Pass&lt;br&gt;AdamW Update" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4a4000;strokeColor=#d6b656;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="560" y="150" width="180" height="120" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="eval" value="&lt;b&gt;Evaluation&lt;/b&gt;&lt;br&gt;&lt;br&gt;Validate (mIoU)&lt;br&gt;Save Checkpoint&lt;br&gt;Early Stopping" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1a3d5c;strokeColor=#4d9de0;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="800" y="150" width="180" height="120" as="geometry"/>
+        </mxCell>
+        
+        <!-- Arrows -->
+        <mxCell id="arrow1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;strokeWidth=2;strokeColor=#FFFFFF;" edge="1" parent="1" source="dataset" target="model">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="arrow2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;strokeWidth=2;strokeColor=#FFFFFF;" edge="1" parent="1" source="model" target="loss">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="arrow3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;strokeWidth=2;strokeColor=#FFFFFF;" edge="1" parent="1" source="loss" target="eval">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        
+        <!-- Loop -->
+        <mxCell id="loop" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=1;strokeWidth=2;strokeColor=#FFFFFF;dashed=1;" edge="1" parent="1" source="eval" target="model">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="890" y="320"/>
+              <mxPoint x="410" y="320"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="loop_label" value="Next Epoch" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=12;fontColor=#FFFFFF;backgroundColor=#000000;" vertex="1" connectable="0" parent="loop">
+          <mxGeometry x="0" y="0" relative="1" as="geometry"/>
+        </mxCell>
+        
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,0 +1,165 @@
+<mxfile host="65bd71144e">
+    <diagram name="UNet Mask Architecture" id="architecture">
+        <mxGraphModel dx="1249" dy="399" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1200" background="#000000" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="title" value="HER2 咖啡色細胞膜分割系統 (二分類)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=24;fontStyle=1;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="500" y="20" width="600" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="config" value="&lt;b&gt;config.py&lt;/b&gt;&lt;br&gt;&lt;br&gt;Config 類&lt;br&gt;- 路徑設定&lt;br&gt;- 超參數&lt;br&gt;- 模型架構配置&lt;br&gt;- 硬體優化參數&lt;br&gt;&lt;br&gt;&lt;b&gt;重要變更:&lt;/b&gt;&lt;br&gt;NUM_CLASSES = 2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1a3d5c;strokeColor=#4d9de0;align=left;verticalAlign=top;fontSize=12;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="100" width="200" height="180" as="geometry"/>
+                </mxCell>
+                <mxCell id="data_pipeline" value="數據處理流程 (簡化版)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#4a4000;strokeColor=#d6b656;fontSize=16;fontStyle=1;align=center;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="300" y="80" width="740" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="her2_mask" value="&lt;b&gt;her2_mask.py&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;generate_her2_mask()&lt;/b&gt;&lt;br&gt;- Color Deconvolution&lt;br&gt;- DAB/Hema 分離&lt;br&gt;- OD 空間轉換&lt;br&gt;&lt;br&gt;輸出: DAB mask (布林)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3d2453;strokeColor=#9673a6;align=left;verticalAlign=top;fontSize=11;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="300" y="140" width="220" height="140" as="geometry"/>
+                </mxCell>
+                <mxCell id="membrane_seg" value="&lt;b&gt;membrane_segmentation.py&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;簡化邏輯 (二分類):&lt;/b&gt;&lt;br&gt;- 咖啡色細胞膜: 1&lt;br&gt;- 非細胞膜 (背景): 0&lt;br&gt;&lt;br&gt;輸出: 0-1 標籤圖" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3d2453;strokeColor=#9673a6;align=left;verticalAlign=top;fontSize=11;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="560" y="140" width="220" height="140" as="geometry"/>
+                </mxCell>
+                <mxCell id="dataset_gen" value="&lt;b&gt;dataset_generator.py&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;batch_generate_masks()&lt;/b&gt;&lt;br&gt;- 批量處理 24,000 張影像&lt;br&gt;- 多進程加速&lt;br&gt;- 進度跟蹤&lt;br&gt;&lt;br&gt;&lt;b&gt;輸出: 二分類 Mask&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3d2453;strokeColor=#9673a6;align=left;verticalAlign=top;fontSize=11;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="820" y="140" width="220" height="140" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeWidth=2;strokeColor=#FFFFFF;" parent="1" source="her2_mask" target="membrane_seg" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow1_label" value="DAB mask" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;fontColor=#FFFFFF;backgroundColor=#000000;" parent="arrow1" vertex="1" connectable="0">
+                    <mxGeometry x="-0.1" y="2" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="arrow2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeWidth=2;strokeColor=#FFFFFF;" parent="1" source="membrane_seg" target="dataset_gen" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow2_label" value="二分類邏輯" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;fontColor=#FFFFFF;backgroundColor=#000000;" parent="arrow2" vertex="1" connectable="0">
+                    <mxGeometry x="-0.1" y="2" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="dataset_module" value="數據集模組" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#1d3a1d;strokeColor=#82b366;fontSize=16;fontStyle=1;align=center;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="280" y="310" width="480" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="dataset" value="&lt;b&gt;dataset.py&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;HER2SegmentationDataset&lt;/b&gt;&lt;br&gt;- __getitem__: 讀取影像和 mask&lt;br&gt;- Albumentations 數據增強&lt;br&gt;- get_class_weights: 類別權重計算&lt;br&gt;&lt;br&gt;&lt;b&gt;create_datasets()&lt;/b&gt;&lt;br&gt;- 訓練/驗證/測試分割 (80/10/10)&lt;br&gt;- 隨機種子控制&lt;br&gt;&lt;br&gt;&lt;b&gt;create_dataloaders()&lt;/b&gt;&lt;br&gt;- DataLoader 創建&lt;br&gt;- pin_memory, num_workers 優化" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1d3a1d;strokeColor=#82b366;align=left;verticalAlign=top;fontSize=11;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="290" y="390" width="310" height="230" as="geometry"/>
+                </mxCell>
+                <mxCell id="augmentation" value="&lt;b&gt;數據增強&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;訓練時:&lt;/b&gt;&lt;br&gt;- RandomRotate90&lt;br&gt;- HorizontalFlip&lt;br&gt;- VerticalFlip&lt;br&gt;- ColorJitter&lt;br&gt;- GaussianBlur&lt;br&gt;- ElasticTransform&lt;br&gt;- HueSaturationValue&lt;br&gt;&lt;br&gt;&lt;b&gt;驗證/測試:&lt;/b&gt;&lt;br&gt;- 僅正規化" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1d3a1d;strokeColor=#82b366;align=left;verticalAlign=top;fontSize=11;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="640" y="380" width="140" height="240" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeWidth=2;strokeColor=#FFFFFF;" parent="1" source="dataset_gen" target="dataset" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="930" y="340"/>
+                            <mxPoint x="450" y="340"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="arrow3_label" value="Pseudo Masks&#10;(0-1 PNG)" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;fontColor=#FFFFFF;backgroundColor=#000000;" parent="arrow3" vertex="1" connectable="0">
+                    <mxGeometry x="-0.1" y="2" relative="1" as="geometry">
+                        <mxPoint x="30" y="-8" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="training_module" value="訓練模組" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#4a1a1a;strokeColor=#b85450;fontSize=16;fontStyle=1;align=center;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="280" width="200" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="train" value="&lt;b&gt;train.py&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;create_model()&lt;/b&gt;&lt;br&gt;- Unet++ (SMP)&lt;br&gt;- DenseNet121 編碼器&lt;br&gt;- ImageNet 預訓練&lt;br&gt;&lt;b&gt;- classes=2 (二分類)&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;train_one_epoch()&lt;/b&gt;&lt;br&gt;- 梯度累積&lt;br&gt;- AMP 混合精度&lt;br&gt;- 指標計算&lt;br&gt;&lt;br&gt;&lt;b&gt;validate()&lt;/b&gt;&lt;br&gt;- 驗證集評估&lt;br&gt;- mIoU, Dice Score&lt;br&gt;&lt;br&gt;&lt;b&gt;train()&lt;/b&gt;&lt;br&gt;- 主訓練流程&lt;br&gt;- 早停機制&lt;br&gt;- 模型保存" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4a1a1a;strokeColor=#b85450;align=left;verticalAlign=top;fontSize=11;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="340" width="200" height="340" as="geometry"/>
+                </mxCell>
+                <mxCell id="utils" value="&lt;b&gt;utils.py&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;損失函數:&lt;/b&gt;&lt;br&gt;- DiceLoss&lt;br&gt;- CombinedLoss (Dice + CE)&lt;br&gt;&lt;br&gt;&lt;b&gt;評估指標:&lt;/b&gt;&lt;br&gt;- compute_iou()&lt;br&gt;- compute_dice_score()&lt;br&gt;&lt;br&gt;&lt;b&gt;工具類:&lt;/b&gt;&lt;br&gt;- MetricsTracker&lt;br&gt;- CheckpointManager&lt;br&gt;- TrainingLogger&lt;br&gt;- TeeLogger&lt;br&gt;&lt;br&gt;&lt;b&gt;其他:&lt;/b&gt;&lt;br&gt;- clear_cuda_cache()&lt;br&gt;- EarlyStopping" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4a4000;strokeColor=#d6b656;align=left;verticalAlign=top;fontSize=11;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="840" y="380" width="220" height="340" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeWidth=2;dashed=1;strokeColor=#FFFFFF;" parent="1" source="config" target="train" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;strokeWidth=2;strokeColor=#FFFFFF;" parent="1" source="dataset" target="train" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow5_label" value="DataLoader" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;fontColor=#FFFFFF;backgroundColor=#000000;" parent="arrow5" vertex="1" connectable="0">
+                    <mxGeometry x="-0.1" y="2" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="arrow6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;strokeWidth=2;dashed=1;strokeColor=#FFFFFF;" parent="1" source="utils" target="train" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="840" y="490"/>
+                            <mxPoint x="810" y="490"/>
+                            <mxPoint x="810" y="670"/>
+                            <mxPoint x="260" y="670"/>
+                            <mxPoint x="260" y="595"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="inference_module" value="推論模組 (關鍵變更)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#3d2453;strokeColor=#9673a6;fontSize=16;fontStyle=1;align=center;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="300" y="710" width="480" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="2" style="edgeStyle=none;html=1;exitX=1;exitY=1;exitDx=0;exitDy=0;" parent="1" source="inference" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="599.6666666666667" y="1070" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="inference" value="&lt;b&gt;inference.py&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;load_model()&lt;/b&gt;&lt;br&gt;- 載入訓練好的 checkpoint&lt;br&gt;- 模型權重恢復&lt;br&gt;&lt;br&gt;&lt;b&gt;predict_single()&lt;/b&gt;&lt;br&gt;- 單張影像推論&lt;br&gt;- 預處理和後處理&lt;br&gt;&lt;br&gt;&lt;b&gt;batch_inference()&lt;/b&gt;&lt;br&gt;- 批量推論&lt;br&gt;- 進度條顯示&lt;br&gt;&lt;br&gt;&lt;b&gt;apply_mask_to_image()&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;- 將咖啡色膜區域從 HER2 圖片排除&lt;/font&gt;&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;- 輸出可用於 Dish 融合&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3d2453;strokeColor=#9673a6;align=left;verticalAlign=top;fontSize=11;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="300" y="755" width="290" height="260" as="geometry"/>
+                </mxCell>
+                <mxCell id="model_output" value="&lt;b&gt;模型輸出&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;models/&lt;/b&gt;&lt;br&gt;- checkpoint_epochXXX_val_miou_X.XXXX.pth&lt;br&gt;- 保存最佳 K 個模型&lt;br&gt;&lt;br&gt;&lt;b&gt;logs/&lt;/b&gt;&lt;br&gt;- 訓練日誌&lt;br&gt;- 指標記錄&lt;br&gt;&lt;br&gt;&lt;b&gt;inference_output/&lt;/b&gt;&lt;br&gt;- 咖啡色膜 Mask&lt;br&gt;- 處理後的 HER2 圖片" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4a4000;strokeColor=#d6b656;align=left;verticalAlign=top;fontSize=11;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="640" y="770" width="220" height="230" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeWidth=2;strokeColor=#FFFFFF;" parent="1" source="train" target="inference" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="140" y="885"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="arrow7_label" value="訓練完成" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;fontColor=#FFFFFF;backgroundColor=#000000;" parent="arrow7" vertex="1" connectable="0">
+                    <mxGeometry x="-0.1" y="2" relative="1" as="geometry">
+                        <mxPoint x="15" y="-8" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="arrow8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeWidth=2;strokeColor=#FFFFFF;" parent="1" source="inference" target="model_output" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="model_arch" value="&lt;b&gt;模型架構 (二分類)&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;Unet++&lt;/b&gt;&lt;br&gt;編碼器: DenseNet121&lt;br&gt;預訓練: ImageNet&lt;br&gt;輸入: 1024×1024 RGB&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;&lt;b&gt;輸出: 2 類別 (0=非膜, 1=膜)&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;優化器:&lt;/b&gt; AdamW&lt;br&gt;&lt;b&gt;調度器:&lt;/b&gt; CosineAnnealingLR&lt;br&gt;&lt;b&gt;損失:&lt;/b&gt; Dice + CE&lt;br&gt;&lt;b&gt;指標:&lt;/b&gt; mIoU, Dice Score" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1a3d5c;strokeColor=#4d9de0;align=left;verticalAlign=top;fontSize=11;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="900" y="770" width="180" height="230" as="geometry"/>
+                </mxCell>
+                <mxCell id="hardware" value="&lt;b&gt;硬體優化&lt;/b&gt;&lt;br&gt;&lt;br&gt;NVIDIA RTX 5090 32GB&lt;br&gt;Intel Ultra 265K&lt;br&gt;64GB RAM&lt;br&gt;&lt;br&gt;- AMP 混合精度訓練&lt;br&gt;- pin_memory=True&lt;br&gt;- num_workers=16&lt;br&gt;- 梯度累積 (4 步)&lt;br&gt;- 有效 batch size = 24&lt;br&gt;- CUDA 顯存清理" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4a1a1a;strokeColor=#b85450;align=left;verticalAlign=top;fontSize=11;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="1100" y="100" width="200" height="220" as="geometry"/>
+                </mxCell>
+                <mxCell id="labels" value="&lt;b&gt;類別定義 (簡化)&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;&lt;b&gt;0: 非細胞膜 (背景+內部)&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;&lt;b&gt;1: 咖啡色細胞膜 (HER2)&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;br&gt;類別權重: [0.5, 2.0]&lt;br&gt;&lt;br&gt;&lt;b&gt;優勢:&lt;/b&gt;&lt;br&gt;- 專注單一任務&lt;br&gt;- 減少模型複雜度&lt;br&gt;- 更穩定的收斂" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1d3a1d;strokeColor=#82b366;align=left;verticalAlign=top;fontSize=11;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="1100" y="360" width="200" height="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="workflow" value="&lt;b&gt;新訓練工作流程&lt;/b&gt;&lt;br&gt;&lt;br&gt;1. 生成二分類 Pseudo Mask&lt;br&gt;   dataset_generator.py&lt;br&gt;&lt;br&gt;2. 訓練二分類模型&lt;br&gt;   train.py (classes=2)&lt;br&gt;&lt;br&gt;3. 推論 → 咖啡色膜 Mask&lt;br&gt;   inference.py&lt;br&gt;&lt;br&gt;4. 排除膜區域 → 融合 Dish&lt;br&gt;   &lt;font color=&quot;#00ff00&quot;&gt;交給 Cellpose 處理&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4a4000;strokeColor=#d6b656;align=left;verticalAlign=top;fontSize=11;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="1100" y="600" width="200" height="210" as="geometry"/>
+                </mxCell>
+                <mxCell id="data_flow" value="&lt;b&gt;數據流&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="1070" y="20" width="100" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="data_flow_arrow1" value="" style="endArrow=classic;html=1;strokeWidth=3;strokeColor=#FFFFFF;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="1180" y="30" as="sourcePoint"/>
+                        <mxPoint x="1250" y="30" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="data_flow_label1" value="實線: 數據流" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="1260" y="20" width="100" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="data_flow_arrow2" value="" style="endArrow=classic;html=1;strokeWidth=3;strokeColor=#FFFFFF;dashed=1;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="1180" y="50" as="sourcePoint"/>
+                        <mxPoint x="1250" y="50" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="data_flow_label2" value="虛線: 依賴關係" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="1260" y="40" width="110" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="features" value="&lt;b&gt;核心特性 (二分類版)&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;✓ 簡化任務: 只分離咖啡色膜&lt;/font&gt;&lt;br&gt;✓ Color Deconvolution&lt;br&gt;✓ Pseudo Mask 生成&lt;br&gt;✓ 類別權重平衡&lt;br&gt;✓ 數據增強 (Albumentations)&lt;br&gt;✓ 混合精度訓練 (AMP)&lt;br&gt;✓ 梯度累積&lt;br&gt;✓ 早停機制&lt;br&gt;✓ Checkpoint 管理&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;✓ 推論後與 Cellpose 整合&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1a3d5c;strokeColor=#4d9de0;align=left;verticalAlign=top;fontSize=11;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="1100" y="850" width="200" height="210" as="geometry"/>
+                </mxCell>
+                <mxCell id="file_structure" value="&lt;b&gt;檔案結構&lt;/b&gt;&lt;br&gt;&lt;br&gt;unet_mask/&lt;br&gt;├── config.py&lt;br&gt;├── her2_mask.py&lt;br&gt;├── membrane_segmentation.py&lt;br&gt;├── dataset_generator.py&lt;br&gt;├── dataset.py&lt;br&gt;├── train.py&lt;br&gt;├── inference.py&lt;br&gt;├── utils.py&lt;br&gt;├── models/&lt;br&gt;├── logs/&lt;br&gt;├── presudomask/&lt;br&gt;└── inference_output/" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2a2a2a;strokeColor=#999999;align=left;verticalAlign=top;fontSize=10;fontStyle=0;fontFamily=Courier New;fontColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="710" width="220" height="240" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

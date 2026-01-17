@@ -1,0 +1,83 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="系統總覽" id="overview">
+    <mxGraphModel dx="1434" dy="844" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="900" background="#000000" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        
+        <!-- Title -->
+        <mxCell id="title" value="HER2 咖啡色膜分割系統 (二分類簡化版)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=28;fontStyle=1;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="250" y="30" width="700" height="50" as="geometry"/>
+        </mxCell>
+        
+        <!-- Stage 1 -->
+        <mxCell id="stage1" value="&lt;b&gt;1. 數據預處理&lt;/b&gt;&lt;br&gt;&lt;br&gt;HER2 影像&lt;br&gt;↓&lt;br&gt;Color Deconvolution&lt;br&gt;↓&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;&lt;b&gt;二分類 Mask (0-1)&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3d2453;strokeColor=#9673a6;align=center;verticalAlign=middle;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="80" y="120" width="200" height="180" as="geometry"/>
+        </mxCell>
+        
+        <!-- Stage 2 -->
+        <mxCell id="stage2" value="&lt;b&gt;2. 模型訓練&lt;/b&gt;&lt;br&gt;&lt;br&gt;Unet++ (DenseNet121)&lt;br&gt;↓&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;&lt;b&gt;classes=2&lt;/b&gt;&lt;/font&gt;&lt;br&gt;↓&lt;br&gt;Dice + CE Loss&lt;br&gt;↓&lt;br&gt;Best Model Saved" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4a1a1a;strokeColor=#b85450;align=center;verticalAlign=middle;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="360" y="120" width="200" height="180" as="geometry"/>
+        </mxCell>
+        
+        <!-- Stage 3 -->
+        <mxCell id="stage3" value="&lt;b&gt;3. UNet++ 推論&lt;/b&gt;&lt;br&gt;&lt;br&gt;Load Checkpoint&lt;br&gt;↓&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;&lt;b&gt;咖啡色膜 Mask&lt;/b&gt;&lt;/font&gt;&lt;br&gt;↓&lt;br&gt;排除膜區域" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1d3a1d;strokeColor=#82b366;align=center;verticalAlign=middle;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="640" y="120" width="200" height="180" as="geometry"/>
+        </mxCell>
+        
+        <!-- Stage 4 (NEW) -->
+        <mxCell id="stage4" value="&lt;b&gt;4. Cellpose 處理&lt;/b&gt;&lt;br&gt;&lt;br&gt;融合 HER2 + Dish&lt;br&gt;↓&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;&lt;b&gt;細胞實例分離&lt;/b&gt;&lt;/font&gt;&lt;br&gt;↓&lt;br&gt;個別細胞 Mask" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1a3d5c;strokeColor=#4d9de0;align=center;verticalAlign=middle;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="920" y="120" width="200" height="180" as="geometry"/>
+        </mxCell>
+        
+        <!-- Arrows -->
+        <mxCell id="arrow1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeWidth=3;strokeColor=#FFFFFF;" edge="1" parent="1" source="stage1" target="stage2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="arrow2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeWidth=3;strokeColor=#FFFFFF;" edge="1" parent="1" source="stage2" target="stage3">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="arrow3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeWidth=3;strokeColor=#FFFFFF;" edge="1" parent="1" source="stage3" target="stage4">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        
+        <!-- Key Insight -->
+        <mxCell id="insight" value="&lt;b&gt;&lt;font color=&quot;#00ff00&quot;&gt;核心改進&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#ff6666&quot;&gt;舊方法: 三分類 (背景/膜內部/咖啡色膜)&lt;/font&gt;&lt;br&gt;&lt;font color=&quot;#00ff00&quot;&gt;新方法: 二分類 (非膜/咖啡色膜)&lt;/font&gt;&lt;br&gt;&lt;br&gt;• UNet++ 專注於分離咖啡色細胞膜&lt;br&gt;• 推論時排除膜區域，與 Dish 圖融合&lt;br&gt;• Cellpose 負責細胞實例分割" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4a4000;strokeColor=#d6b656;align=left;verticalAlign=top;fontSize=13;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="80" y="360" width="400" height="150" as="geometry"/>
+        </mxCell>
+        
+        <!-- Modules -->
+        <mxCell id="modules" value="&lt;b&gt;核心模組&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="80" y="540" width="200" height="40" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="data_proc" value="data_processing.drawio" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3d2453;strokeColor=#9673a6;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="80" y="600" width="200" height="60" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="train_pipe" value="training_pipeline.drawio" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4a1a1a;strokeColor=#b85450;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="320" y="600" width="200" height="60" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="infer_pipe" value="inference_pipeline.drawio" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1d3a1d;strokeColor=#82b366;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="560" y="600" width="200" height="60" as="geometry"/>
+        </mxCell>
+        
+        <mxCell id="model_arch" value="model_architecture.drawio" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1a3d5c;strokeColor=#4d9de0;fontSize=14;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="800" y="600" width="200" height="60" as="geometry"/>
+        </mxCell>
+        
+        <!-- Workflow Summary -->
+        <mxCell id="workflow" value="&lt;b&gt;職責分離流程&lt;/b&gt;&lt;br&gt;&lt;br&gt;1. UNet++: 分離咖啡色細胞膜 (HER2)&lt;br&gt;2. 推論時: Mask 排除膜區域&lt;br&gt;3. 融合: HER2 + Dish 圖片&lt;br&gt;4. Cellpose: 細胞實例分割" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1d3a1d;strokeColor=#82b366;align=left;verticalAlign=top;fontSize=13;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="560" y="360" width="260" height="130" as="geometry"/>
+        </mxCell>
+        
+        <!-- Benefits -->
+        <mxCell id="benefits" value="&lt;b&gt;優勢&lt;/b&gt;&lt;br&gt;&lt;br&gt;✓ 簡化任務複雜度&lt;br&gt;✓ 模型更容易收斂&lt;br&gt;✓ 職責分離設計&lt;br&gt;✓ 減少累積誤差" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2a2a2a;strokeColor=#999999;align=left;verticalAlign=top;fontSize=13;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="880" y="360" width="180" height="130" as="geometry"/>
+        </mxCell>
+        
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
