@@ -83,10 +83,10 @@ class RegistrationConfig:
     project_name: str = "thriple_registration"
     
     # 輸入目錄 (Module 2 讀取 Module 1 輸出的 TIFF)
-    input_dir: Path = Path("/home/sec312/tsgh/thriple_image_layer/output")
+    input_dir: Path = Path("/home/hispadmin/tsgh/thriple_image_layer/output")
     
     # 輸出目錄 (配準結果)
-    output_dir: Path = Path("/home/sec312/tsgh/thriple_image_layer/output/registered")
+    output_dir: Path = Path("/home/hispadmin/tsgh/thriple_image_layer/output/registered")
     
     # 參考模態名稱
     reference_modality: str = "HER2"
