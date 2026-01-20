@@ -1,10 +1,22 @@
-"""Module 4: Full Merged Image Thumbnail"""
+"""Module 4: Full Merged Image Thumbnail
+
+產生對齊疊合縮圖
+"""
 from pathlib import Path
 import pyvips
 from valis import registration, slide_io
 
+try:
+    from .config import RegistrationConfig, create_default_config, get_slide_key
+except ImportError:
+    from config import RegistrationConfig, create_default_config, get_slide_key
 
-def laplacian_blend(img1: pyvips.Image, img2: pyvips.Image, levels: int = 5) -> pyvips.Image:
+
+def laplacian_blend(
+    img1: pyvips.Image,
+    img2: pyvips.Image,
+    levels: int = 5
+) -> pyvips.Image:
     """
     多尺度拉普拉斯金字塔融合，保留兩張影像的細節
     
@@ -14,7 +26,7 @@ def laplacian_blend(img1: pyvips.Image, img2: pyvips.Image, levels: int = 5) -> 
         levels: 金字塔層級數
     
     Returns:
-        融合後的影像
+        pyvips.Image: 融合後的影像
     """
     # 建立高斯金字塔
     gauss1, gauss2 = [img1], [img2]
@@ -36,53 +48,59 @@ def laplacian_blend(img1: pyvips.Image, img2: pyvips.Image, levels: int = 5) -> 
     
     return result.cast('uchar')
 
+
 def generate_thumbnail(
-    output_dir: Path,
-    level: int = 4,
+    config: RegistrationConfig,
 ) -> None:
     """
     Module 4: 產生對齊疊合縮圖並輸出為 TIFF
 
     Args:
-        output_dir: 輸出目錄
-        level: 金字塔層級 (0=最高解析度，數字越大解析度越低)
-        non_rigid: 是否使用非剛性變換
+        config: 配準流程配置
     """
     try:
         slide_io.init_jvm()
-    except:
+    except Exception:
         pass
 
-    pickle_path = output_dir / "Transform_Params" / "data" / "Transform_Params_registrar.pickle"
-    registrar = registration.load_registrar(str(pickle_path))
+    output_dir = config.output_dir
+    level = config.thumbnail.level
+    use_non_rigid = config.thumbnail.use_non_rigid
+    laplacian_levels = config.thumbnail.laplacian_levels
+    
+    print(f"載入變換參數: {config.pickle_path}")
+    registrar = registration.load_registrar(str(config.pickle_path))
 
     ref_slide = registrar.get_ref_slide()
     print(f"使用金字塔 level {level}, 尺寸: {ref_slide.slide_dimensions_wh[level]}")
 
+    # 從配置獲取模態的 slide key
+    dish_key = get_slide_key(config.get_modality_by_name("DISH").filename)
+    her2_key = get_slide_key(config.get_modality_by_name("HER2").filename)
+    
     # 手動對齊兩張影像並合併
     print("生成對齊疊合圖...")
-    dish_obj = registrar.slide_dict['DISH_40X_2']
-    her2_obj = registrar.slide_dict['HER2_40X']
+    dish_obj = registrar.slide_dict[dish_key]
+    her2_obj = registrar.slide_dict[her2_key]
 
     # 使用 warp_and_save_slide 直接儲存到暫存檔案，避免大型陣列佔用記憶體
-    temp_dir = output_dir / "temp"
+    temp_dir = config.temp_dir
     temp_dir.mkdir(exist_ok=True)
 
     # VALIS 會自動將檔名改為 .ome.tiff
     dish_temp_ome = temp_dir / f"dish_warped_lv{level}.ome.tiff"
     her2_temp_ome = temp_dir / f"her2_warped_lv{level}.ome.tiff"
 
-
     # 檢查 DISH 暫存檔案是否存在
     if dish_temp_ome.exists():
         print(f"找到現有的 DISH 暫存檔案，跳過重新生成: {dish_temp_ome.name}")
     else:
-        print("對齊並儲存 DISH 影像...")
+        print(f"對齊並儲存 DISH 影像 (non_rigid={use_non_rigid})...")
         dish_temp = temp_dir / f"dish_warped_lv{level}.tiff"
         dish_obj.warp_and_save_slide(
             str(dish_temp),
             level=level,
-            non_rigid=True,
+            non_rigid=use_non_rigid,
             crop="overlap",
             compression='lzw'
         )
@@ -91,7 +109,7 @@ def generate_thumbnail(
     if her2_temp_ome.exists():
         print(f"找到現有的 HER2 暫存檔案，跳過重新生成: {her2_temp_ome.name}")
     else:
-        print("對齊並儲存 HER2 影像...")
+        print("對齊並儲存 HER2 影像 (non_rigid=False, 參考影像無需非剛性變換)...")
         her2_temp = temp_dir / f"her2_warped_lv{level}.tiff"
         her2_obj.warp_and_save_slide(
             str(her2_temp),
@@ -100,8 +118,9 @@ def generate_thumbnail(
             crop="overlap",
             compression='lzw'
         )
+    
     # 使用 pyvips 讀取並合併（串流處理，不會一次載入全部記憶體）
-    print("合併影像中 (多尺度拉普拉斯金字塔融合)...")
+    print(f"合併影像中 (多尺度拉普拉斯金字塔融合, levels={laplacian_levels})...")
     dish_vips = pyvips.Image.new_from_file(str(dish_temp_ome), access='sequential')
     her2_vips = pyvips.Image.new_from_file(str(her2_temp_ome), access='sequential')
     
@@ -111,7 +130,7 @@ def generate_thumbnail(
     print(f"目標尺寸: {target_width} x {target_height}")
     
     # 使用拉普拉斯金字塔融合保留細節
-    merged = laplacian_blend(dish_vips, her2_vips, levels=5)
+    merged = laplacian_blend(dish_vips, her2_vips, levels=laplacian_levels)
     
     print(f"融合後尺寸: {merged.width} x {merged.height}")
     
@@ -135,12 +154,20 @@ def generate_thumbnail(
 
 
 if __name__ == "__main__":
-    output_dir = Path("/home/sec312/tsgh/thriple_image_layer/output")
+    config = create_default_config()
+    
+    print("=" * 60)
+    print("Module 4: Thumbnail Generation")
+    print("=" * 60)
+    print(f"金字塔層級: {config.thumbnail.level}")
+    print(f"使用非剛性變換: {config.thumbnail.use_non_rigid}")
+    print()
+    
     try:
         pyvips.cache_set_max(0)
-        generate_thumbnail(output_dir, level=1)
+        generate_thumbnail(config)
     finally:
         try:
             slide_io.kill_jvm()
-        except:
+        except Exception:
             pass

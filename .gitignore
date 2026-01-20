@@ -16,3 +16,4 @@ output/
 *.pth
 models/
 dish_cellpose_v*
+config.py

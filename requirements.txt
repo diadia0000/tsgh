@@ -157,7 +157,6 @@ scikit-learn==1.8.0
 scipy==1.16.3
 scyjava==1.12.1
 segment-anything==1.0
-segmentation_models_pytorch==0.5.0
 shapely==2.1.2
 shellingham==1.5.4
 simpleitk==2.5.3
@@ -174,12 +173,10 @@ tifffile==2025.12.12
 tiler==0.6.0
 timm==1.0.22
 toolz==1.1.0
-torch==2.11.0.dev20251215+cu128
-torchvision==0.25.0.dev20251215+cu128
 tornado==6.5.4
 tqdm==4.67.1
 traitlets==5.14.3
-triton==3.6.0+git8fedd49b
+
 typer-slim==0.20.0
 typing-inspection==0.4.2
 typing_extensions==4.15.0

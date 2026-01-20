@@ -1,17 +1,29 @@
-"""Module 5: Tile Generator - 同時切割 HER2、DISH、Merged 三組對齊的 Tiles"""
+"""Module 5: Tile Generator
+
+同時切割 HER2、DISH、Merged 三組對齊的 Tiles
+"""
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from typing import Tuple
 import pyvips
 
+try:
+    from .config import RegistrationConfig, create_default_config
+except ImportError:
+    from config import RegistrationConfig, create_default_config
 
-def _save_triple_tiles(args):
+
+def _save_triple_tiles(args: Tuple) -> int:
     """
     同時保存三組對應的 tiles (HER2, DISH, Merged)
     
     Args:
-        args: (her2_path, dish_path, merged_path, output_dirs, x, y, w, h)
+        args: (her2_path, dish_path, merged_path, output_dirs, x, y, w, h, compression)
+    
+    Returns:
+        int: 1 表示成功
     """
-    her2_path, dish_path, merged_path, output_dirs, x, y, w, h = args
+    her2_path, dish_path, merged_path, output_dirs, x, y, w, h, compression = args
     
     her2_dir, dish_dir, merged_dir = output_dirs
     
@@ -20,7 +32,7 @@ def _save_triple_tiles(args):
     her2_tile = her2_img.crop(x, y, w, h)
     her2_tile.write_to_file(
         str(her2_dir / f"tile_x{x}_y{y}.tiff"), 
-        compression='deflate'
+        compression=compression
     )
     
     # 讀取並切割 DISH tile
@@ -28,7 +40,7 @@ def _save_triple_tiles(args):
     dish_tile = dish_img.crop(x, y, w, h)
     dish_tile.write_to_file(
         str(dish_dir / f"tile_x{x}_y{y}.tiff"), 
-        compression='deflate'
+        compression=compression
     )
     
     # 讀取並切割 Merged tile
@@ -36,37 +48,43 @@ def _save_triple_tiles(args):
     merged_tile = merged_img.crop(x, y, w, h)
     merged_tile.write_to_file(
         str(merged_dir / f"tile_x{x}_y{y}.tiff"), 
-        compression='deflate'
+        compression=compression
     )
     
     return 1
 
 
 def generate_triple_tiles(
-    her2_tiff: Path,
-    dish_tiff: Path,
-    merged_tiff: Path,
-    output_base_dir: Path,
-    tile_width: int = 512,
-    tile_height: int = 512,
-    workers: int = 4,
+    config: RegistrationConfig,
+    level: int = 1,
 ) -> None:
     """
     同時切割三組對齊的 TIFF 影像 (HER2, DISH, Merged)
     
     Args:
-        her2_tiff: HER2 影像路徑 (用於生成細胞膜 mask)
-        dish_tiff: DISH 影像路徑 (用於檢測紅黑點)
-        merged_tiff: 疊合影像路徑 (用於訓練輸入)
-        output_base_dir: 輸出基礎目錄
-        tile_width: Tile 寬度
-        tile_height: Tile 高度
-        workers: 執行緒數量
+        config: 配準流程配置
+        level: 使用的金字塔層級
     """
+    output_dir = config.output_dir
+    temp_dir = config.temp_dir
+    tile_config = config.tile
+    
+    # 設定路徑
+    her2_tiff = temp_dir / f"her2_warped_lv{level}.ome.tiff"
+    dish_tiff = temp_dir / f"dish_warped_lv{level}.ome.tiff"
+    merged_tiff = output_dir / f"Merged_Aligned_lv{level}.tiff"
+    
+    tile_output_dir = output_dir / f"tiles_lv{level}-{tile_config.tile_width}"
+    
+    tile_width = tile_config.tile_width
+    tile_height = tile_config.tile_height
+    workers = tile_config.workers
+    compression = tile_config.compression
+    
     # 創建輸出目錄
-    her2_dir = output_base_dir / "her2"
-    dish_dir = output_base_dir / "dish"
-    merged_dir = output_base_dir / "merged"
+    her2_dir = tile_output_dir / "her2"
+    dish_dir = tile_output_dir / "dish"
+    merged_dir = tile_output_dir / "merged"
     
     her2_dir.mkdir(parents=True, exist_ok=True)
     dish_dir.mkdir(parents=True, exist_ok=True)
@@ -86,6 +104,7 @@ def generate_triple_tiles(
     print("=" * 60)
     print(f"影像尺寸: {width} x {height}")
     print(f"Tile 尺寸: {tile_width} x {tile_height}")
+    print(f"壓縮格式: {compression}")
     print(f"使用 {workers} 個執行緒")
     print("=" * 60)
     
@@ -115,7 +134,10 @@ def generate_triple_tiles(
         for x in range(0, width, tile_width):
             w = min(tile_width, width - x)
             h = min(tile_height, height - y)
-            tasks.append((her2_tiff, dish_tiff, merged_tiff, output_dirs, x, y, w, h))
+            tasks.append((
+                her2_tiff, dish_tiff, merged_tiff, 
+                output_dirs, x, y, w, h, compression
+            ))
     
     print(f"預計生成 {len(tasks)} 組 tiles（每組包含 HER2, DISH, Merged）\n")
     
@@ -137,22 +159,14 @@ def generate_triple_tiles(
 
 
 if __name__ == "__main__":
-    # 設定路徑
-    output_base = Path("/home/sec312/tsgh/thriple_image_layer/output")
+    config = create_default_config()
     
-    her2_tiff = output_base / "temp" / "her2_warped_lv1.ome.tiff"
-    dish_tiff = output_base / "temp" / "dish_warped_lv1.ome.tiff"
-    merged_tiff = output_base / "Merged_Aligned_lv1.tiff"
+    print("=" * 60)
+    print("Module 5: Tile Generator")
+    print("=" * 60)
+    print(f"Tile 尺寸: {config.tile.tile_width} x {config.tile.tile_height}")
+    print(f"執行緒數: {config.tile.workers}")
+    print()
     
-    output_dir = output_base / "tiles_lv1-2048"
-    
-    # 切割 tiles（使用 2048x2048）
-    generate_triple_tiles(
-        her2_tiff=her2_tiff,
-        dish_tiff=dish_tiff,
-        merged_tiff=merged_tiff,
-        output_base_dir=output_dir,
-        tile_width=2048,
-        tile_height=2048,
-        workers=16  # 根據您的 CPU 核心數調整
-    )
+    # 使用 level 1 切割 tiles
+    generate_triple_tiles(config, level=1)

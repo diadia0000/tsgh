@@ -8,14 +8,6 @@
 import os
 import sys
 
-# 設定環境變數 - 必須在 import 其他套件之前
-# 限制每個進程只用一個執行緒，讓 multiprocessing 真正平行
-os.environ['VIPS_WARNING'] = '0'
-os.environ['VIPS_CONCURRENCY'] = '1'
-os.environ['OMP_NUM_THREADS'] = '1'
-os.environ['MKL_NUM_THREADS'] = '1'
-os.environ['OPENBLAS_NUM_THREADS'] = '1'
-os.environ['NUMEXPR_NUM_THREADS'] = '1'
 
 import shutil
 from pathlib import Path
@@ -26,14 +18,11 @@ import numpy as np
 import pyvips
 import aicspylibczi
 from tqdm import tqdm
-
+import gc
 try:
     from .config import create_default_config, ModalityConfig
 except ImportError:
     from config import create_default_config, ModalityConfig
-
-# 關閉 pyvips 快取以節省記憶體
-pyvips.cache_set_max(0)
 
 
 def process_strip_worker(task: Dict[str, Any]) -> Tuple[bool, str, int]:
@@ -43,16 +32,26 @@ def process_strip_worker(task: Dict[str, Any]) -> Tuple[bool, str, int]:
     
     這個函數會在獨立的 Python 進程中執行，
     每個進程使用獨立的記憶體空間和 CPU 核心
-    """
-    # 在 worker 內部重新設定環境變數 (fork 會繼承，但確保安全)
-    os.environ['VIPS_CONCURRENCY'] = '1'
     
-    input_path = task['input_path']
-    region = task['region']  # (x, y, w, h)
-    scale = task['scale_factor']
-    out_path = task['output_vips_path']
-    strip_idx = task['strip_index']
-    modality = task['modality']
+    Args:
+        task: 包含以下鍵值的字典
+            - input_path: CZI 檔案路徑
+            - region: (x, y, w, h) 區域座標 (pixels)
+            - scale_factor: 縮放比例
+            - output_vips_path: 輸出暫存檔路徑
+            - strip_index: 條狀區塊索引
+            - modality: 影像模態名稱
+    
+    Returns:
+        Tuple[bool, str, int]: (成功與否, 訊息或路徑, 區塊索引)
+    """
+    # 從 task 字典解構參數
+    input_path: str = task["input_path"]
+    region: Tuple[int, int, int, int] = task["region"]
+    scale: float = task["scale_factor"]
+    out_path: str = task["output_vips_path"]
+    strip_idx: int = task["strip_index"]
+    modality: str = task["modality"]
     
     try:
         # 開啟 CZI 檔案
@@ -96,7 +95,7 @@ def process_strip_worker(task: Dict[str, Any]) -> Tuple[bool, str, int]:
         
         # 明確釋放記憶體
         del chunk_data, vimg, czi
-        
+        gc.collect()
         return (True, out_path, strip_idx)
         
     except Exception as e:
@@ -116,8 +115,9 @@ class CziPreprocessor:
 
     def __init__(self, config, num_processes: int = None):
         self.config = config
-        self.input_dir = self.config.input_dir
-        self.output_dir = self.config.output_dir
+        # Module 1: 從 czi_input_dir 讀取 CZI，輸出到 input_dir (作為 Module 2 的輸入)
+        self.czi_input_dir = self.config.czi_input_dir
+        self.output_dir = self.config.input_dir  # Module 1 輸出 = Module 2 輸入
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         # 暫存目錄
@@ -127,7 +127,7 @@ class CziPreprocessor:
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         
         # 使用所有可用 CPU 核心
-        self.num_processes = num_processes if num_processes else cpu_count()
+        self.num_processes = num_processes if num_processes else cpu_count()-4
         print(f"將使用 {self.num_processes} 個獨立進程 (CPU 核心)")
 
     def get_conversion_tasks(self) -> List[Dict[str, Any]]:
@@ -137,8 +137,13 @@ class CziPreprocessor:
         file_plans = []
         
         for modality in self.config.modalities:
-            input_path = self.input_dir / modality.filename
-            output_filename = f"{modality.name}_processed.tif"
+            # 使用 czi_filename 作為輸入
+            if not modality.czi_filename:
+                print(f"跳過 {modality.name}: 未設定 czi_filename")
+                continue
+            
+            input_path = self.czi_input_dir / modality.czi_filename
+            output_filename = modality.filename  # 使用 config 中定義的輸出檔名
             output_path = self.output_dir / output_filename
             
             if not input_path.exists():
@@ -150,12 +155,14 @@ class CziPreprocessor:
                 bbox = czi.get_mosaic_bounding_box()
                 x, y, w, h = bbox.x, bbox.y, bbox.w, bbox.h
                 
-                # 計算縮放比例
-                target_res = modality.output_resolution
-                base_res = modality.resolution
-                scale_factor = base_res / target_res if (target_res and base_res) else 1.0
+                # 計算縮放比例: CZI (40X, 0.25 µm/px) → TIFF (20X, 0.5 µm/px)
+                # scale_factor = czi_resolution / tiff_resolution = 0.25 / 0.5 = 0.5
+                czi_res = modality.czi_resolution
+                tiff_res = modality.tiff_resolution
+                scale_factor = czi_res / tiff_res if (tiff_res and czi_res) else 1.0
                 
-                print(f"準備 {modality.name}: {w}x{h} px, 縮放 {scale_factor:.2f}x")
+                print(f"準備 {modality.name}: {w}x{h} px, 縮放 {scale_factor:.2f}x (縮小)")
+
 
                 # 產生條狀區塊任務
                 strips = []
@@ -231,9 +238,6 @@ class CziPreprocessor:
         # 這樣 tiffsave 才能利用所有核心進行壓縮和寫入
         print(f"切換為多執行緒模式 (Concurrency: {self.num_processes})")
         os.environ['VIPS_CONCURRENCY'] = str(self.num_processes)
-        # 也可以適度開啟一點緩存幫助寫入
-        pyvips.cache_set_max(1024 * 1024 * 100) 
-
         # 組裝最終影像
         print("\n組裝 BigTIFF 影像...")
         
@@ -284,15 +288,15 @@ class CziPreprocessor:
                 print(f"  寫入 {out_path}...")
                 
                 # 串流寫入 - VIPS 會自動處理
+                # 添加 pyramid=True 和 subifd=True 以生成與 VALIS 兼容的金字塔結構
+                # 這樣 VALIS 可以讀取多個解析度層級進行配準
                 result.tiffsave(
                     out_path,
-                    compression="jpeg",
-                    Q=85,
-                    tile=True,
-                    tile_width=1024,
-                    tile_height=1024,
-                    pyramid=True,
+                    compression="lzw",
                     bigtiff=True,
+                    pyramid=True,      # 生成金字塔層級
+                    subifd=True,       # 使用 SubIFD 格式存儲金字塔
+                    depth="onetile"    # 金字塔層級深度設為 one tile
                 )
                 
                 # 檢查檔案大小
