@@ -288,15 +288,19 @@ class CziPreprocessor:
                 print(f"  寫入 {out_path}...")
                 
                 # 串流寫入 - VIPS 會自動處理
-                # 添加 pyramid=True 和 subifd=True 以生成與 VALIS 兼容的金字塔結構
-                # 這樣 VALIS 可以讀取多個解析度層級進行配準
+                # 重要：VALIS 需要 tile-based 金字塔 TIFF
+                # 使用 subifd=True 將金字塔層級存為 SubIFD 格式
+                # 這樣可以避免 "tiff2vips: page 1 differs from page 0" 錯誤
                 result.tiffsave(
                     out_path,
-                    compression="lzw",
-                    bigtiff=True,
-                    pyramid=True,      # 生成金字塔層級
-                    subifd=True,       # 使用 SubIFD 格式存儲金字塔
-                    depth="onetile"    # 金字塔層級深度設為 one tile
+                    compression="jpeg",  # JPEG 壓縮減少檔案大小
+                    Q=95,                # JPEG 品質 (100 太大，95 已經很好)
+                    tile=True,           # 必須使用 tile 格式
+                    tile_width=512,      # tile 尺寸
+                    tile_height=512,
+                    bigtiff=True,        # 支援大於 4GB 檔案
+                    pyramid=True,        # 生成金字塔層級
+                    subifd=True,         # 使用 SubIFD 格式存放金字塔層級 (VALIS 相容)
                 )
                 
                 # 檢查檔案大小

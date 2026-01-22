@@ -36,8 +36,10 @@ def evaluate_roi(
     roi_size = config.roi.roi_size
     
     # 載入變換參數
-    print(f"載入變換參數: {config.pickle_path}")
-    registrar = registration.load_registrar(str(config.pickle_path))
+    # 使用 VALIS 的 load_registrar 從 pickle 檔案載入
+    pickle_path = config.pickle_path
+    print(f"載入變換參數: {pickle_path}")
+    registrar = registration.load_registrar(str(pickle_path))
     
     # 計算 ROI 中心位置
     aligned_shape = registrar.get_aligned_slide_shape(0)

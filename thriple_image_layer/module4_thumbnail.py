@@ -102,7 +102,9 @@ def generate_thumbnail(
             level=level,
             non_rigid=use_non_rigid,
             crop="overlap",
-            compression='lzw'
+            compression='jpeg',
+            Q=100,
+            pyramid=True
         )
 
     # 檢查 HER2 暫存檔案是否存在
@@ -116,11 +118,13 @@ def generate_thumbnail(
             level=level,
             non_rigid=False,
             crop="overlap",
-            compression='lzw'
+            compression='jpeg',
+            Q=100,
+            pyramid=True,
         )
     
     # 使用 pyvips 讀取並合併（串流處理，不會一次載入全部記憶體）
-    print(f"合併影像中 (多尺度拉普拉斯金字塔融合, levels={laplacian_levels})...")
+    print(f"合併影像中 (使用一般 0.5/0.5 融合)...")
     dish_vips = pyvips.Image.new_from_file(str(dish_temp_ome), access='sequential')
     her2_vips = pyvips.Image.new_from_file(str(her2_temp_ome), access='sequential')
     
@@ -129,8 +133,9 @@ def generate_thumbnail(
     target_height = dish_vips.height
     print(f"目標尺寸: {target_width} x {target_height}")
     
-    # 使用拉普拉斯金字塔融合保留細節
-    merged = laplacian_blend(dish_vips, her2_vips, levels=laplacian_levels)
+    # 一般 0.5 0.5 融合
+    print("使用一般 0.5/0.5 融合...")
+    merged = (dish_vips * 0.5 + her2_vips * 0.5).cast('uchar')
     
     print(f"融合後尺寸: {merged.width} x {merged.height}")
     
@@ -146,7 +151,8 @@ def generate_thumbnail(
         str(output_path),
         pyramid=True,
         bigtiff=True,
-        compression='lzw'
+        compression='jpeg',
+        Q=100
     )
 
     print(f"已儲存: {output_path}")
@@ -164,7 +170,7 @@ if __name__ == "__main__":
     print()
     
     try:
-        pyvips.cache_set_max(0)
+        pyvips.cache_set_max(1024 * 1024 * 1024)
         generate_thumbnail(config)
     finally:
         try:

@@ -28,11 +28,8 @@ def main() -> None:
     print(f"參考模態: {config.reference_modality}")
     print("=" * 60)
     
-    # Module 2: Alignment (使用 VALIS 原生演算法)
+    # Module 2: Alignment
     print("\n[Module 2] 執行影像對準...")
-    print(f"  演算法: DISK + LightGlueMatcher (VALIS 原生)")
-    print(f"  特徵檢測解析度: {config.valis.max_processed_image_dim_px}px")
-    print(f"  非剛性配準解析度: {config.valis.max_non_rigid_registration_dim_px}px")
     try:
         registrar = align_images(config)
         print("✓ Module 2 完成")
@@ -42,7 +39,6 @@ def main() -> None:
     
     # Module 3: ROI Evaluation
     print("\n[Module 3] 評估 ROI 品質...")
-    print(f"  ROI 尺寸: {config.roi.roi_size}")
     try:
         evaluate_roi(config)
         print("✓ Module 3 完成")
@@ -52,8 +48,6 @@ def main() -> None:
     
     # Module 4: Thumbnail
     print("\n[Module 4] 產生全局縮圖...")
-    print(f"  金字塔層級: {config.thumbnail.level}")
-    print(f"  使用非剛性變換: {config.thumbnail.use_non_rigid}")
     try:
         generate_thumbnail(config)
         print("✓ Module 4 完成")

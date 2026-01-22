@@ -169,4 +169,4 @@ if __name__ == "__main__":
     print()
     
     # 使用 level 1 切割 tiles
-    generate_triple_tiles(config, level=1)
+    generate_triple_tiles(config, level=0)
