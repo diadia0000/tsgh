@@ -40,6 +40,7 @@ def align_images(
         max_processed_image_dim_px=config.valis.max_processed_image_dim_px,
         max_non_rigid_registration_dim_px=config.valis.max_non_rigid_registration_dim_px,
         img_list=img_list,
+        compose_non_rigid=True
     )
     
     # 執行配準
