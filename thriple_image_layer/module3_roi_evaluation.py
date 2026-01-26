@@ -87,18 +87,22 @@ def evaluate_roi(
             img = warp_tools.vips2numpy(img)
         if img.ndim == 2:
             return np.stack([img] * 3, axis=-1)
+        # VALIS warp_img 輸出為 BGR，需轉換為 RGB
+        if img.shape[2] >= 3:
+            img = img[:, :, :3]  # 只取前3個通道
+            img = img[:, :, ::-1]  # BGR → RGB
         return img
     
     dish_roi = to_numpy_rgb(dish_roi)
     he_roi = to_numpy_rgb(he_roi)
     her2_roi = to_numpy_rgb(her2_roi)
     
-    # 生成三重疊合圖 (R=Her2, G=HE, B=DISH)
-    merged = np.dstack([her2_roi[:, :, 0], he_roi[:, :, 1], dish_roi[:, :, 2]])
+    # 生成疊合圖 (R=Her2, G=DISH, B=0)
+    merged = np.dstack([her2_roi[:, :, 0], dish_roi[:, :, 0], np.zeros_like(her2_roi[:, :, 0])])
     merged_img = Image.fromarray(merged.astype(np.uint8))
     merged_path = output_dir / "Merged_ROI.png"
     merged_img.save(merged_path)
-    print(f"已儲存: {merged_path} (R=Her2, G=HE, B=DISH)")
+    print(f"已儲存: {merged_path} (R=Her2, G=DISH)")
     
     # 計算疊合指標
     dish_gray = color.rgb2gray(dish_roi)

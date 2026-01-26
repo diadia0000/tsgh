@@ -11,44 +11,6 @@ try:
 except ImportError:
     from config import RegistrationConfig, create_default_config, get_slide_key
 
-
-def laplacian_blend(
-    img1: pyvips.Image,
-    img2: pyvips.Image,
-    levels: int = 5
-) -> pyvips.Image:
-    """
-    多尺度拉普拉斯金字塔融合，保留兩張影像的細節
-    
-    Args:
-        img1: 第一張影像 (DISH)
-        img2: 第二張影像 (HER2)
-        levels: 金字塔層級數
-    
-    Returns:
-        pyvips.Image: 融合後的影像
-    """
-    # 建立高斯金字塔
-    gauss1, gauss2 = [img1], [img2]
-    for _ in range(levels):
-        gauss1.append(gauss1[-1].shrink(2, 2))
-        gauss2.append(gauss2[-1].shrink(2, 2))
-    
-    # 從最粗層級開始融合
-    result = gauss1[-1] * 0.5 + gauss2[-1] * 0.5
-    
-    # 逐層重建並融合拉普拉斯細節
-    for i in range(levels - 1, -1, -1):
-        result = result.resize(2, kernel='cubic')
-        # 計算拉普拉斯層（細節）
-        lap1 = gauss1[i] - gauss1[i].shrink(2, 2).resize(2, kernel='cubic')
-        lap2 = gauss2[i] - gauss2[i].shrink(2, 2).resize(2, kernel='cubic')
-        # 融合細節並加回
-        result = result + (lap1 * 0.5 + lap2 * 0.5)
-    
-    return result.cast('uchar')
-
-
 def generate_thumbnail(
     config: RegistrationConfig,
 ) -> None:

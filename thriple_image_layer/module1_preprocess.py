@@ -126,13 +126,15 @@ class CziPreprocessor:
             shutil.rmtree(self.temp_dir)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         
-        # 使用所有可用 CPU 核心
-        self.num_processes = num_processes if num_processes else cpu_count()-4
-        print(f"將使用 {self.num_processes} 個獨立進程 (CPU 核心)")
+        self.num_processes = num_processes if num_processes else cpu_count()-10
+        print(f"將使用 {self.num_processes} 個獨立進程 (記憶體安全模式)")
 
     def get_conversion_tasks(self) -> List[Dict[str, Any]]:
         """準備轉換任務列表"""
-        strip_height = 4096  # 每個條狀區塊的高度 (像素)
+        # 條狀區塊高度 (原始座標系)
+        # 注意：這是在原始解析度下的像素數
+        # read_mosaic 會根據 scale_factor 自動縮放輸出
+        strip_height = 1024
         
         file_plans = []
         
@@ -155,13 +157,16 @@ class CziPreprocessor:
                 bbox = czi.get_mosaic_bounding_box()
                 x, y, w, h = bbox.x, bbox.y, bbox.w, bbox.h
                 
-                # 計算縮放比例: CZI (40X, 0.25 µm/px) → TIFF (20X, 0.5 µm/px)
-                # scale_factor = czi_resolution / tiff_resolution = 0.25 / 0.5 = 0.5
-                czi_res = modality.czi_resolution
-                tiff_res = modality.tiff_resolution
-                scale_factor = czi_res / tiff_res if (tiff_res and czi_res) else 1.0
+                # 直接使用 config 中的 scale_factor
+                # 1.0 = 不縮放 (40X 原始解析度), 0.5 = 縮小一半 (20X)
+                scale_factor = modality.scale_factor
                 
-                print(f"準備 {modality.name}: {w}x{h} px, 縮放 {scale_factor:.2f}x (縮小)")
+                # 估算每個區塊的記憶體使用量
+                output_width = int(w * scale_factor)
+                output_strip_h = int(strip_height * scale_factor)
+                mem_per_strip_gb = (output_width * output_strip_h * 3) / (1024**3)
+                print(f"準備 {modality.name}: {w}x{h} px -> 輸出 {output_width}x{int(h*scale_factor)} px")
+                print(f"  scale_factor={scale_factor:.2f}, 每個區塊約 {mem_per_strip_gb:.2f} GB")
 
 
                 # 產生條狀區塊任務
@@ -215,7 +220,7 @@ class CziPreprocessor:
         # maxtasksperchild=10 讓每個 worker 處理一定數量後重啟，避免記憶體洩漏
         failed_strips = []
         
-        with Pool(processes=self.num_processes, maxtasksperchild=16) as pool:
+        with Pool(processes=self.num_processes, maxtasksperchild=50) as pool:
             # imap_unordered 不保證順序，但更快
             results = list(tqdm(
                 pool.imap_unordered(process_strip_worker, all_strip_tasks),
@@ -294,10 +299,10 @@ class CziPreprocessor:
                 result.tiffsave(
                     out_path,
                     compression="jpeg",  # JPEG 壓縮減少檔案大小
-                    Q=95,                # JPEG 品質 (100 太大，95 已經很好)
+                    Q=90,                # JPEG 品質
                     tile=True,           # 必須使用 tile 格式
-                    tile_width=512,      # tile 尺寸
-                    tile_height=512,
+                    tile_width=1024,      # tile 尺寸
+                    tile_height=1024,
                     bigtiff=True,        # 支援大於 4GB 檔案
                     pyramid=True,        # 生成金字塔層級
                     subifd=True,         # 使用 SubIFD 格式存放金字塔層級 (VALIS 相容)
