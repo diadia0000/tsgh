@@ -220,7 +220,7 @@ class CziPreprocessor:
         # maxtasksperchild=10 讓每個 worker 處理一定數量後重啟，避免記憶體洩漏
         failed_strips = []
         
-        with Pool(processes=self.num_processes, maxtasksperchild=50) as pool:
+        with Pool(processes=self.num_processes, maxtasksperchild=60) as pool:
             # imap_unordered 不保證順序，但更快
             results = list(tqdm(
                 pool.imap_unordered(process_strip_worker, all_strip_tasks),
@@ -260,34 +260,40 @@ class CziPreprocessor:
             try:
                 print(f"組裝 {modality} ({len(strip_paths)} 個區塊)...")
                 
-                # 串流組裝策略:
-                # 1. 先讀取第一個 strip 獲取寬度
-                # 2. 使用 insert 逐一將 strip 插入到正確位置
-                # 3. 整個過程是串流的，不會一次載入所有資料
+                # 分批 join 策略：
+                # 1. 每批處理 BATCH_SIZE 個 strips (減少單次 pipeline 深度)
+                # 2. 再將各批次組合起來
+                # 這比遞迴 join 更淺，比 arrayjoin 更穩定
+                
+                BATCH_SIZE = 16  # 每批處理的 strips 數量
                 
                 first_strip = pyvips.Image.new_from_file(strip_paths[0], access='sequential')
-                width = first_strip.width
-                strip_height = first_strip.height
+                print(f"  每個區塊: {first_strip.width} x {first_strip.height}")
+                print(f"  預計總高度: {first_strip.height * len(strip_paths)}")
+                del first_strip
                 
-                print(f"  每個區塊: {width} x {strip_height}")
-                print(f"  預計總高度: {strip_height * len(strip_paths)}")
-                
-                # 建立完整影像 - 使用串流方式
-                # 先用黑色背景建立目標尺寸的影像
-                # 這不會真正分配記憶體，只是定義尺寸
-                
-                # 方法: 遞迴式串接 (更穩定)
-                # 從最後一個開始，逐一往上疊
-                
-                result = pyvips.Image.new_from_file(strip_paths[-1], access='sequential')
-                
-                for i in range(len(strip_paths) - 2, -1, -1):
-                    strip = pyvips.Image.new_from_file(strip_paths[i], access='sequential')
-                    # join: 把 strip 放在 result 上面 (north)
-                    result = strip.join(result, 'vertical', expand=True)
+                # 第一階段：分批組裝
+                print(f"  分批組裝 ({BATCH_SIZE} strips/batch)...")
+                batches = []
+                for batch_start in range(0, len(strip_paths), BATCH_SIZE):
+                    batch_paths = strip_paths[batch_start:batch_start + BATCH_SIZE]
                     
-                    if (len(strip_paths) - 1 - i) % 10 == 0:
-                        print(f"  已處理 {len(strip_paths) - 1 - i}/{len(strip_paths)} 區塊...")
+                    # 在批次內使用 join
+                    batch_result = pyvips.Image.new_from_file(batch_paths[0], access='sequential')
+                    for p in batch_paths[1:]:
+                        strip = pyvips.Image.new_from_file(p, access='sequential')
+                        batch_result = batch_result.join(strip, 'vertical', expand=True)
+                    
+                    batches.append(batch_result)
+                    print(f"    批次 {len(batches)}/{(len(strip_paths) + BATCH_SIZE - 1) // BATCH_SIZE} 完成")
+                
+                # 第二階段：組合所有批次
+                print(f"  組合 {len(batches)} 個批次...")
+                result = batches[0]
+                for i, batch in enumerate(batches[1:], 1):
+                    result = result.join(batch, 'vertical', expand=True)
+                    if i % 2 == 0:
+                        print(f"    已合併 {i + 1}/{len(batches)} 批次")
                 
                 print(f"  最終尺寸: {result.width} x {result.height}")
                 print(f"  寫入 {out_path}...")
@@ -299,7 +305,7 @@ class CziPreprocessor:
                 result.tiffsave(
                     out_path,
                     compression="jpeg",  # JPEG 壓縮減少檔案大小
-                    Q=90,                # JPEG 品質
+                    Q=85,                # JPEG 品質
                     tile=True,           # 必須使用 tile 格式
                     tile_width=1024,      # tile 尺寸
                     tile_height=1024,

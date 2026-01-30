@@ -7,11 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Tuple
 import pyvips
 
-try:
-    from .config import RegistrationConfig, create_default_config
-except ImportError:
-    from config import RegistrationConfig, create_default_config
-
+from config import RegistrationConfig, create_default_config
 
 def _save_triple_tiles(args: Tuple) -> int:
     """

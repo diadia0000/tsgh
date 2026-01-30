@@ -11,10 +11,7 @@ from sklearn.metrics import mutual_info_score
 from valis import registration, slide_io
 import pyvips
 
-try:
-    from .config import RegistrationConfig, create_default_config, get_slide_key
-except ImportError:
-    from config import RegistrationConfig, create_default_config, get_slide_key
+from config import RegistrationConfig, create_default_config, get_slide_key
 
 
 def evaluate_roi(

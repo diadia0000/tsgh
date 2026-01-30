@@ -1,12 +1,7 @@
 """Module 2: VALIS Alignment Pipeline"""
 from pathlib import Path
-from valis import registration, feature_detectors, feature_matcher
-
-try:
-    from .config import RegistrationConfig, create_default_config
-except ImportError:
-    from config import RegistrationConfig, create_default_config
-
+from valis import registration, feature_detectors, feature_matcher,non_rigid_registrars
+from config import RegistrationConfig, create_default_config
 
 def align_images(
     config: RegistrationConfig,
@@ -35,6 +30,7 @@ def align_images(
     matcher = feature_matcher.LightGlueMatcher(feature_detector=detector)
     
     # 初始化 VALIS 配準器
+    # 注意：matcher 內部已經包含 detector，不需要額外傳入 feature_detector_cls
     registrar = registration.Valis(
         src_dir=str(output_dir),
         dst_dir=str(output_dir),
@@ -43,11 +39,14 @@ def align_images(
         align_to_reference=config.valis.align_to_reference,
         max_processed_image_dim_px=config.valis.max_processed_image_dim_px,
         max_non_rigid_registration_dim_px=config.valis.max_non_rigid_registration_dim_px,
-        max_image_dim_px=6000,
+        max_image_dim_px=6100,
         img_list=img_list,
         compose_non_rigid=True,
-        feature_detector_cls=detector,
-        feature_matcher_cls=matcher,
+        non_rigid_registrar_cls=non_rigid_registrars.OpticalFlowWarper(
+            smoothing_method="regularize",  # 防止翻折
+            fold_penalty=1e-5
+        ),
+        matcher=matcher,
     )
     
     # 執行配準
