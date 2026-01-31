@@ -134,7 +134,7 @@ class CziPreprocessor:
         # 條狀區塊高度 (原始座標系)
         # 注意：這是在原始解析度下的像素數
         # read_mosaic 會根據 scale_factor 自動縮放輸出
-        strip_height = 1024
+        strip_height = 4096
         
         file_plans = []
         
@@ -305,7 +305,7 @@ class CziPreprocessor:
                 result.tiffsave(
                     out_path,
                     compression="jpeg",  # JPEG 壓縮減少檔案大小
-                    Q=85,                # JPEG 品質
+                    Q=95,                # JPEG 品質
                     tile=True,           # 必須使用 tile 格式
                     tile_width=1024,      # tile 尺寸
                     tile_height=1024,

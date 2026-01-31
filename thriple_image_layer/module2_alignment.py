@@ -31,6 +31,7 @@ def align_images(
     
     # 初始化 VALIS 配準器
     # 注意：matcher 內部已經包含 detector，不需要額外傳入 feature_detector_cls
+    # VALIS 會自動判斷是否需要使用 NonRigidTileRegistrar 進行分塊處理（基於記憶體需求）
     registrar = registration.Valis(
         src_dir=str(output_dir),
         dst_dir=str(output_dir),
@@ -39,13 +40,17 @@ def align_images(
         align_to_reference=config.valis.align_to_reference,
         max_processed_image_dim_px=config.valis.max_processed_image_dim_px,
         max_non_rigid_registration_dim_px=config.valis.max_non_rigid_registration_dim_px,
-        max_image_dim_px=6100,
         img_list=img_list,
         compose_non_rigid=True,
-        non_rigid_registrar_cls=non_rigid_registrars.OpticalFlowWarper(
-            smoothing_method="regularize",  # 防止翻折
-            fold_penalty=1e-5
-        ),
+        max_image_dim_px=2048,
+        non_rigid_registrar_cls=non_rigid_registrars.SimpleElastixWarper,  # B-spline 配準
+        non_rigid_reg_params={
+            # 傳遞給 SimpleElastixWarper 的參數
+            # B-spline 天然無翻折問題，更適合醫學影像配準
+            "ammi_weight": 0.5,  # AdvancedMattesMutualInformation 互信息權重
+            "bending_penalty_weight": 0.3,  # 變形平滑度懲罰（減少過度變形）
+            "kp_weight": 0.2,  # 控制點權重（無控制點時會自動忽略）
+        },
         matcher=matcher,
     )
     

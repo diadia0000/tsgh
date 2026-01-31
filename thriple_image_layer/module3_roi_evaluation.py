@@ -68,7 +68,16 @@ def evaluate_roi(
     dish_roi = rois[dish_key]
     he_roi = rois[he_key]
     her2_roi = rois[her2_key]
-    
+    def invert_channel(img: np.ndarray) -> np.ndarray:
+        """反轉影像亮度，讓組織發光、背景變黑
+        
+        Args:
+            img: 輸入影像 (uint8 格式)
+            
+        Returns:
+            np.ndarray: 反轉後的影像
+        """
+        return 255 - img
     # 確保 ROI 是 numpy array 並處理格式
     def to_numpy_rgb(img: np.ndarray | pyvips.Image) -> np.ndarray:
         """將影像轉換為 RGB numpy array
@@ -93,6 +102,11 @@ def evaluate_roi(
     dish_roi = to_numpy_rgb(dish_roi)
     he_roi = to_numpy_rgb(he_roi)
     her2_roi = to_numpy_rgb(her2_roi)
+    
+    # 反轉影像：讓組織發光，背景變黑
+    dish_roi = invert_channel(dish_roi)
+    he_roi = invert_channel(he_roi)
+    her2_roi = invert_channel(her2_roi)
     
     # 生成疊合圖 (R=Her2, G=DISH, B=0)
     merged = np.dstack([her2_roi[:, :, 0], dish_roi[:, :, 0], np.zeros_like(her2_roi[:, :, 0])])
