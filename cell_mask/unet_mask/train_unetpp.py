@@ -1,0 +1,713 @@
+"""
+UNet++ HER2 細胞膜語義分割訓練腳本
+
+使用 LAB 色彩空間生成的偽標籤進行訓練
+模型架構: UNet++ with DenseNet121 Encoder (ImageNet pretrained)
+
+Author: TSGH AI Team
+Date: 2026-02-03
+"""
+
+import logging
+from pathlib import Path
+from typing import Tuple, List, Optional, Dict
+from dataclasses import dataclass
+
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.amp import GradScaler, autocast
+import segmentation_models_pytorch as smp
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+from skimage import io
+from tqdm import tqdm
+
+# 設定 logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+def load_config():
+    """
+    載入配置檔案
+    
+    Returns:
+        Config: 配置物件
+    
+    Raises:
+        ImportError: 若 config.py 不存在
+    """
+    try:
+        from config import config
+        return config
+    except ImportError:
+        raise ImportError(
+            "找不到 config.py！\n"
+            "請複製 config_example.py 為 config.py 並設定參數"
+        )
+
+
+class HER2MembraneDataset(Dataset):
+    """
+    HER2 細胞膜分割資料集
+    
+    讀取影像和對應的 LAB 生成偽標籤
+    
+    Attributes:
+        image_paths: 影像路徑列表
+        mask_paths: 對應的 mask 路徑列表
+        transform: Albumentations 轉換
+        threshold: 二值化閾值 (0-255)
+    """
+    
+    def __init__(
+        self,
+        image_paths: List[Path],
+        mask_paths: List[Path],
+        transform: Optional[A.Compose] = None,
+        threshold: int = 20,
+    ) -> None:
+        """
+        初始化資料集
+        
+        Args:
+            image_paths: 影像路徑列表
+            mask_paths: 對應的 mask 路徑列表
+            transform: Albumentations 資料增強
+            threshold: Mask 二值化閾值 (R 通道值 > threshold 視為膜)
+        """
+        self.image_paths = image_paths
+        self.mask_paths = mask_paths
+        self.transform = transform
+        self.threshold = threshold
+        
+        # 驗證路徑配對
+        assert len(image_paths) == len(mask_paths), \
+            f"影像數量 ({len(image_paths)}) 與 Mask 數量 ({len(mask_paths)}) 不符"
+    
+    def __len__(self) -> int:
+        return len(self.image_paths)
+    
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        取得單筆資料
+        
+        Args:
+            idx: 索引
+            
+        Returns:
+            image: 影像 Tensor (C, H, W)
+            mask: Mask Tensor (H, W), 二值 0 或 1
+        """
+        # 讀取影像
+        image = io.imread(str(self.image_paths[idx]))
+        if image.ndim == 2:
+            image = np.stack([image] * 3, axis=-1)
+        elif image.shape[2] == 4:
+            image = image[:, :, :3]
+        
+        # 讀取 Mask (RGB 格式，R 通道為膜強度)
+        mask_rgb = io.imread(str(self.mask_paths[idx]))
+        if mask_rgb.ndim == 3:
+            mask_gray = mask_rgb[:, :, 0]  # 取 R 通道
+        else:
+            mask_gray = mask_rgb
+        
+        # 二值化 (R > threshold 為膜)
+        mask = (mask_gray > self.threshold).astype(np.uint8)
+        
+        # 資料增強
+        if self.transform is not None:
+            transformed = self.transform(image=image, mask=mask)
+            image = transformed['image']
+            mask = transformed['mask']
+        
+        # 確保 mask 為 long 類型 (CrossEntropyLoss 需要)
+        mask = mask.long()
+        
+        return image, mask
+
+
+def get_train_transforms(image_size: Tuple[int, int]) -> A.Compose:
+    """
+    取得訓練時的資料增強
+    
+    Args:
+        image_size: 輸出影像尺寸 (H, W)
+        
+    Returns:
+        Albumentations Compose 物件
+    """
+    return A.Compose([
+        # 確保最小尺寸 (處理邊緣 tile)
+        A.PadIfNeeded(
+            min_height=image_size[0],
+            min_width=image_size[1],
+            border_mode=0,  # cv2.BORDER_CONSTANT
+            value=255,  # 白色填充 (背景)
+            mask_value=0,  # mask 填充 0 (非膜)
+        ),
+        
+        # 幾何變換
+        A.RandomRotate90(p=0.5),
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
+        A.ShiftScaleRotate(
+            shift_limit=0.1,
+            scale_limit=0.1,
+            rotate_limit=45,
+            border_mode=0,
+            p=0.5
+        ),
+        
+        # 彈性變形 (模擬細胞形變)
+        A.ElasticTransform(
+            alpha=50,
+            sigma=5,
+            p=0.3
+        ),
+        
+        # 顏色增強 (應對染色差異)
+        A.ColorJitter(
+            brightness=0.2,
+            contrast=0.2,
+            saturation=0.2,
+            hue=0.05,
+            p=0.5
+        ),
+        
+        # 模糊 (應對對焦差異)
+        A.GaussianBlur(blur_limit=(3, 7), p=0.3),
+        
+        # 正規化 + 轉 Tensor
+        A.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        ),
+        ToTensorV2(),
+    ])
+
+
+def get_val_transforms(image_size: Tuple[int, int]) -> A.Compose:
+    """
+    取得驗證時的資料轉換 (無增強)
+    
+    Args:
+        image_size: 輸出影像尺寸 (H, W)
+        
+    Returns:
+        Albumentations Compose 物件
+    """
+    return A.Compose([
+        # 確保最小尺寸 (處理邊緣 tile)
+        A.PadIfNeeded(
+            min_height=image_size[0],
+            min_width=image_size[1],
+            border_mode=0,
+            value=255,
+            mask_value=0,
+        ),
+        
+        A.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        ),
+        ToTensorV2(),
+    ])
+
+
+class CombinedLoss(nn.Module):
+    """
+    組合損失函數: Dice Loss + Cross-Entropy Loss
+    
+    Attributes:
+        dice_weight: Dice Loss 權重
+        ce_weight: Cross-Entropy Loss 權重
+        class_weights: 類別權重 (用於 CE Loss)
+    """
+    
+    def __init__(
+        self,
+        dice_weight: float = 0.5,
+        ce_weight: float = 0.5,
+        class_weights: Optional[List[float]] = None,
+    ) -> None:
+        """
+        初始化損失函數
+        
+        Args:
+            dice_weight: Dice Loss 權重
+            ce_weight: Cross-Entropy Loss 權重
+            class_weights: 類別權重列表 [非膜, 膜]
+        """
+        super().__init__()
+        self.dice_weight = dice_weight
+        self.ce_weight = ce_weight
+        
+        # Dice Loss (SMP 提供)
+        self.dice_loss = smp.losses.DiceLoss(
+            mode='multiclass',
+            from_logits=True
+        )
+        
+        # Cross-Entropy Loss
+        if class_weights is not None:
+            weight = torch.tensor(class_weights, dtype=torch.float32)
+            self.ce_loss = nn.CrossEntropyLoss(weight=weight)
+        else:
+            self.ce_loss = nn.CrossEntropyLoss()
+    
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        計算組合損失
+        
+        Args:
+            pred: 模型輸出 (B, C, H, W)
+            target: Ground Truth (B, H, W)
+            
+        Returns:
+            總損失值
+        """
+        dice = self.dice_loss(pred, target)
+        
+        # CE Loss 需要將 class_weights 移到正確的 device
+        if hasattr(self.ce_loss, 'weight') and self.ce_loss.weight is not None:
+            self.ce_loss.weight = self.ce_loss.weight.to(pred.device)
+        
+        ce = self.ce_loss(pred, target)
+        
+        return self.dice_weight * dice + self.ce_weight * ce
+
+
+def calculate_miou(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    num_classes: int = 2
+) -> float:
+    """
+    計算 Mean IoU
+    
+    Args:
+        pred: 模型輸出 (B, C, H, W)
+        target: Ground Truth (B, H, W)
+        num_classes: 類別數量
+        
+    Returns:
+        Mean IoU 值
+    """
+    pred_labels = pred.argmax(dim=1)  # (B, H, W)
+    
+    ious = []
+    for cls in range(num_classes):
+        pred_mask = (pred_labels == cls)
+        target_mask = (target == cls)
+        
+        intersection = (pred_mask & target_mask).sum().float()
+        union = (pred_mask | target_mask).sum().float()
+        
+        if union > 0:
+            ious.append((intersection / union).item())
+    
+    return np.mean(ious) if ious else 0.0
+
+
+def split_dataset(
+    image_dir: Path,
+    mask_dir: Path,
+    train_ratio: float = 0.8,
+    val_ratio: float = 0.1,
+    seed: int = 42,
+) -> Tuple[List[Path], List[Path], List[Path], List[Path], List[Path], List[Path]]:
+    """
+    分割資料集為訓練/驗證/測試集
+    
+    Args:
+        image_dir: 影像目錄
+        mask_dir: Mask 目錄
+        train_ratio: 訓練集比例
+        val_ratio: 驗證集比例
+        seed: 隨機種子
+        
+    Returns:
+        (train_images, train_masks, val_images, val_masks, test_images, test_masks)
+    """
+    # 收集所有影像
+    extensions = ['.tiff', '.tif', '.png', '.jpg', '.jpeg']
+    image_paths = []
+    for ext in extensions:
+        image_paths.extend(image_dir.glob(f'*{ext}'))
+        image_paths.extend(image_dir.glob(f'*{ext.upper()}'))
+    
+    image_paths = sorted(set(image_paths))
+    
+    # 配對 Mask
+    paired_data = []
+    for img_path in image_paths:
+        mask_name = img_path.stem + '_mask.png'
+        mask_path = mask_dir / mask_name
+        if mask_path.exists():
+            paired_data.append((img_path, mask_path))
+    
+    logger.info(f"找到 {len(paired_data)} 筆配對資料")
+    
+    # 隨機打亂
+    np.random.seed(seed)
+    np.random.shuffle(paired_data)
+    
+    # 分割
+    n_total = len(paired_data)
+    n_train = int(n_total * train_ratio)
+    n_val = int(n_total * val_ratio)
+    
+    train_data = paired_data[:n_train]
+    val_data = paired_data[n_train:n_train + n_val]
+    test_data = paired_data[n_train + n_val:]
+    
+    # 解包
+    train_images = [x[0] for x in train_data]
+    train_masks = [x[1] for x in train_data]
+    val_images = [x[0] for x in val_data]
+    val_masks = [x[1] for x in val_data]
+    test_images = [x[0] for x in test_data]
+    test_masks = [x[1] for x in test_data]
+    
+    logger.info(f"資料分割: 訓練={len(train_images)}, 驗證={len(val_images)}, 測試={len(test_images)}")
+    
+    return train_images, train_masks, val_images, val_masks, test_images, test_masks
+
+
+@dataclass
+class TrainState:
+    """訓練狀態追蹤"""
+    epoch: int = 0
+    best_miou: float = 0.0
+    patience_counter: int = 0
+
+
+def train_one_epoch(
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scaler: GradScaler,
+    device: torch.device,
+    accumulation_steps: int = 1,
+) -> Tuple[float, float]:
+    """
+    訓練一個 Epoch
+    
+    Args:
+        model: 模型
+        loader: DataLoader
+        criterion: 損失函數
+        optimizer: 優化器
+        scaler: GradScaler (AMP)
+        device: 計算設備
+        accumulation_steps: 梯度累積步數
+        
+    Returns:
+        (平均損失, 平均 mIoU)
+    """
+    model.train()
+    total_loss = 0.0
+    total_miou = 0.0
+    n_batches = 0
+    
+    optimizer.zero_grad()
+    
+    pbar = tqdm(loader, desc='Training', leave=False)
+    for batch_idx, (images, masks) in enumerate(pbar):
+        images = images.to(device)
+        masks = masks.to(device)
+        
+        # 混合精度前向傳播
+        with autocast(device_type='cuda'):
+            outputs = model(images)
+            loss = criterion(outputs, masks) / accumulation_steps
+        
+        # 反向傳播
+        scaler.scale(loss).backward()
+        
+        # 梯度累積
+        if (batch_idx + 1) % accumulation_steps == 0:
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+        
+        # 計算指標
+        total_loss += loss.item() * accumulation_steps
+        with torch.no_grad():
+            miou = calculate_miou(outputs, masks)
+            total_miou += miou
+        n_batches += 1
+        
+        pbar.set_postfix({
+            'loss': f'{loss.item() * accumulation_steps:.4f}',
+            'mIoU': f'{miou:.4f}'
+        })
+    
+    return total_loss / n_batches, total_miou / n_batches
+
+
+@torch.no_grad()
+def validate(
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+) -> Tuple[float, float]:
+    """
+    驗證模型
+    
+    Args:
+        model: 模型
+        loader: DataLoader
+        criterion: 損失函數
+        device: 計算設備
+        
+    Returns:
+        (平均損失, 平均 mIoU)
+    """
+    model.eval()
+    total_loss = 0.0
+    total_miou = 0.0
+    n_batches = 0
+    
+    pbar = tqdm(loader, desc='Validating', leave=False)
+    for images, masks in pbar:
+        images = images.to(device)
+        masks = masks.to(device)
+        
+        with autocast(device_type='cuda'):
+            outputs = model(images)
+            loss = criterion(outputs, masks)
+        
+        total_loss += loss.item()
+        miou = calculate_miou(outputs, masks)
+        total_miou += miou
+        n_batches += 1
+        
+        pbar.set_postfix({
+            'loss': f'{loss.item():.4f}',
+            'mIoU': f'{miou:.4f}'
+        })
+    
+    return total_loss / n_batches, total_miou / n_batches
+
+
+def save_checkpoint(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler,
+    state: TrainState,
+    save_path: Path,
+    is_best: bool = False,
+) -> None:
+    """
+    儲存模型檢查點
+    
+    Args:
+        model: 模型
+        optimizer: 優化器
+        scheduler: 學習率調度器
+        state: 訓練狀態
+        save_path: 儲存目錄
+        is_best: 是否為最佳模型
+    """
+    save_path.mkdir(parents=True, exist_ok=True)
+    
+    checkpoint = {
+        'epoch': state.epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'best_miou': state.best_miou,
+    }
+    
+    # 儲存最新檢查點
+    torch.save(checkpoint, save_path / 'last_checkpoint.pth')
+    
+    # 儲存最佳模型 (只保存模型權重)
+    if is_best:
+        torch.save(model.state_dict(), save_path / 'best_model.pth')
+        logger.info(f"✓ 保存最佳模型 (mIoU: {state.best_miou:.4f})")
+
+
+def main() -> None:
+    """主程式入口"""
+    # 載入配置
+    config = load_config()
+    
+    logger.info("=" * 60)
+    logger.info("UNet++ HER2 細胞膜分割訓練")
+    logger.info("=" * 60)
+    logger.info(f"設備: {config.device}")
+    logger.info(f"模型: {config.model_name} + {config.encoder_name}")
+    logger.info(f"影像尺寸: {config.image_size}")
+    logger.info(f"Batch Size: {config.batch_size} (有效: {config.effective_batch_size})")
+    logger.info(f"Epochs: {config.epochs}")
+    logger.info("=" * 60)
+    
+    # 分割資料集
+    (train_images, train_masks, 
+     val_images, val_masks, 
+     test_images, test_masks) = split_dataset(
+        image_dir=config.train_image_dir,
+        mask_dir=config.kmeans_mask_dir,  # 使用 LAB 生成的 mask
+        train_ratio=config.train_ratio,
+        val_ratio=config.val_ratio,
+        seed=config.random_seed,
+    )
+    
+    # 建立 Dataset
+    train_dataset = HER2MembraneDataset(
+        image_paths=train_images,
+        mask_paths=train_masks,
+        transform=get_train_transforms(config.image_size),
+    )
+    
+    val_dataset = HER2MembraneDataset(
+        image_paths=val_images,
+        mask_paths=val_masks,
+        transform=get_val_transforms(config.image_size),
+    )
+    
+    # 建立 DataLoader
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=config.num_workers,
+        pin_memory=config.pin_memory,
+        drop_last=True,
+
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config.batch_size,
+        shuffle=False,
+        num_workers=config.num_workers,
+        pin_memory=config.pin_memory,
+    )
+    
+    # 建立模型
+    model = smp.UnetPlusPlus(
+        encoder_name=config.encoder_name,
+        encoder_weights=config.encoder_weights,
+        in_channels=3,
+        classes=config.num_classes,
+    )
+    model = model.to(config.device)
+    
+    logger.info(f"模型參數量: {sum(p.numel() for p in model.parameters()):,}")
+    
+    # 損失函數
+    criterion = CombinedLoss(
+        dice_weight=config.dice_weight,
+        ce_weight=config.ce_weight,
+        class_weights=config.class_weights,
+    )
+    
+    # 優化器
+    optimizer = AdamW(
+        model.parameters(),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay,
+        betas=config.betas,
+    )
+    
+    # 學習率調度器
+    scheduler = CosineAnnealingLR(
+        optimizer,
+        T_max=config.t_max,
+        eta_min=config.min_lr,
+    )
+    
+    # 混合精度
+    scaler = GradScaler('cuda', enabled=config.use_amp)
+    
+    # 訓練狀態
+    state = TrainState()
+    
+    # 訓練迴圈
+    logger.info("開始訓練...")
+    
+    for epoch in range(config.epochs):
+        state.epoch = epoch + 1
+        
+        logger.info(f"\nEpoch {state.epoch}/{config.epochs}")
+        logger.info(f"學習率: {scheduler.get_last_lr()[0]:.2e}")
+        
+        # 訓練
+        train_loss, train_miou = train_one_epoch(
+            model=model,
+            loader=train_loader,
+            criterion=criterion,
+            optimizer=optimizer,
+            scaler=scaler,
+            device=config.device,
+            accumulation_steps=config.gradient_accumulation_steps,
+        )
+        
+        # 驗證
+        val_loss, val_miou = validate(
+            model=model,
+            loader=val_loader,
+            criterion=criterion,
+            device=config.device,
+        )
+        
+        # 更新學習率
+        scheduler.step()
+        
+        # 輸出指標
+        logger.info(
+            f"Train - Loss: {train_loss:.4f}, mIoU: {train_miou:.4f} | "
+            f"Val - Loss: {val_loss:.4f}, mIoU: {val_miou:.4f}"
+        )
+        
+        # 檢查是否為最佳模型
+        is_best = val_miou > state.best_miou
+        if is_best:
+            state.best_miou = val_miou
+            state.patience_counter = 0
+        else:
+            state.patience_counter += 1
+        
+        # 保存檢查點
+        save_checkpoint(
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            state=state,
+            save_path=config.model_save_dir,
+            is_best=is_best,
+        )
+        
+        # Early Stopping
+        if state.patience_counter >= config.early_stopping_patience:
+            logger.info(
+                f"Early Stopping! 驗證 mIoU 已有 {config.early_stopping_patience} 個 epoch 未改善"
+            )
+            break
+    
+    logger.info("=" * 60)
+    logger.info(f"訓練完成! 最佳 mIoU: {state.best_miou:.4f}")
+    logger.info(f"模型已儲存至: {config.model_save_dir / 'best_model.pth'}")
+    logger.info("=" * 60)
+
+
+if __name__ == "__main__":
+    main()

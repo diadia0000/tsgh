@@ -35,10 +35,10 @@ TRAIN_DIRS = [
 MODEL_DIR = "/home/sec312/tsgh/dish_mask/models"  # 模型輸出目錄
 
 # 訓練參數
-MODEL_NAME = "dish_cellpose_v5"   # 模型名稱
+MODEL_NAME = "cyto3"   # 模型名稱
 # 使用之前訓練的模型繼續訓練 (設為 None 或 "cyto3" 則從頭開始)
 INITIAL_MODEL = "/home/sec312/tsgh/dish_mask/models/dish_cellpose_v4"  # 繼續訓練
-N_EPOCHS = 150                    # 更多資料，增加訓練輪數
+N_EPOCHS = 200                    # 更多資料，增加訓練輪數
 LEARNING_RATE = 5e-6              # 繼續訓練時使用較小學習率
 WEIGHT_DECAY = 0.1                # 權重衰減
 BATCH_SIZE = 8                    # 批次大小
