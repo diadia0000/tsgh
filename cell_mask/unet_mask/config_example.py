@@ -130,16 +130,7 @@ class Config:
         }
     })
     
-    # ========== 預處理參數 (來自 her2_mask.py) ==========
-    # 這些參數用於生成 pseudo mask
-    min_dab_od: float = 0.13
-    dab_dominance: float = 1.115
-    closing_radius: int = 2
-    min_total_od: float = 0.08
-    min_interior_size: int = 50  # 最小內部區域大小
-    min_hole_size: int = 50       # 最小空洞大小
-    
-    # ========== Mask 生成參數 (Nucleus-Based / K-Means) ==========
+    # ========== LAB Mask 生成參數 ==========
     # 輸入影像路徑 (檔案或目錄)
     kmeans_input_path: Path = field(default_factory=lambda: Path(__file__).parent / "train/her2_chose")
     # Mask 輸出目錄
@@ -149,12 +140,6 @@ class Config:
     # 是否儲存視覺化結果
     kmeans_save_visualization: bool = True
     
-    # --- 細胞核為中心方法參數 (預設使用) ---
-    # 是否使用舊的 K-Means 方法 (False = 使用新方法)
-    use_kmeans_method: bool = False
-    # 是否使用 LAB 色彩空間方法 (True = 使用 LAB, False = 使用舊方法)
-    use_lab_method: bool = True
-    
     # --- LAB 色彩空間分析參數 ---
     # 最小亮度 (排除太暗區域)
     lab_l_min: float = 15.0
@@ -162,16 +147,6 @@ class Config:
     lab_l_max: float = 85.0
     # 是否融合 DAB 通道 (HED) 進行雙重確認 (True=更精準, False=只用 LAB)
     use_dab_fusion: bool = True
-    # 膜環寬度 (像素) - 從細胞核邊緣向外延伸的距離
-    membrane_width: int = 5
-    # 最小細胞核大小 (像素) - 小於此值的區域不視為細胞核
-    min_nucleus_size: int = 50
-    
-    # --- 形態學處理參數 ---
-    # 最小區域大小（移除小於此值的區域）
-    min_region_size: int = 50
-    # 最小空洞大小（填補小於此值的空洞）
-    min_hole_size: int = 50
     
     # ========== 視覺化參數 (二分類) ==========
     # Overlay 透明度 (0.0 = 完全透明, 1.0 = 完全不透明)
@@ -183,13 +158,28 @@ class Config:
         ".tiff", ".tif", ".png", ".jpg", ".jpeg"
     ])
     
-    # ========== Debug Visualizer 參數 ==========
-    # 預設最大樣本數量
-    debug_max_samples: int = 20
-    # HTML 報告標題
-    debug_report_title: str = "K-Means Mask Debug Report"
-    # Cluster 視覺化高度
-    debug_cluster_vis_height: int = 60
+    # ========== Watershed 分割參數 ==========
+    # --- 路徑設定 ---
+    # Watershed 測試輸入目錄
+    watershed_input_dir: Path = field(default_factory=lambda: Path(__file__).parent / "train/test")
+    # Watershed 結果輸出目錄
+    watershed_output_dir: Path = field(default_factory=lambda: Path(__file__).parent / "output/result")
+    
+    # --- 批次推論設定 ---
+    # 推論批次大小 (根據顯存調整)
+    inference_batch_size: int = 4
+    
+    # --- 細胞核偵測參數 ---
+    # Hematoxylin 閾值 (HED H 通道，0-1，目前使用 Otsu 自動閾值)
+    nucleus_h_threshold: float = 0.1
+    # 最小細胞核大小 (像素)
+    min_nucleus_size: int = 50
+    
+    # --- Watershed 後處理參數 ---
+    # 細胞邊界膜重疊比例閾值 (邊界與膜重疊超過此比例才視為有效細胞)
+    cell_boundary_overlap_ratio: float = 0.87
+    # 膜擴張半徑 (用於邊界重疊檢查)
+    membrane_dilation_radius: int = 3
     
     def __post_init__(self) -> None:
         """初始化後建立必要的目錄"""

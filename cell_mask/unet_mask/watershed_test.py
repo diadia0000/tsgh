@@ -35,16 +35,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ============================================================
-# 路徑設定
-# ============================================================
-BASE_DIR = Path(__file__).parent.resolve()
-INPUT_DIR = BASE_DIR / "train" / "test"
-OUTPUT_DIR = BASE_DIR / "output" / "result"
-MODEL_PATH = BASE_DIR / "output" / "model" / "best_model.pth"
-
-# 批次推論設定
-BATCH_SIZE = 4
+def load_config():
+    """
+    載入配置檔案
+    
+    Returns:
+        Config: 配置物件
+    
+    Raises:
+        ImportError: 若 config.py 不存在
+    """
+    try:
+        from config import config
+        return config
+    except ImportError:
+        raise ImportError(
+            "找不到 config.py！\n"
+            "請複製 config_example.py 為 config.py 並設定參數"
+        )
 
 
 # ============================================================
@@ -239,37 +247,39 @@ class UNetPPMembraneDetector:
 _membrane_detector: Optional[UNetPPMembraneDetector] = None
 
 
-def get_membrane_detector() -> UNetPPMembraneDetector:
+def get_membrane_detector(config) -> UNetPPMembraneDetector:
     """
     取得或初始化細胞膜偵測器 (Singleton 模式)
+    
+    Args:
+        config: 配置物件
     
     Returns:
         UNetPPMembraneDetector 實例
     """
     global _membrane_detector
     if _membrane_detector is None:
+        model_path = config.model_save_dir / "best_model.pth"
         _membrane_detector = UNetPPMembraneDetector(
-            model_path=MODEL_PATH,
-            encoder_name="efficientnet-b0",
-            num_classes=2,
-            image_size=(1024, 1024),
+            model_path=model_path,
+            encoder_name=config.encoder_name,
+            num_classes=config.num_classes,
+            image_size=config.image_size,
         )
     return _membrane_detector
 
 
 def extract_nucleus_mask(
     image: np.ndarray,
-    h_threshold: float = 0.1,
     min_nucleus_size: int = 50,
 ) -> np.ndarray:
     """
     從 HER2 影像提取藍色細胞核
     
-    使用 HED 色彩分離的 Hematoxylin 通道
+    使用 HED 色彩分離的 Hematoxylin 通道 + Otsu 自動閾值
     
     Args:
         image: RGB 影像 (H, W, 3)
-        h_threshold: Hematoxylin 閾值 (0-1)
         min_nucleus_size: 最小細胞核大小 (像素)
         
     Returns:
@@ -343,6 +353,8 @@ def create_visualization(
     membrane_mask: np.ndarray,
     nucleus_mask: np.ndarray,
     cell_labels: np.ndarray,
+    cell_boundary_overlap_ratio: float = 0.87,
+    membrane_dilation_radius: int = 3,
 ) -> np.ndarray:
     """
     建立視覺化結果
@@ -396,7 +408,10 @@ def create_visualization(
     valid_mask = np.zeros_like(membrane_mask, dtype=np.uint8)
     
     # 擴張膜 Mask 以便檢查邊界重疊
-    membrane_dilated = cv2.dilate(membrane_mask.astype(np.uint8), disk(3))
+    membrane_dilated = cv2.dilate(
+        membrane_mask.astype(np.uint8), 
+        disk(membrane_dilation_radius)
+    )
     
     for i in range(1, cell_labels.max() + 1):
         cell_mask = (cell_labels == i).astype(np.uint8)
@@ -415,8 +430,8 @@ def create_visualization(
         overlap_pixels = np.sum(boundary_mask & membrane_dilated)
         overlap_ratio = overlap_pixels / total_boundary_pixels
         
-        # 放寬判定: 如果超過 20% 的邊界是膜，表示它被膜包圍得很好
-        if overlap_ratio > 0.87:
+        # 如果邊界與膜重疊超過閾值，表示細胞被膜包圍得很好
+        if overlap_ratio > cell_boundary_overlap_ratio:
             valid_mask[cell_mask == 1] = 1
             
     # 細胞內部 = 有效區域 - 膜本身
@@ -450,6 +465,7 @@ def process_batch(
     images: List[np.ndarray],
     membrane_masks: List[np.ndarray],
     output_dir: Path,
+    config,
 ) -> int:
     """
     處理一個批次的影像（後處理 + 儲存）
@@ -459,6 +475,7 @@ def process_batch(
         images: 原始影像列表
         membrane_masks: 細胞膜 Mask 列表
         output_dir: 輸出目錄
+        config: 配置物件
         
     Returns:
         成功處理的影像數量
@@ -470,7 +487,10 @@ def process_batch(
             logger.info(f"  後處理: {image_path.name}")
             
             # 提取細胞核
-            nucleus_mask = extract_nucleus_mask(image, min_nucleus_size=50)
+            nucleus_mask = extract_nucleus_mask(
+                image, 
+                min_nucleus_size=config.min_nucleus_size,
+            )
             
             # Watershed 分割
             cell_labels = watershed_cell_segmentation(nucleus_mask, membrane_mask)
@@ -478,7 +498,11 @@ def process_batch(
             logger.info(f"  分割出 {num_cells} 個細胞")
             
             # 視覺化
-            vis = create_visualization(image, membrane_mask, nucleus_mask, cell_labels)
+            vis = create_visualization(
+                image, membrane_mask, nucleus_mask, cell_labels,
+                cell_boundary_overlap_ratio=config.cell_boundary_overlap_ratio,
+                membrane_dilation_radius=config.membrane_dilation_radius,
+            )
             
             # 儲存結果
             vis_path = output_dir / f"{image_path.stem}_watershed_unetpp.png"
@@ -497,29 +521,40 @@ def process_batch(
 
 def main() -> None:
     """主程式"""
+    # 載入配置
+    config = load_config()
+    
+    # 路徑設定
+    input_dir = config.watershed_input_dir
+    output_dir = config.watershed_output_dir
+    model_path = config.model_save_dir / "best_model.pth"
+    batch_size = config.inference_batch_size
+    
     logger.info("=" * 60)
     logger.info("Watershed 細胞分割測試 (UNet++ 模型推論版)")
     logger.info("=" * 60)
-    logger.info(f"輸入目錄: {INPUT_DIR}")
-    logger.info(f"輸出目錄: {OUTPUT_DIR}")
-    logger.info(f"模型路徑: {MODEL_PATH}")
-    logger.info(f"批次大小: {BATCH_SIZE}")
+    logger.info(f"輸入目錄: {input_dir}")
+    logger.info(f"輸出目錄: {output_dir}")
+    logger.info(f"模型路徑: {model_path}")
+    logger.info(f"批次大小: {batch_size}")
+    logger.info(f"編碼器: {config.encoder_name}")
+    logger.info(f"細胞核最小尺寸: {config.min_nucleus_size}")
+    logger.info(f"邊界重疊閾值: {config.cell_boundary_overlap_ratio}")
     
     # 檢查模型是否存在
-    if not MODEL_PATH.exists():
-        logger.error(f"找不到模型檔案: {MODEL_PATH}")
+    if not model_path.exists():
+        logger.error(f"找不到模型檔案: {model_path}")
         logger.error("請確認已完成模型訓練並儲存 best_model.pth")
         return
     
     # 建立輸出目錄
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     
     # 收集影像
-    extensions = [".tiff", ".tif", ".png", ".jpg", ".jpeg"]
     image_paths = []
-    for ext in extensions:
-        image_paths.extend(INPUT_DIR.glob(f"*{ext}"))
-        image_paths.extend(INPUT_DIR.glob(f"*{ext.upper()}"))
+    for ext in config.supported_extensions:
+        image_paths.extend(input_dir.glob(f"*{ext}"))
+        image_paths.extend(input_dir.glob(f"*{ext.upper()}"))
     image_paths = sorted(set(image_paths))
     
     logger.info(f"找到 {len(image_paths)} 張影像")
@@ -529,15 +564,15 @@ def main() -> None:
         return
     
     # 取得推論器
-    detector = get_membrane_detector()
+    detector = get_membrane_detector(config)
     
     # 批次處理
     success_count = 0
-    total_batches = (len(image_paths) + BATCH_SIZE - 1) // BATCH_SIZE
+    total_batches = (len(image_paths) + batch_size - 1) // batch_size
     
     for batch_idx in range(total_batches):
-        start_idx = batch_idx * BATCH_SIZE
-        end_idx = min(start_idx + BATCH_SIZE, len(image_paths))
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, len(image_paths))
         batch_paths = image_paths[start_idx:end_idx]
         
         logger.info(f"\n批次 {batch_idx + 1}/{total_batches} ({len(batch_paths)} 張)")
@@ -565,11 +600,13 @@ def main() -> None:
         membrane_masks = detector.predict_batch(images)
         
         # 後處理每張影像
-        success_count += process_batch(valid_paths, images, membrane_masks, OUTPUT_DIR)
+        success_count += process_batch(
+            valid_paths, images, membrane_masks, output_dir, config
+        )
     
     logger.info("\n" + "=" * 60)
     logger.info(f"完成! 成功處理 {success_count}/{len(image_paths)} 張影像")
-    logger.info(f"結果已儲存至: {OUTPUT_DIR}")
+    logger.info(f"結果已儲存至: {output_dir}")
     logger.info("=" * 60)
 
 
