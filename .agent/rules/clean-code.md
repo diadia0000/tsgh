@@ -32,7 +32,7 @@ trigger: always_on
 
 * **Agent 規範：** 生成的迴圈邏輯（如處理幾百張 DICOM/TIFF 時）嚴禁在迴圈內 `print`。
 
-### 4. 醫療影像專案的程式品質 (Code Quality)
+### 4. 程式碼品質 (Code Quality)
 
 * **Type Hinting：** 強制要求所有函數定義必須包含類型標記（特別是 NumPy ndarray 或 Tensor 的維度描述）。
 * *範例：* `def segment_roi(image: np.ndarray) -> np.ndarray:`
@@ -42,5 +42,3 @@ trigger: always_on
 
 
 ---
-
-

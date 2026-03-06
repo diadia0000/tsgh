@@ -11,7 +11,7 @@ trigger: always_on
 ## 1. 架構優先 (Architecture First)
 
 - 嚴禁在未產出「實作計畫」前撰寫業務邏輯代碼
-- 新模組或重大演算法修改前，須先以 `.drawio` 輸出架構圖，並以 `Markdow` 解釋設計
+- 新模組或重大演算法修改前，須先以 `Markdow`文件解釋設計，並以`mermaid`語法輸出架構圖
 - 等待使用者回覆「Approve」後方可執行
 
 ## 2. API 與文檔治理
