@@ -45,7 +45,8 @@ def extract_cell_cores(
     2. 膨脹 (Dilation)：將修補好的膜稍微加粗，確保絕對 watertight 防止填充外漏。
     3. 封閉邊界 (Close Edge Gaps)：尋找接觸影像邊界的短缺口，將其閉合以形成城牆。
     4. 填充 (Fill Holes)：把被膜包圍的內部孔洞填滿。
-    5. 邏輯相減：將填充後的區域減去「原始細胞膜」，得到內部的核心區域。
+    5. 邏輯相減：將填充後的區域減去「閉合後的細胞膜」，得到內部的核心區域。
+       (使用閉合後的膜而非原始膜，避免 Closing 橋接像素殘留為白線)
 
     Args:
         membrane_mask (np.ndarray): UNet++ 輸出的細胞膜二值化遮罩，shape (H, W)，值域 0 或 1。
@@ -110,8 +111,11 @@ def extract_cell_cores(
     # 真正的細胞實體區塊 (True Filled Core) ＝ 既不屬於外部背景，也不屬於原始細胞膜
     true_core_region = (restored_exterior == 0).astype(np.uint8)
 
-    # 邏輯相減：真正的實體區塊 - 原始細胞膜 = 純淨的內部
-    core_mask = np.logical_and(true_core_region, np.logical_not(membrane_uint8)).astype(np.uint8)
+    # 邏輯相減：真正的實體區塊 - 閉合後的細胞膜 = 純淨的內部
+    # 注意：必須減去 closed_membrane (而非原始 membrane_uint8)，
+    # 因為形態學閉合 (Closing) 會產生「橋接像素」來封閉膜上的缺口，
+    # 這些橋接像素不在原始膜中，若只減去原始膜會導致殘留白線。
+    core_mask = np.logical_and(true_core_region, np.logical_not(closed_membrane)).astype(np.uint8)
 
     return core_mask
 

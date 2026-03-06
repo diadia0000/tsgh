@@ -93,9 +93,13 @@ def segment_masked_dish(
 ) -> np.ndarray:
     """在遮罩後的 DISH 影像上執行 Cellpose 分割。
 
+    依照 SDD Pipeline: Mask Overlay → Cellpose Segmentation，
+    傳入的應為經 ``overlay_ihc_mask_on_dish`` 處理後的影像，
+    非 ROI 區域已填充為背景值 (預設 0)。
+
     Args:
         masked_dish_image: shape ``(H, W, 3)``、``uint8``。
-            非 ROI 區域應為 ``background_fill_value`` (通常 0)。
+            非 ROI 區域應為 ``background_fill_value``。
         segmenter: 已初始化的 ``CellposeSegmenter``。
         remove_border: 是否移除碰觸邊界的細胞。
 

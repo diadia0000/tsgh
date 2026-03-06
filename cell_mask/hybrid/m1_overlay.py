@@ -5,24 +5,18 @@ M1: IHC-DISH 遮罩疊加模組
 保留 ROI 區域的原始像素，背景填充為指定值。
 
 依賴:
-  - UNet++ 膜分割推論器 (unet_mask.inference.UNetPPInference)
-  - 核心萃取器 (unet_mask.core_extractor.extract_cell_cores)
+  - UNet++ 膜分割推論器 (inference.UNetPPInference)
+  - 核心萃取器 (inference.extract_cell_cores)
 """
 
 import logging
 import re
-import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
 import cv2
 import numpy as np
 from scipy.ndimage import gaussian_filter
-
-# 將 unet_mask 模組加入路徑
-_UNET_MASK_DIR = Path(__file__).resolve().parent.parent / "unet_mask"
-if str(_UNET_MASK_DIR) not in sys.path:
-    sys.path.insert(0, str(_UNET_MASK_DIR))
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +57,11 @@ def generate_ihc_core_mask(
     dilate_kernel: int = 7,
     close_kernel: int = 20,
     max_boundary_gap: int = 400,
+    sliding_window_overlap: int = 128,
 ) -> np.ndarray:
     """透過 UNet++ 推論 + 核心萃取生成 IHC Her2+ 核心遮罩。
+
+    當影像大於模型訓練尺寸時，自動以滑動視窗推論。
 
     Args:
         ihc_tile_path: IHC tile 影像路徑。
@@ -72,13 +69,16 @@ def generate_ihc_core_mask(
         dilate_kernel: 膜膨脹核大小 (pixels)。
         close_kernel: 形態學閉合核大小 (pixels)。
         max_boundary_gap: 允許閉合的邊界最大缺口長度 (pixels)。
+        sliding_window_overlap: 滑動視窗重疊像素。
 
     Returns:
         shape ``(H, W)``、值域 ``{0, 1}`` 的 ``uint8`` 核心遮罩。
     """
-    from core_extractor import extract_cell_cores  # noqa: WPS433
+    from inference import extract_cell_cores  # noqa: WPS433
 
-    membrane_mask: np.ndarray = unet_inferencer.predict_single(ihc_tile_path)
+    membrane_mask: np.ndarray = unet_inferencer.predict_single(
+        ihc_tile_path, overlap=sliding_window_overlap,
+    )
     core_mask = extract_cell_cores(
         membrane_mask,
         dilate_kernel_size=dilate_kernel,

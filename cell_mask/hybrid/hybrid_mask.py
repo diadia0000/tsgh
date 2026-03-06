@@ -58,10 +58,6 @@ logger = logging.getLogger(__name__)
 
 def _init_unet_inferencer():
     """延遲初始化 UNet++ 推論器。"""
-    _unet_dir = Path(__file__).resolve().parent.parent / "unet_mask"
-    if str(_unet_dir) not in sys.path:
-        sys.path.insert(0, str(_unet_dir))
-
     from inference import UNetPPInference  # noqa: WPS433
 
     return UNetPPInference(
@@ -121,6 +117,7 @@ def process_single_tile(
             dilate_kernel=config.membrane_dilate_kernel,
             close_kernel=config.membrane_close_kernel,
             max_boundary_gap=config.max_boundary_gap,
+            sliding_window_overlap=config.sliding_window_overlap,
         )
 
         if core_mask.sum() == 0:
@@ -147,7 +144,7 @@ def process_single_tile(
             background_fill_value=config.background_fill_value,
         )
 
-        # ---- M2: Cellpose 分割 ----
+        # ---- M2: Cellpose 分割 (使用遮罩後 DISH 影像) ----
         instance_mask = segment_masked_dish(
             masked_dish,
             cellpose_segmenter,

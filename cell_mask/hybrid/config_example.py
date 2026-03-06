@@ -1,8 +1,12 @@
 """
 IHC-DISH Overlay & Analysis Pipeline 配置範例
 
-包含所有路徑設定、模型參數、色彩解卷積矩陣、偵測閾值等。
-使用者應複製為 config.py 並依需要調整參數。
+此檔案為團隊成員參考用範本。
+請複製此檔案為 config.py，並依據自身環境與需求調整參數。
+
+使用方式:
+  cp config_example.py config.py
+  # 編輯 config.py 中的參數
 """
 
 import torch
@@ -15,7 +19,11 @@ import numpy as np
 
 @dataclass
 class Config:
-    """IHC-DISH 分析 Pipeline 配置"""
+    """IHC-DISH 分析 Pipeline 配置（範例）
+
+    此處列出所有可調參數及其預設值，供團隊成員參考。
+    實際使用時請修改 config.py。
+    """
 
     # ========== 路徑設定 ==========
     base_dir: Path = field(

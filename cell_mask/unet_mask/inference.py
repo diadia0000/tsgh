@@ -84,6 +84,11 @@ class UNetPPInference:
             torch.device("cuda") if torch.cuda.is_available() 
             else torch.device("cpu")
         )
+        self._use_fp16 = (self.device.type == "cuda")
+        
+        # 啟用 cuDNN 自動調優 (首次推論稍慢，後續推論加速)
+        if self.device.type == "cuda":
+            torch.backends.cudnn.benchmark = True
         
         # 建立模型
         self.model = smp.UnetPlusPlus(
@@ -98,6 +103,11 @@ class UNetPPInference:
         
         self.model = self.model.to(self.device)
         self.model.eval()
+        
+        # FP16 半精度加速 (僅 GPU)
+        if self._use_fp16:
+            self.model = self.model.half()
+            logger.info("已啟用 FP16 半精度推論")
         
         # 建立前處理轉換
         self.transform = self._build_transform()
@@ -220,14 +230,14 @@ class UNetPPInference:
         
         return proba
     
-    @torch.no_grad()
+    @torch.inference_mode()
     def predict_single(
         self,
         image: Union[np.ndarray, Path, str],
         return_proba: bool = False,
     ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """
-        單張影像推論
+        單張影像推論 (已最佳化: FP16 + inference_mode)
         
         Args:
             image: 輸入影像 (ndarray 或 路徑)
@@ -245,8 +255,16 @@ class UNetPPInference:
         tensor, original_size = self.preprocess(image)
         tensor = tensor.to(self.device)
         
+        # FP16 推論加速
+        if self._use_fp16:
+            tensor = tensor.half()
+        
         # 推論
         output = self.model(tensor)
+        
+        # 轉回 FP32 以確保後處理精度
+        if self._use_fp16:
+            output = output.float()
         
         # 後處理
         mask = self.postprocess(output, original_size)
@@ -257,7 +275,7 @@ class UNetPPInference:
         
         return mask
     
-    @torch.no_grad()
+    @torch.inference_mode()
     def predict_batch(
         self,
         image_paths: List[Path],
