@@ -20,7 +20,7 @@ class Config:
     base_dir: Path = field(default_factory=lambda: Path(__file__).parent.resolve())
     
     # 訓練資料夾路徑
-    train_image_dir: Path = field(default_factory=lambda: Path(__file__).parent / "train/her2_chose")
+    train_image_dir: Path = field(default_factory=lambda: Path(__file__).parent / "tile/train/her2_chose")
     # 預處理後的 mask 路徑
     mask_dir: Path = field(default_factory=lambda: Path(__file__).parent / "output/mask")
     # 模型保存路徑
@@ -132,7 +132,7 @@ class Config:
     
     # ========== LAB Mask 生成參數 ==========
     # 輸入影像路徑 (檔案或目錄)
-    kmeans_input_path: Path = field(default_factory=lambda: Path(__file__).parent / "train/her2_chose")
+    kmeans_input_path: Path = field(default_factory=lambda: Path(__file__).parent / "tile/train/her2_chose")
     # Mask 輸出目錄
     kmeans_mask_dir: Path = field(default_factory=lambda: Path(__file__).parent / "output/kmeans_mask")
     # 視覺化輸出目錄
@@ -142,9 +142,9 @@ class Config:
     
     # --- LAB 色彩空間分析參數 ---
     # 最小亮度 (排除太暗區域)
-    lab_l_min: float = 15.0
+    lab_l_min: float = 5.0
     # 最大亮度 (排除太亮區域/背景)
-    lab_l_max: float = 85.0
+    lab_l_max: float = 80.0
     # 是否融合 DAB 通道 (HED) 進行雙重確認 (True=更精準, False=只用 LAB)
     use_dab_fusion: bool = True
     

@@ -151,18 +151,18 @@ def get_train_transforms(image_size: Tuple[int, int]) -> A.Compose:
             min_height=image_size[0],
             min_width=image_size[1],
             border_mode=0,  # cv2.BORDER_CONSTANT
-            value=255,  # 白色填充 (背景)
-            mask_value=0,  # mask 填充 0 (非膜)
+            fill=255,  # 白色填充 (背景)
+            fill_mask=0,  # mask 填充 0 (非膜)
         ),
         
         # 幾何變換
         A.RandomRotate90(p=0.5),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
-        A.ShiftScaleRotate(
-            shift_limit=0.1,
-            scale_limit=0.1,
-            rotate_limit=45,
+        A.Affine(
+            translate_percent=(-0.1, 0.1),
+            scale=(0.9, 1.1),
+            rotate=(-45, 45),
             border_mode=0,
             p=0.5
         ),
@@ -211,8 +211,8 @@ def get_val_transforms(image_size: Tuple[int, int]) -> A.Compose:
             min_height=image_size[0],
             min_width=image_size[1],
             border_mode=0,
-            value=255,
-            mask_value=0,
+            fill=255,
+            fill_mask=0,
         ),
         
         A.Normalize(
@@ -563,8 +563,8 @@ def main() -> None:
     (train_images, train_masks, 
      val_images, val_masks, 
      test_images, test_masks) = split_dataset(
-        image_dir=config.train_image_dir,
-        mask_dir=config.kmeans_mask_dir,  # 使用 LAB 生成的 mask
+        image_dir=getattr(config, 'train_image_dir', Path(__file__).parent / "tile/train/her2_chose"),
+        mask_dir=getattr(config, 'kmeans_mask_dir', getattr(config, 'pseudo_label_mask_dir', getattr(config, 'mask_dir', Path(__file__).parent / "output/mask"))),
         train_ratio=config.train_ratio,
         val_ratio=config.val_ratio,
         seed=config.random_seed,

@@ -17,6 +17,8 @@ LAB 色彩空間膜分割生成器
 """
 
 import logging
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Tuple, Optional, List
 
@@ -89,21 +91,14 @@ def extract_lab_channels(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.
     A = lab[:, :, 1]  # 綠紅軸 -128 to 127
     B = lab[:, :, 2]  # 藍黃軸 -128 to 127
     
-    # 對 L 通道應用 CLAHE 強化 (團隊測試參數)
-    # 將 L 從 0-100 轉換為 0-255 以應用 CLAHE
-    L_uint8 = np.clip(L * 2.55, 0, 255).astype(np.uint8)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    L_enhanced = clahe.apply(L_uint8)
-    # 轉回 0-100 範圍
-    L = L_enhanced.astype(np.float64) / 2.55
-    
+    # 移除 CLAHE 處理，保留原始亮度數值避免強制拉黑
     return L, A, B
 
 
 def detect_brown_membrane_lab(
     image: np.ndarray,
-    l_min: float = 15.0,
-    l_max: float = 85.0,
+    l_min: float = 0.0,
+    l_max: float = 80.0,
     use_dab_fusion: bool = False,
 ) -> Tuple[np.ndarray, dict]:
     """
@@ -134,16 +129,20 @@ def detect_brown_membrane_lab(
     
     # 正規化 A 通道 (只取正值部分)
     A_positive = np.clip(A, 0, None)  # 只保留正值 (偏紅)
-    A_norm = A_positive / 60.0  # 正規化，假設最大合理值約 60
+    
+    # 移除全域 L 修正，防止淡色棕色或邊緣被過度放大而變得太粗
+    A_norm = A_positive / 60.0
     A_norm = np.clip(A_norm, 0, 1)
     
     # 正規化 B 通道 (只取正值部分)  
     B_positive = np.clip(B, 0, None)  # 只保留正值 (偏黃)
-    B_norm = B_positive / 60.0  # 正規化
+    B_norm = B_positive / 60.0
     B_norm = np.clip(B_norm, 0, 1)
     
     # 計算棕色分數 (A+ 和 B+ 的幾何平均) (LAB Score)
+    # [改良] 加上 Gamma 校正 (0.7~0.8) 來增幅微弱訊號，但強訊號依然最高為 1，厚度不變
     lab_score = np.sqrt(A_norm * B_norm)
+    lab_score = np.power(lab_score, 0.75)
     
     brown_score = lab_score
     dab_debug = None
@@ -154,25 +153,41 @@ def detect_brown_membrane_lab(
         dab = hed[:, :, 2] # DAB 通道
         
         # 正規化 DAB (0-1)
-        # 1. 先從 Log Space 轉回線性 (如果是 HED 的原始輸出) 或直接 Clip
+        # 1. 取得正值的 DAB
         dab_positive = np.clip(dab, 0, None)
         
-        # 2. 轉換為 uint8 以進行 CLAHE
-        dab_uint8 = cv2.normalize(dab_positive, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        # 2. 自動判斷動態正規化 (取代強制的 MINMAX)
+        # 避免在完全沒有膜的純白、細胞質區域放大極小雜訊 (這會造成滿屏紅色)
+        v_max = dab_positive.max()
+        if v_max > 0.15:
+            # 圖塊中有明確的深棕色膜：使用最大最小值拉伸，強化對比
+            dab_norm = dab_positive / v_max
+        else:
+            # 圖塊中沒有深色目標 (都是淺色雜訊)：保持微弱，不強制拉升到滿分為1
+            dab_norm = np.clip(dab_positive / 0.15, 0, 1.0)
+            
+        # [改良] 對 DAB 訊號同樣加上 Gamma 校正增幅微弱訊號
+        dab_norm = np.power(dab_norm, 0.75)
+            
+        # 融合 LAB 和 DAB
+        # 恢復為幾何平均 (AND 邏輯)，這能有效過濾掉單獨在 DAB 或 LAB 的雜訊
+        base_score = np.sqrt(lab_score * dab_norm)
         
-        # 3. 應用 CLAHE (局部對比增強)
-        # clipLimit: 對比度限制 (越高對比越強，但也易放大雜訊)
-        # tileGridSize: 網格大小 (越小細節越多)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        dab_enhanced = clahe.apply(dab_uint8)
+        # 針對極深色的最終殺手鐧 (Black/Dark Brown Compensation):
+        # 為了避免線條全面變粗（蓋到其他東西），我們僅針對極黑且具有「強烈 DAB 訊號」的隙縫做精準修補。
+        # 限定條件：L < 45 (限縮在極黑範圍)、不偏藍 (B > -10) 防核、不偏綠 (A > -5)
+        is_dark_membrane = (L < 45.0) & (B > -10.0) & (A > -5.0)
         
-        # 4. 轉回 0-1 float，並維持飽和閾值邏輯
-        # 雖然 CLAHE 已經均衡化了，但設定飽和閾值仍有助於突出膜
-        dab_norm = dab_enhanced.astype(np.float32) / 255.0
+        # 建立一個與影像同大小的 dark_boost_score
+        # 讓 L=45 分數為 0，L<=20 分數為 1.0
+        dark_boost_score = np.zeros_like(base_score)
+        compensation = np.clip((45.0 - L) / 25.0, 0.0, 1.0)
         
-        # 融合 LAB 和 DAB (幾何平均)
-        # Final = sqrt(LAB * DAB)
-        brown_score = np.sqrt(lab_score * dab_norm)
+        # 【重要】：避免極黑訊號無腦擴張擴散，必須與 dab_norm 掛鉤！
+        # 確保只有在 DAB 型態上也像是深色膜的縫隙才做補洞
+        dark_boost_score[is_dark_membrane] = compensation[is_dark_membrane] * dab_norm[is_dark_membrane]
+        
+        brown_score = np.maximum(base_score, dark_boost_score)
         
         dab_debug = dab_norm
 
@@ -233,8 +248,8 @@ def postprocess_mask(
 
 def generate_lab_mask(
     image: np.ndarray,
-    l_min: float = 15.0,
-    l_max: float = 85.0,
+    l_min: float = 0.0,
+    l_max: float = 80.0,
     use_dab_fusion: bool = False,
 ) -> Tuple[np.ndarray, dict]:
     """
@@ -260,12 +275,33 @@ def generate_lab_mask(
         use_dab_fusion=use_dab_fusion,
     )
     
+    # [新增技術] 結構特化增強：使用 Frangi Filter (血管脊線濾波器) 強化微弱的膜狀線條
+    # 由於細胞膜呈線狀/環形，雜訊多呈塊狀；Frangi 只會對「線狀結構」產生高頻響應。
+    # 這樣即可針對「若隱若現但連成一線的微弱咖啡色」進行局部增強，而不會無腦擴張到非特定區域。
+    try:
+        # sigmas: 控制線條的粗細尺度 (1~2 足以捕捉細胞膜的寬度)
+        ridge_score = frangi(brown_score_mask, sigmas=(1, 2), black_ridges=False)
+        if ridge_score.max() > 0:
+            ridge_score = ridge_score / ridge_score.max()
+        
+        # 放大 Frangi 權重以強制縫合極微弱邊緣 (由 0.6 提升至 1.0)
+        # 用意是防呆，避免 Frangi 在全白背景上無中生有線條。
+        is_faint_brown = brown_score_mask > 0.01  # 調低接觸門檻，抓取更邊緣微弱的訊號
+        brown_score_enhanced = brown_score_mask.copy()
+        brown_score_enhanced[is_faint_brown] = np.clip(
+            brown_score_mask[is_faint_brown] + ridge_score[is_faint_brown] * 1.0,
+            0, 1.0
+        )
+        brown_score_mask = brown_score_enhanced
+    except Exception as e:
+        logger.warning(f"Frangi 濾波器強化失敗: {e}")
+    
     # 轉換為 uint8 格式 (0-255) (膜=數值高, 背景=0)
     mask_output = (brown_score_mask * 255).astype(np.uint8)
     
     # 形態學閉合 (Closing)：連接斷裂的膜結構
-    # 使用 5x5 核心，足以修補大部分的斷裂，且不會過度影響粗細
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (1, 1))
+    # 將核心從 5x5 改為 3x3，避免線條變太粗而遮蓋其他細胞細節
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     mask_output = cv2.morphologyEx(mask_output, cv2.MORPH_CLOSE, kernel)
     
     # 計算覆蓋率 (有顏色的像素佔比)
@@ -426,9 +462,9 @@ def process_single_image(
         # 生成遮罩 (使用 LAB 色彩空間分析，直接輸出棕色分數)
         mask, debug_info = generate_lab_mask(
             image,
-            l_min=config.lab_l_min,
-            l_max=config.lab_l_max,
-            use_dab_fusion=config.use_dab_fusion,
+            l_min=getattr(config, 'lab_l_min', 0.0),
+            l_max=getattr(config, 'lab_l_max', 80.0),
+            use_dab_fusion=getattr(config, 'use_dab_fusion', True),
         )
         
         # 儲存遮罩 (膜=紅色, 背景=黑色)
@@ -449,8 +485,8 @@ def process_single_image(
             output_vis_dir.mkdir(parents=True, exist_ok=True)
             vis = create_visualization(
                 image, mask, debug_info,
-                overlay_alpha=config.vis_overlay_alpha,
-                membrane_color=config.vis_membrane_color,
+                overlay_alpha=getattr(config, 'vis_overlay_alpha', 0.5),
+                membrane_color=getattr(config, 'vis_membrane_color', (255, 0, 0)),
             )
             vis_filename = image_path.stem + "_vis.png"
             vis_path = output_vis_dir / vis_filename
@@ -491,7 +527,7 @@ def process_directory(
         config = load_config()
     
     if extensions is None:
-        extensions = config.supported_extensions
+        extensions = getattr(config, 'supported_extensions', [".tiff", ".tif", ".png", ".jpg", ".jpeg"])
     
     # 收集所有影像
     image_paths = []
@@ -508,11 +544,27 @@ def process_directory(
     
     logger.info(f"找到 {total_count} 張影像，開始處理...")
     
+    # 支援多核心處理
+    max_workers = getattr(config, 'num_workers', max(1, multiprocessing.cpu_count() - 2))  # 預設保留 2 核心給系統
+    logger.info(f"啟動多核心處理，使用核心數: {max_workers}")
+    
     success_count = 0
-    for i, image_path in enumerate(image_paths, 1):
-        logger.info(f"[{i}/{total_count}] 處理中: {image_path.name}")
-        if process_single_image(image_path, output_mask_dir, output_vis_dir, config):
-            success_count += 1
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # 預先提交所有任務 (為了避免 Config 模組無法被 Pickle，傳遞 config=None 讓各個 Worker 獨立載入)
+        futures = {
+            executor.submit(process_single_image, path, output_mask_dir, output_vis_dir, None): path
+            for path in image_paths
+        }
+        
+        # 收集結果
+        for i, future in enumerate(as_completed(futures), 1):
+            path = futures[future]
+            try:
+                if future.result():
+                    success_count += 1
+                logger.info(f"[{i}/{total_count}] 已完成: {path.name}")
+            except Exception as e:
+                logger.error(f"[{i}/{total_count}] 失敗: {path.name} | 錯誤: {e}")
     
     logger.info(f"處理完成: {success_count}/{total_count} 成功")
     return success_count, total_count
@@ -522,9 +574,11 @@ def main() -> None:
     """主程式入口"""
     config = load_config()
     
-    input_path = config.kmeans_input_path
-    output_mask_dir = config.kmeans_mask_dir
-    output_vis_dir = config.kmeans_vis_dir if config.kmeans_save_visualization else None
+    input_path = getattr(config, 'kmeans_input_path', getattr(config, 'pseudo_label_input_dir', getattr(config, 'train_image_dir', Path(__file__).parent / "tile/train/her2_chose")))
+    output_mask_dir = getattr(config, 'kmeans_mask_dir', getattr(config, 'pseudo_label_mask_dir', getattr(config, 'mask_dir', Path(__file__).parent / "output/mask")))
+    
+    save_vis = getattr(config, 'kmeans_save_visualization', getattr(config, 'save_visualization', True))
+    output_vis_dir = getattr(config, 'kmeans_vis_dir', getattr(config, 'pseudo_label_vis_dir', Path(__file__).parent / "output/vis")) if save_vis else None
     
     logger.info("=" * 60)
     logger.info("LAB 色彩空間膜分割生成器")
@@ -533,7 +587,9 @@ def main() -> None:
     logger.info(f"遮罩輸出: {output_mask_dir}")
     logger.info(f"視覺化輸出: {output_vis_dir}")
     logger.info(f"LAB 參數:")
-    logger.info(f"  - L range: [{config.lab_l_min}, {config.lab_l_max}]")
+    l_min = getattr(config, 'lab_l_min', 0.0)
+    l_max = getattr(config, 'lab_l_max', 80.0)
+    logger.info(f"  - L range: [{l_min}, {l_max}]")
     logger.info("=" * 60)
     
     if input_path.is_file():

@@ -13,11 +13,13 @@ from cellpose import models
 
 warnings.filterwarnings('ignore', message='.*shaped series shape.*')
 
+BASE_DIR = Path(__file__).resolve().parent
+
 # 配置
-TEST_IMAGE_DIR = "/home/sec312/tsgh/dish_mask/test_picture/dish"
-MODEL_DIR = "/home/sec312/tsgh/dish_mask/models"
-OUTPUT_DIR = "/home/sec312/tsgh/dish_mask/test_output"
-MODEL_NAME = "dish_cellpose_v5"
+TEST_IMAGE_DIR = str(BASE_DIR / "test_picture" / "dish")
+MODEL_DIR = str(BASE_DIR / "models")
+OUTPUT_DIR = str(BASE_DIR / "test_output")
+MODEL_NAME = "cellpose"
 N_TEST_IMAGES = 5
 
 

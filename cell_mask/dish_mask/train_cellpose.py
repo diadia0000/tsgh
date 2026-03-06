@@ -28,16 +28,18 @@ logging.getLogger('cellpose').setLevel(logging.INFO)
 
 # ==================== 配置參數 ====================
 
+BASE_DIR = Path(__file__).resolve().parent
+
 # 訓練資料目錄列表 (可加入多個目錄)
 TRAIN_DIRS = [
-    "/home/sec312/tsgh/dish_mask/train",
+    str(BASE_DIR / "train"),
 ]
-MODEL_DIR = "/home/sec312/tsgh/dish_mask/models"  # 模型輸出目錄
+MODEL_DIR = str(BASE_DIR / "models")  # 模型輸出目錄
 
 # 訓練參數
-MODEL_NAME = "cyto3"   # 模型名稱
+MODEL_NAME = "cellpose"   # 模型名稱
 # 使用之前訓練的模型繼續訓練 (設為 None 或 "cyto3" 則從頭開始)
-INITIAL_MODEL = "/home/sec312/tsgh/dish_mask/models/dish_cellpose_v4"  # 繼續訓練
+INITIAL_MODEL = "cyto3"  # 繼續訓練
 N_EPOCHS = 200                    # 更多資料，增加訓練輪數
 LEARNING_RATE = 5e-6              # 繼續訓練時使用較小學習率
 WEIGHT_DECAY = 0.1                # 權重衰減
@@ -115,9 +117,9 @@ def prepare_training_data():
             # 嘗試在同目錄或 tile 目錄找圖片
             image_file = os.path.join(train_dir, f"{base_name}.tiff")
             if not os.path.exists(image_file):
-                image_file = os.path.join("/home/sec312/tsgh/dish_mask/tile/1024/dish", f"{base_name}.tiff")
+                image_file = str(BASE_DIR / "tile" / "1024" / "dish" / f"{base_name}.tiff")
             if not os.path.exists(image_file):
-                image_file = os.path.join("/home/sec312/tsgh/dish_mask/test_picture/dish", f"{base_name}.tiff")
+                image_file = str(BASE_DIR / "test_picture" / "dish" / f"{base_name}.tiff")
             
             if not os.path.exists(image_file):
                 print(f"    ⚠️ 找不到圖片: {base_name}")
