@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Tuple, Optional
 
-import numpy as np
 
 
 @dataclass
@@ -77,7 +76,8 @@ class Config:
 
     # ========== Overlay 參數 (M1) ==========
     mask_blur_sigma: float = 0.0
-    background_fill_value: int = 0
+    background_fill_value: int = 255
+    overlay_alpha: float = 0.35
 
     # ========== Cellpose 參數 (M2) ==========
     cellpose_diameter: Optional[float] = None
@@ -86,26 +86,15 @@ class Config:
     cellpose_gpu: bool = True
     clear_border_cells: bool = True
 
-    # ========== 色彩解卷積參數 (M3) ==========
-    # OD 矩陣列向量: [Red-stain, Black-stain, Residual]
-    # 每列代表一種染色劑在 R/G/B 通道的光學密度
-    od_matrix: np.ndarray = field(
-        default_factory=lambda: np.array([
-            [0.18, 0.20, 0.08],   # Red stain OD
-            [0.10, 0.21, 0.29],   # Black stain OD
-            [0.01, 0.13, 0.01],   # Residual channel
-        ], dtype=np.float64)
-    )
-
-    # ========== Blob 偵測參數 (M3) ==========
-    # LoG (Laplacian of Gaussian) sigma 範圍
-    log_min_sigma: float = 1.0
-    log_max_sigma: float = 5.0
-    log_num_sigma: int = 5
-    log_threshold: float = 0.02
-    # Blob 最小面積 (pixels) — 過小的偵測視為雜訊
-    min_blob_area: int = 3
-    # 叢集面積因子: 連通元件面積 > factor * avg_single_dot_area → 拆分為多顆
+    # ========== Dot 定量參數 (M3) ==========
+    gamma_sigma: float = 0.7
+    gamma_alpha: float = 1.0
+    black_brightness_thresh: float = 0.30
+    red_r_min: float = 0.45
+    red_b_max: float = 0.35
+    red_diff_min: float = 0.10
+    min_dot_area: int = 3
+    morph_kernel_size: int = 3
     cluster_area_factor: float = 2.5
 
     # ========== 執行參數 ==========

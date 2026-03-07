@@ -6,13 +6,13 @@ IHC-DISH Overlay & Analysis Pipeline — 主入口
 
 Usage:
     # 單 tile
-    python hybrid_mask.py --ihc tile_x1024_y2048.tiff --dish tile_x1024_y2048.tiff
+    python hybrid_pipeline.py --ihc tile_x1024_y2048.tiff --dish tile_x1024_y2048.tiff
 
     # 批次 (目錄掃描)
-    python hybrid_mask.py --batch
+    python hybrid_pipeline.py --batch
 
     # 使用 test_picture 資料夾
-    python hybrid_mask.py --batch --test
+    python hybrid_pipeline.py --batch --test
 """
 
 import argparse
@@ -33,13 +33,15 @@ if str(_HYBRID_DIR) not in sys.path:
 
 from config import config, compute_config_hash
 from m1_overlay import (
+    apply_mask_to_ihc_image,
     find_paired_tiles,
+    fuse_masked_ihc_with_dish,
     generate_ihc_core_mask,
     overlay_ihc_mask_on_dish,
     parse_tile_coords,
 )
 from m2_segmentation import CellposeSegmenter, segment_masked_dish
-from m3_dot_quant import CellAnalysisResult, quantify_dish_signals
+from m3_dot_quant import CellAnalysisResult, quantify_overlay_signals
 from m4_export import export_cell_dot_annotations
 
 # ------------------------------------------------------------------
@@ -58,7 +60,7 @@ logger = logging.getLogger(__name__)
 
 def _init_unet_inferencer():
     """延遲初始化 UNet++ 推論器。"""
-    from inference import UNetPPInference  # noqa: WPS433
+    from unet_inference import UNetPPInference  # noqa: WPS433
 
     return UNetPPInference(
         model_path=config.unet_model_path,
@@ -117,7 +119,6 @@ def process_single_tile(
             dilate_kernel=config.membrane_dilate_kernel,
             close_kernel=config.membrane_close_kernel,
             max_boundary_gap=config.max_boundary_gap,
-            sliding_window_overlap=config.sliding_window_overlap,
         )
 
         if core_mask.sum() == 0:
@@ -137,36 +138,83 @@ def process_single_tile(
             return []
 
         dish_image = _read_rgb(dish_tile_path)
-        masked_dish = overlay_ihc_mask_on_dish(
+        ihc_image = _read_rgb(ihc_tile_path)
+
+        # Step 1: 用 IHC 單獨產生的 core_mask 對 IHC 上遮罩
+        masked_ihc = apply_mask_to_ihc_image(
+            ihc_image,
+            core_mask,
+            mask_blur_sigma=config.mask_blur_sigma,
+            background_fill_value=config.background_fill_value,
+        )
+
+        # Step 3: 將 ihc_core_mask 套到 DISH 上，得到 dish_mask_overlay
+        dish_mask_overlay = overlay_ihc_mask_on_dish(
             dish_image,
             core_mask,
             mask_blur_sigma=config.mask_blur_sigma,
             background_fill_value=config.background_fill_value,
         )
 
-        # ---- M2: Cellpose 分割 (使用遮罩後 DISH 影像) ----
+        # Step 4: dish_mask_overlay 與 masked_ihc 各 50% 融合
+        overlay_image = fuse_masked_ihc_with_dish(
+            dish_mask_overlay,
+            masked_ihc,
+            ihc_alpha=config.overlay_alpha,
+        )
+
+        # ---- M1 中間結果落地 ----
+        tile_output.mkdir(parents=True, exist_ok=True)
+        # Step 2: 輸出 ihc_core_mask（黑白二值: 0/255）
+        io.imsave(
+            str(tile_output / f"{tile_id}_ihc_core_mask.png"),
+            (core_mask * 255).astype(np.uint8),
+            check_contrast=False,
+        )
+        # 上了遮罩的 IHC（IHC+ 區域保留，背景填黑）
+        io.imsave(
+            str(tile_output / f"{tile_id}_masked_ihc.png"),
+            masked_ihc,
+            check_contrast=False,
+        )
+        # DISH 套上 IHC core mask 後的中間圖
+        io.imsave(
+            str(tile_output / f"{tile_id}_dish_mask_overlay.png"),
+            dish_mask_overlay,
+            check_contrast=False,
+        )
+        # IHC-DISH 疊合圖（僅供醫師目視判讀參考）
+        io.imsave(
+            str(tile_output / f"{tile_id}_ihc_dish_overlay.png"),
+            overlay_image,
+            check_contrast=False,
+        )
+
+        # ---- M2: Cellpose 分割 (使用 DISH mask overlay) ----
         instance_mask = segment_masked_dish(
-            masked_dish,
+            dish_mask_overlay,
             cellpose_segmenter,
             remove_border=config.clear_border_cells,
         )
 
-        # ---- M3: Dot 定量 ----
-        results = quantify_dish_signals(
-            masked_dish,
+        # ---- M3: Dot 定量 (使用 DISH mask overlay) ----
+        results = quantify_overlay_signals(
+            dish_mask_overlay,
             instance_mask,
-            od_matrix=config.od_matrix,
-            min_sigma=config.log_min_sigma,
-            max_sigma=config.log_max_sigma,
-            num_sigma=config.log_num_sigma,
-            log_threshold=config.log_threshold,
-            min_blob_area=config.min_blob_area,
+            gamma_sigma=config.gamma_sigma,
+            gamma_alpha=config.gamma_alpha,
+            black_brightness_thresh=config.black_brightness_thresh,
+            red_r_min=config.red_r_min,
+            red_b_max=config.red_b_max,
+            red_diff_min=config.red_diff_min,
+            min_dot_area=config.min_dot_area,
+            morph_kernel_size=config.morph_kernel_size,
             cluster_area_factor=config.cluster_area_factor,
         )
 
-        # ---- M4: 匯出 ----
+        # ---- M4: 匯出 (底圖使用 DISH mask overlay) ----
         export_cell_dot_annotations(
-            masked_dish,
+            dish_mask_overlay,
             instance_mask,
             results,
             tile_output,

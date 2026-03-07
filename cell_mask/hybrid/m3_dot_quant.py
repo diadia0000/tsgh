@@ -2,21 +2,22 @@
 M3: 紅/黑 Dot 定量模組
 
 流程:
-  1. 色彩解卷積 (Color Deconvolution) 分離紅色與黑色通道。
-  2. LoG / TopHat blob 偵測定位 dot 候選。
-  3. 連通元件面積基準叢集拆分 (cluster compensation)。
-  4. 彙整每個細胞的 black / red dot 計數與 ratio。
+  1. 影像正規化 — pixel / 255 → [0, 1]。
+  2. Gamma 調整 — alpha × input^sigma，強化訊號對比。
+  3. RGB 顏色閾值分離黑色 / 紅色 dot。
+  4. 雜訊移除 — 丟棄面積過小的 connected component。
+  5. 形態學後處理 — close + open。
+  6. Connected component 叢集補償計數。
+  7. 彙整每個細胞的 black / red dot 計數與 ratio。
 """
 
 import logging
-import math
 from dataclasses import dataclass
 from typing import List
 
 import cv2
 import numpy as np
 from scipy import ndimage
-from skimage.feature import blob_log
 
 logger = logging.getLogger(__name__)
 
@@ -49,182 +50,217 @@ class CellAnalysisResult:
 
 
 # ------------------------------------------------------------------
-# 色彩解卷積
+# 影像前處理
 # ------------------------------------------------------------------
 
-def color_deconvolution(
-    image: np.ndarray,
-    od_matrix: np.ndarray,
-) -> np.ndarray:
-    """RGB → 光學密度 → 色彩通道分離。
+def normalize_image(image: np.ndarray) -> np.ndarray:
+    """線性正規化至 [0, 1]。
 
     Args:
         image: shape ``(H, W, 3)``、``uint8`` RGB 影像。
-        od_matrix: shape ``(3, 3)`` 光學密度矩陣。
-            各列為一種染色劑的 OD 向量。
 
     Returns:
-        shape ``(H, W, 3)``、``float64`` 解卷積後各通道濃度。
-        channel 0 = red stain, channel 1 = black stain, channel 2 = residual。
+        shape ``(H, W, 3)``、``float64`` 正規化影像。
     """
-    od_norm = _normalize_od_matrix(od_matrix)
-    od_inv = np.linalg.inv(od_norm)
-
-    img_float = image.astype(np.float64) / 255.0
-    img_float = np.clip(img_float, 1e-6, 1.0)
-
-    optical_density = -np.log(img_float)
-    deconv = np.dot(optical_density, od_inv.T)
-    return deconv
+    return image.astype(np.float64) / 255.0
 
 
-def _normalize_od_matrix(od_matrix: np.ndarray) -> np.ndarray:
-    """正規化 OD 矩陣的每列向量為單位長度。"""
-    norms = np.linalg.norm(od_matrix, axis=1, keepdims=True)
-    norms = np.where(norms == 0, 1.0, norms)
-    return od_matrix / norms
-
-
-# ------------------------------------------------------------------
-# Blob 偵測
-# ------------------------------------------------------------------
-
-def detect_blobs(
-    channel: np.ndarray,
-    min_sigma: float = 1.0,
-    max_sigma: float = 5.0,
-    num_sigma: int = 5,
-    threshold: float = 0.02,
+def gamma_adjust(
+    image: np.ndarray,
+    sigma: float = 0.7,
+    alpha: float = 1.0,
 ) -> np.ndarray:
-    """使用 LoG (Laplacian of Gaussian) 偵測 blob 候選位置。
+    """Gamma 亮度對比調整: ``output = alpha * input^sigma``。
 
     Args:
-        channel: shape ``(H, W)``、``float64`` 單通道濃度圖。
-        min_sigma: LoG 最小 sigma。
-        max_sigma: LoG 最大 sigma。
-        num_sigma: sigma 離散取樣數。
-        threshold: 偵測閾值。
+        image: shape ``(H, W, 3)``、``float64``、[0, 1] 正規化影像。
+        sigma: Gamma 指數。< 1 提亮暗區, > 1 壓暗。
+        alpha: 亮度倍率。
 
     Returns:
-        shape ``(N, 3)`` 陣列，每列為 ``(row, col, sigma)``。
+        shape ``(H, W, 3)``、``float64`` 調整後影像，仍在 [0, 1]。
     """
-    blobs = blob_log(
-        channel,
-        min_sigma=min_sigma,
-        max_sigma=max_sigma,
-        num_sigma=num_sigma,
-        threshold=threshold,
-    )
-    return blobs
+    adjusted = alpha * np.power(np.clip(image, 0.0, 1.0), sigma)
+    return np.clip(adjusted, 0.0, 1.0)
 
+
+# ------------------------------------------------------------------
+# 顏色閾值分離
+# ------------------------------------------------------------------
+
+def threshold_black(
+    image: np.ndarray,
+    brightness_thresh: float = 0.30,
+) -> np.ndarray:
+    """分離黑色 dot (HER2 銀增強): 低亮度區域。
+
+    Args:
+        image: shape ``(H, W, 3)``、``float64``、[0, 1]。
+        brightness_thresh: 平均亮度上限。
+
+    Returns:
+        shape ``(H, W)``、``uint8``、{0, 1} 二值遮罩。
+    """
+    brightness = image.mean(axis=2)
+    return (brightness < brightness_thresh).astype(np.uint8)
+
+
+def threshold_red(
+    image: np.ndarray,
+    r_min: float = 0.45,
+    b_max: float = 0.35,
+    diff_min: float = 0.10,
+) -> np.ndarray:
+    """分離紅色 dot (CEP17 Fast Red): 高 R、低 B 區域。
+
+    Args:
+        image: shape ``(H, W, 3)``、``float64``、[0, 1]。
+        r_min: R 通道下限。
+        b_max: B 通道上限。
+        diff_min: (R - B) 最小差值。
+
+    Returns:
+        shape ``(H, W)``、``uint8``、{0, 1} 二值遮罩。
+    """
+    r_ch = image[:, :, 0]
+    b_ch = image[:, :, 2]
+    mask = (r_ch > r_min) & (b_ch < b_max) & ((r_ch - b_ch) > diff_min)
+    return mask.astype(np.uint8)
+
+
+# ------------------------------------------------------------------
+# 雜訊移除與形態學後處理
+# ------------------------------------------------------------------
+
+def remove_small_components(
+    binary: np.ndarray,
+    min_area: int = 3,
+) -> np.ndarray:
+    """移除面積 < min_area 的 connected component。
+
+    Args:
+        binary: shape ``(H, W)``、``uint8``、{0, 1}。
+        min_area: 最小有效 dot 面積 (pixels)。
+
+    Returns:
+        shape ``(H, W)``、``uint8``、{0, 1}。
+    """
+    labeled, num_features = ndimage.label(binary)
+    if num_features == 0:
+        return binary
+
+    areas = ndimage.sum(binary, labeled, range(1, num_features + 1))
+    for idx, area in enumerate(areas, start=1):
+        if area < min_area:
+            binary[labeled == idx] = 0
+    return binary
+
+
+def morphological_postprocess(
+    binary: np.ndarray,
+    kernel_size: int = 3,
+) -> np.ndarray:
+    """形態學後處理: close (合併鄰近 cluster) → open (消除碎片)。
+
+    Args:
+        binary: shape ``(H, W)``、``uint8``、{0, 1}。
+        kernel_size: 形態學核直徑。
+
+    Returns:
+        shape ``(H, W)``、``uint8``、{0, 1}。
+    """
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)
+    )
+    result = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    result = cv2.morphologyEx(result, cv2.MORPH_OPEN, kernel)
+    return result
+
+
+# ------------------------------------------------------------------
+# 叢集補償計數
+# ------------------------------------------------------------------
 
 def cluster_compensate(
-    blobs: np.ndarray,
     binary_mask: np.ndarray,
     cluster_area_factor: float = 2.5,
-    min_blob_area: int = 3,
+    min_dot_area: int = 3,
 ) -> int:
     """根據連通元件面積進行叢集補償計數。
 
-    當一個連通元件面積大於 ``cluster_area_factor * avg_single_dot_area``
-    時，將其拆分為多顆 dot。
+    面積 > ``cluster_area_factor * median_area`` 的元件
+    拆分為 ``round(area / median_area)`` 顆 dot。
 
     Args:
-        blobs: LoG 偵測到的 blob 座標 ``(N, 3)``。
-        binary_mask: 與 blob channel 對應的二值化遮罩。
+        binary_mask: 經後處理的二值遮罩 ``(H, W)``、{0, 1}。
         cluster_area_factor: 叢集面積倍率閾值。
-        min_blob_area: 有效 dot 的最小面積。
+        min_dot_area: 有效 dot 的最小面積。
 
     Returns:
         經叢集補償後的 dot 總數。
     """
-    if blobs.shape[0] == 0:
-        return 0
-
     labeled, num_features = ndimage.label(binary_mask)
     if num_features == 0:
-        return blobs.shape[0]
+        return 0
 
-    component_areas = ndimage.sum(
+    areas = ndimage.sum(
         binary_mask, labeled, range(1, num_features + 1)
     )
-    valid_areas = [a for a in component_areas if a >= min_blob_area]
+    valid_areas = [a for a in areas if a >= min_dot_area]
     if not valid_areas:
-        return blobs.shape[0]
+        return 0
 
-    avg_area = float(np.median(valid_areas))
-    if avg_area < 1.0:
-        avg_area = 1.0
+    median_area = float(np.median(valid_areas))
+    if median_area < 1.0:
+        median_area = 1.0
 
     total = 0
-    for area in component_areas:
-        if area < min_blob_area:
+    for area in areas:
+        if area < min_dot_area:
             continue
-        if area > cluster_area_factor * avg_area:
-            total += max(1, round(area / avg_area))
+        if area > cluster_area_factor * median_area:
+            total += max(1, round(area / median_area))
         else:
             total += 1
-
     return total
 
 
 # ------------------------------------------------------------------
-# 單通道 Dot 計數 (含叢集補償)
+# 單通道 Dot 計數 (region-level)
 # ------------------------------------------------------------------
 
 def _count_dots_in_region(
-    channel: np.ndarray,
+    binary: np.ndarray,
     region_mask: np.ndarray,
-    min_sigma: float,
-    max_sigma: float,
-    num_sigma: int,
-    threshold: float,
-    min_blob_area: int,
     cluster_area_factor: float,
+    min_dot_area: int,
 ) -> int:
-    """在指定區域中計算 dot 數量。
+    """在指定細胞區域中計算 dot 數量。
 
     Args:
-        channel: 解卷積後的單通道 ``(H, W)``。
-        region_mask: 細胞區域二值遮罩 ``(H, W)``、``bool``。
-        min_sigma: LoG min sigma。
-        max_sigma: LoG max sigma。
-        num_sigma: sigma 取樣數。
-        threshold: LoG 閾值。
-        min_blob_area: 最小 blob 面積。
+        binary: 全圖二值遮罩 ``(H, W)``、{0, 1}。
+        region_mask: 細胞區域 ``(H, W)``、``bool``。
         cluster_area_factor: 叢集補償因子。
+        min_dot_area: 最小 dot 面積。
 
     Returns:
-        dot 計數 (int)。
+        dot 計數。
     """
-    masked_channel = channel * region_mask.astype(np.float64)
-
-    blobs = detect_blobs(
-        masked_channel,
-        min_sigma=min_sigma,
-        max_sigma=max_sigma,
-        num_sigma=num_sigma,
-        threshold=threshold,
-    )
-
-    if blobs.shape[0] == 0:
+    rows, cols = np.where(region_mask)
+    if rows.size == 0:
         return 0
 
-    # 產生二值化遮罩用於叢集補償
-    binary = _threshold_channel(masked_channel)
-    return cluster_compensate(
-        blobs, binary, cluster_area_factor, min_blob_area
-    )
+    r_min, r_max = rows.min(), rows.max() + 1
+    c_min, c_max = cols.min(), cols.max() + 1
 
+    local_binary = binary[r_min:r_max, c_min:c_max].copy()
+    local_mask = region_mask[r_min:r_max, c_min:c_max]
+    local_binary[~local_mask] = 0
 
-def _threshold_channel(channel: np.ndarray) -> np.ndarray:
-    """Otsu 自動閾值化解卷積通道。"""
-    normalized = np.clip(channel / (channel.max() + 1e-8), 0, 1)
-    img_uint8 = (normalized * 255).astype(np.uint8)
-    _, binary = cv2.threshold(
-        img_uint8, 0, 1, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-    )
-    return binary.astype(np.uint8)
+    if local_binary.sum() == 0:
+        return 0
+
+    return cluster_compensate(local_binary, cluster_area_factor, min_dot_area)
 
 
 # ------------------------------------------------------------------
@@ -252,37 +288,54 @@ def compute_ratio(black: int, red: int) -> float:
 # 主入口
 # ------------------------------------------------------------------
 
-def quantify_dish_signals(
-    masked_dish_image: np.ndarray,
+def quantify_overlay_signals(
+    masked_overlay_image: np.ndarray,
     cell_instance_mask: np.ndarray,
-    od_matrix: np.ndarray,
-    min_sigma: float = 1.0,
-    max_sigma: float = 5.0,
-    num_sigma: int = 5,
-    log_threshold: float = 0.02,
-    min_blob_area: int = 3,
+    gamma_sigma: float = 0.7,
+    gamma_alpha: float = 1.0,
+    black_brightness_thresh: float = 0.30,
+    red_r_min: float = 0.45,
+    red_b_max: float = 0.35,
+    red_diff_min: float = 0.10,
+    min_dot_area: int = 3,
+    morph_kernel_size: int = 3,
     cluster_area_factor: float = 2.5,
 ) -> List[CellAnalysisResult]:
     """對每個分割出的細胞進行紅/黑 dot 計數。
 
     Args:
-        masked_dish_image: shape ``(H, W, 3)``、``uint8``。
+        masked_overlay_image: shape ``(H, W, 3)``、``uint8``。
         cell_instance_mask: shape ``(H, W)``、``int32``。背景=0。
-        od_matrix: shape ``(3, 3)`` OD 矩陣。
-        min_sigma: LoG min sigma。
-        max_sigma: LoG max sigma。
-        num_sigma: sigma 數量。
-        log_threshold: LoG 偵測閾值。
-        min_blob_area: 最小 blob 面積。
+        gamma_sigma: Gamma 指數。
+        gamma_alpha: Gamma 亮度倍率。
+        black_brightness_thresh: 黑色 dot 亮度上限 (正規化)。
+        red_r_min: 紅色 R 通道下限。
+        red_b_max: 紅色 B 通道上限。
+        red_diff_min: 紅色 (R-B) 最小差值。
+        min_dot_area: 最小有效 dot 面積 (pixels)。
+        morph_kernel_size: 形態學核直徑。
         cluster_area_factor: 叢集補償因子。
 
     Returns:
         每個細胞的 ``CellAnalysisResult`` 列表。
     """
-    deconv = color_deconvolution(masked_dish_image, od_matrix)
-    red_channel = deconv[:, :, 0]
-    black_channel = deconv[:, :, 1]
+    # Step 1–2: 正規化 + Gamma
+    img_norm = normalize_image(masked_overlay_image)
+    img_gamma = gamma_adjust(img_norm, sigma=gamma_sigma, alpha=gamma_alpha)
 
+    # Step 3: 顏色閾值分離
+    black_binary = threshold_black(img_gamma, black_brightness_thresh)
+    red_binary = threshold_red(img_gamma, red_r_min, red_b_max, red_diff_min)
+
+    # Step 4: 雜訊移除
+    black_binary = remove_small_components(black_binary, min_dot_area)
+    red_binary = remove_small_components(red_binary, min_dot_area)
+
+    # Step 5: 形態學後處理
+    black_binary = morphological_postprocess(black_binary, morph_kernel_size)
+    red_binary = morphological_postprocess(red_binary, morph_kernel_size)
+
+    # Step 6–7: 逐細胞計數
     cell_ids = sorted(set(np.unique(cell_instance_mask)) - {0})
     results: List[CellAnalysisResult] = []
 
@@ -290,14 +343,10 @@ def quantify_dish_signals(
         result = _quantify_single_cell(
             cell_id=cid,
             cell_instance_mask=cell_instance_mask,
-            red_channel=red_channel,
-            black_channel=black_channel,
-            min_sigma=min_sigma,
-            max_sigma=max_sigma,
-            num_sigma=num_sigma,
-            log_threshold=log_threshold,
-            min_blob_area=min_blob_area,
+            black_binary=black_binary,
+            red_binary=red_binary,
             cluster_area_factor=cluster_area_factor,
+            min_dot_area=min_dot_area,
         )
         results.append(result)
 
@@ -314,35 +363,21 @@ def quantify_dish_signals(
 def _quantify_single_cell(
     cell_id: int,
     cell_instance_mask: np.ndarray,
-    red_channel: np.ndarray,
-    black_channel: np.ndarray,
-    min_sigma: float,
-    max_sigma: float,
-    num_sigma: int,
-    log_threshold: float,
-    min_blob_area: int,
+    black_binary: np.ndarray,
+    red_binary: np.ndarray,
     cluster_area_factor: float,
+    min_dot_area: int,
 ) -> CellAnalysisResult:
     """量化單一細胞的 dot 計數。"""
     region_mask = (cell_instance_mask == cell_id)
     cy, cx = ndimage.center_of_mass(region_mask)
 
-    dot_params = dict(
-        min_sigma=min_sigma,
-        max_sigma=max_sigma,
-        num_sigma=num_sigma,
-        threshold=log_threshold,
-        min_blob_area=min_blob_area,
-        cluster_area_factor=cluster_area_factor,
-    )
-
     black_count = _count_dots_in_region(
-        black_channel, region_mask, **dot_params
+        black_binary, region_mask, cluster_area_factor, min_dot_area,
     )
     red_count = _count_dots_in_region(
-        red_channel, region_mask, **dot_params
+        red_binary, region_mask, cluster_area_factor, min_dot_area,
     )
-
     ratio = compute_ratio(black_count, red_count)
 
     return CellAnalysisResult(

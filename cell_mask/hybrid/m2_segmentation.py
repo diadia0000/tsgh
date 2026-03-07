@@ -77,7 +77,6 @@ class CellposeSegmenter:
             diameter=self.diameter,
             flow_threshold=self.flow_threshold,
             cellprob_threshold=self.cellprob_threshold,
-            channels=[0, 0],
         )
         return masks.astype(np.int32)
 
@@ -87,18 +86,18 @@ class CellposeSegmenter:
 # ------------------------------------------------------------------
 
 def segment_masked_dish(
-    masked_dish_image: np.ndarray,
+    masked_overlay_image: np.ndarray,
     segmenter: CellposeSegmenter,
     remove_border: bool = True,
 ) -> np.ndarray:
     """在遮罩後的 DISH 影像上執行 Cellpose 分割。
 
-    依照 SDD Pipeline: Mask Overlay → Cellpose Segmentation，
-    傳入的應為經 ``overlay_ihc_mask_on_dish`` 處理後的影像，
-    非 ROI 區域已填充為背景值 (預設 0)。
+    傳入的應為經 ``overlay_ihc_mask_on_dish`` 產生的 dish_mask_overlay，
+    即以 IHC core mask 遮罩後的 DISH 影像，
+    非 ROI 區域已填充為背景值。
 
     Args:
-        masked_dish_image: shape ``(H, W, 3)``、``uint8``。
+        masked_overlay_image: shape ``(H, W, 3)``、``uint8``。
             非 ROI 區域應為 ``background_fill_value``。
         segmenter: 已初始化的 ``CellposeSegmenter``。
         remove_border: 是否移除碰觸邊界的細胞。
@@ -106,7 +105,7 @@ def segment_masked_dish(
     Returns:
         shape ``(H, W)``、``int32`` 實例遮罩 (背景=0)。
     """
-    instance_mask = segmenter.predict(masked_dish_image)
+    instance_mask = segmenter.predict(masked_overlay_image)
 
     if remove_border:
         instance_mask = _remove_border_cells(instance_mask)

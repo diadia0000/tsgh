@@ -3,7 +3,7 @@ UNet++ 推論 + 細胞核心萃取 — hybrid pipeline 專用模組
 
 整合功能:
   1. UNetPPInference: UNet++ 細胞膜語義分割推論器
-     (FP16 + cudnn.benchmark + inference_mode 加速)
+        (FP32 + cudnn.benchmark + inference_mode 加速)
   2. extract_cell_cores: 從膜遮罩萃取被包圍的細胞內部核心
 
 本模組為 hybrid 資料夾的在地版本，不依賴 unet_mask 目錄。
@@ -37,7 +37,7 @@ class UNetPPInference:
     UNet++ 推論器
 
     封裝模型載入、前處理、後處理和推論邏輯。
-    支援 FP16 半精度 + cuDNN benchmark + torch.inference_mode 加速。
+    支援 FP32 + cuDNN benchmark + torch.inference_mode 加速。
 
     Attributes:
         model: UNet++ 模型
@@ -61,15 +61,14 @@ class UNetPPInference:
             model_path: 模型權重路徑 (.pth)
             encoder_name: 編碼器名稱
             num_classes: 類別數量
-            image_size: 輸入影像尺寸 (H, W)
+            image_size: 輸入影像尺寸 (H, W)，最小會被限制為 1024x1024
             device: 計算設備 (None 則自動偵測)
         """
-        self.image_size = image_size
+        self.image_size = self._sanitize_window_size(image_size)
         self.device = device or (
             torch.device("cuda") if torch.cuda.is_available()
             else torch.device("cpu")
         )
-        self._use_fp16 = (self.device.type == "cuda")
 
         # 啟用 cuDNN 自動調優 (首次推論稍慢，後續推論加速)
         if self.device.type == "cuda":
@@ -89,15 +88,28 @@ class UNetPPInference:
         self.model = self.model.to(self.device)
         self.model.eval()
 
-        # FP16 半精度加速 (僅 GPU)
-        if self._use_fp16:
-            self.model = self.model.half()
-            logger.info("已啟用 FP16 半精度推論")
-
         # 建立前處理轉換
         self.transform = self._build_transform()
 
         logger.info("模型載入完成，設備: %s", self.device)
+
+    @staticmethod
+    def _sanitize_window_size(image_size: Tuple[int, int]) -> Tuple[int, int]:
+        """強制滑動視窗最小為 1024x1024。"""
+        raw_h = max(1, int(image_size[0]))
+        raw_w = max(1, int(image_size[1]))
+        win_h = max(raw_h, 1024)
+        win_w = max(raw_w, 1024)
+
+        if (win_h, win_w) != (raw_h, raw_w):
+            logger.warning(
+                "image_size=%s 低於最小視窗，已自動調整為 (%d, %d)",
+                image_size,
+                win_h,
+                win_w,
+            )
+
+        return (win_h, win_w)
 
     # ----------------------------------------------------------
     # 內部方法
@@ -126,7 +138,7 @@ class UNetPPInference:
                 min_height=self.image_size[0],
                 min_width=self.image_size[1],
                 border_mode=0,  # cv2.BORDER_CONSTANT
-                value=255,      # 白色填充 (背景)
+                fill=255,       # 白色填充 (背景)
             ),
             A.Normalize(
                 mean=[0.485, 0.456, 0.406],
@@ -198,18 +210,16 @@ class UNetPPInference:
         self,
         image: Union[np.ndarray, Path, str],
         return_proba: bool = False,
-        overlap: int = 128,
     ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """
-        單張影像推論 (FP16 + inference_mode 加速)
+        單張影像推論 (FP32 + inference_mode)
 
-        當影像尺寸大於 ``image_size`` 時自動啟用滑動視窗推論，
-        對重疊區域以機率平均後再 argmax，確保接縫無痕。
+        當影像尺寸大於 ``image_size`` 時自動啟用滑動視窗推論。
+        視窗固定為無重疊切塊，邊緣不足一個完整視窗時以較小 patch 補齊。
 
         Args:
             image: 輸入影像 (ndarray 或 路徑)
             return_proba: 是否回傳機率圖
-            overlap: 滑動視窗重疊像素 (僅大圖時生效)
 
         Returns:
             mask: 二值 Mask (H, W)
@@ -229,9 +239,7 @@ class UNetPPInference:
 
         # 大圖 → 滑動視窗
         if h > win_h or w > win_w:
-            return self._predict_sliding_window(
-                image, overlap=overlap, return_proba=return_proba
-            )
+            return self._predict_sliding_window(image, return_proba=return_proba)
 
         # 小圖 → 直接推論
         return self._predict_direct(image, return_proba=return_proba)
@@ -245,13 +253,7 @@ class UNetPPInference:
         tensor, original_size = self.preprocess(image)
         tensor = tensor.to(self.device)
 
-        if self._use_fp16:
-            tensor = tensor.half()
-
         output = self.model(tensor)
-
-        if self._use_fp16:
-            output = output.float()
 
         mask = self.postprocess(output, original_size)
 
@@ -268,14 +270,12 @@ class UNetPPInference:
     def _predict_sliding_window(
         self,
         image: np.ndarray,
-        overlap: int = 128,
         return_proba: bool = False,
     ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
-        """滑動視窗推論，重疊區域以機率平均融合。
+        """滑動視窗推論，固定以無重疊視窗逐塊拼接。
 
         Args:
             image: shape ``(H, W, 3)``、``uint8`` RGB 影像。
-            overlap: 相鄰視窗重疊像素數。
             return_proba: 是否回傳機率圖。
 
         Returns:
@@ -283,35 +283,25 @@ class UNetPPInference:
         """
         h, w = image.shape[:2]
         win_h, win_w = self.image_size
-        stride_h = max(1, win_h - overlap)
-        stride_w = max(1, win_w - overlap)
-
-        windows = self._generate_window_coords(h, w, win_h, win_w, stride_h, stride_w)
+        windows = self._generate_window_coords(h, w, win_h, win_w)
 
         logger.info(
-            "滑動視窗推論: 影像 (%d, %d), 視窗 (%d, %d), "
-            "overlap=%d, 共 %d 個視窗",
-            h, w, win_h, win_w, overlap, len(windows),
+            "滑動視窗推論: 影像 (%d, %d), 視窗 (%d, %d), 無重疊, 共 %d 個視窗",
+            h, w, win_h, win_w, len(windows),
         )
 
-        # 機率累加緩衝 (float64 避免精度損失)
         num_classes = self.model.classes if hasattr(self.model, 'classes') else 2
-        proba_sum = np.zeros((h, w, num_classes), dtype=np.float64)
-        count_map = np.zeros((h, w), dtype=np.float64)
+        proba_full = np.zeros((h, w, num_classes), dtype=np.float32)
 
         for y0, x0, y1, x1 in windows:
             patch = image[y0:y1, x0:x1]
             _, patch_proba = self._predict_direct(patch, return_proba=True)
-            proba_sum[y0:y1, x0:x1] += patch_proba.astype(np.float64)
-            count_map[y0:y1, x0:x1] += 1.0
+            proba_full[y0:y1, x0:x1] = patch_proba[: y1 - y0, : x1 - x0]
 
-        # 平均融合
-        count_map = np.maximum(count_map, 1.0)
-        proba_avg = proba_sum / count_map[:, :, np.newaxis]
-        mask = proba_avg.argmax(axis=2).astype(np.uint8)
+        mask = proba_full.argmax(axis=2).astype(np.uint8)
 
         if return_proba:
-            return mask, proba_avg.astype(np.float32)
+            return mask, proba_full
         return mask
 
     @staticmethod
@@ -320,27 +310,22 @@ class UNetPPInference:
         img_w: int,
         win_h: int,
         win_w: int,
-        stride_h: int,
-        stride_w: int,
     ) -> List[Tuple[int, int, int, int]]:
         """產生滑動視窗的 (y0, x0, y1, x1) 座標列表。
 
-        確保最後一列/行的視窗貼齊影像右/下邊界，
-        不會漏掉任何像素。
+        固定以無重疊方式切塊；邊緣區域允許小於標準視窗尺寸，
+        不額外補重疊視窗。
         """
         coords: List[Tuple[int, int, int, int]] = []
 
-        y_starts = list(range(0, img_h - win_h + 1, stride_h))
-        if y_starts[-1] + win_h < img_h:
-            y_starts.append(img_h - win_h)
-
-        x_starts = list(range(0, img_w - win_w + 1, stride_w))
-        if x_starts[-1] + win_w < img_w:
-            x_starts.append(img_w - win_w)
+        y_starts = list(range(0, img_h, win_h))
+        x_starts = list(range(0, img_w, win_w))
 
         for y0 in y_starts:
             for x0 in x_starts:
-                coords.append((y0, x0, y0 + win_h, x0 + win_w))
+                y1 = min(y0 + win_h, img_h)
+                x1 = min(x0 + win_w, img_w)
+                coords.append((y0, x0, y1, x1))
 
         return coords
 
@@ -425,7 +410,7 @@ def extract_cell_cores(
     membrane_mask: np.ndarray,
     dilate_kernel_size: int = 7,
     close_kernel_size: int = 20,
-    max_boundary_gap: int = 400,
+    max_boundary_gap: int = 0,
 ) -> np.ndarray:
     """
     從細胞膜遮罩中萃取出被包圍的細胞內部 (Cell Cores)。
@@ -444,6 +429,7 @@ def extract_cell_cores(
         dilate_kernel_size: 膨脹核大小，確保水密性。
         close_kernel_size: 閉合核大小，縫合破裂的膜。
         max_boundary_gap: 允許閉合的邊界最大缺口長度 (pixels)。
+            設為 0 時停用邊界缺口封閉。
 
     Returns:
         乾淨的細胞內部核心二值化遮罩 (H, W)，值域 {0, 1}。
@@ -470,21 +456,23 @@ def extract_cell_cores(
     dilated_membrane = cv2.dilate(closed_membrane, dilate_kernel, iterations=1)
 
     # 3. 封閉邊緣缺口 (針對邊緣細胞)
-    boundary_mask = np.zeros_like(dilated_membrane)
-    boundary_mask[0, :] = 1
-    boundary_mask[-1, :] = 1
-    boundary_mask[:, 0] = 1
-    boundary_mask[:, -1] = 1
+    # max_boundary_gap=0 時停用，避免過度保護邊界造成 ROI 擴張。
+    if max_boundary_gap > 0:
+        boundary_mask = np.zeros_like(dilated_membrane)
+        boundary_mask[0, :] = 1
+        boundary_mask[-1, :] = 1
+        boundary_mask[:, 0] = 1
+        boundary_mask[:, -1] = 1
 
-    zero_boundary = np.logical_and(boundary_mask == 1, dilated_membrane == 0)
-    labeled_boundary, num = measure.label(
-        zero_boundary, connectivity=2, return_num=True
-    )
+        zero_boundary = np.logical_and(boundary_mask == 1, dilated_membrane == 0)
+        labeled_boundary, num = measure.label(
+            zero_boundary, connectivity=2, return_num=True
+        )
 
-    for i in range(1, num + 1):
-        gap_mask = labeled_boundary == i
-        if np.sum(gap_mask) <= max_boundary_gap:
-            dilated_membrane[gap_mask] = 1
+        for i in range(1, num + 1):
+            gap_mask = labeled_boundary == i
+            if np.sum(gap_mask) <= max_boundary_gap:
+                dilated_membrane[gap_mask] = 1
 
     # 4. 拓樸孔洞填充
     filled_mask = ndimage.binary_fill_holes(dilated_membrane).astype(np.uint8)

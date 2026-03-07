@@ -35,17 +35,10 @@ _COLOR_TEXT = (255, 255, 255)      # 白色：文字標籤
 # ------------------------------------------------------------------
 
 _CSV_HEADER = [
-    "slide_id",
-    "tile_id",
     "cell_id",
-    "centroid_x",
-    "centroid_y",
-    "black_dot_count",
-    "red_dot_count",
+    "red dot",
+    "black dot",
     "ratio",
-    "is_border_cell",
-    "model_version",
-    "config_hash",
 ]
 
 
@@ -78,9 +71,7 @@ def export_tile_csv(
         writer = csv.writer(fh)
         writer.writerow(_CSV_HEADER)
         for cell in results:
-            writer.writerow(_format_csv_row(
-                cell, slide_id, tile_id, model_version, config_hash
-            ))
+            writer.writerow(_format_csv_row(cell))
 
     logger.info(
         "CSV 匯出完成: %s (%d 列)", output_path.name, len(results)
@@ -90,25 +81,14 @@ def export_tile_csv(
 
 def _format_csv_row(
     cell: CellAnalysisResult,
-    slide_id: str,
-    tile_id: str,
-    model_version: str,
-    config_hash: str,
 ) -> list:
     """將單一 CellAnalysisResult 轉換為 CSV 列。"""
     ratio_str = _ratio_to_str(cell.ratio)
     return [
-        slide_id,
-        tile_id,
         cell.cell_id,
-        f"{cell.centroid_x:.1f}",
-        f"{cell.centroid_y:.1f}",
-        cell.black_dot_count,
         cell.red_dot_count,
+        cell.black_dot_count,
         ratio_str,
-        False,  # is_border_cell — 邊界細胞已在 M2 移除
-        model_version,
-        config_hash,
     ]
 
 
@@ -126,7 +106,7 @@ def _ratio_to_str(ratio: float) -> str:
 # ------------------------------------------------------------------
 
 def export_overlay_visualization(
-    masked_dish_image: np.ndarray,
+    overlay_image: np.ndarray,
     cell_instance_mask: np.ndarray,
     results: List[CellAnalysisResult],
     output_path: Path,
@@ -134,7 +114,7 @@ def export_overlay_visualization(
     """匯出含有細胞邊界和 dot 標註的疊加圖。
 
     Args:
-        masked_dish_image: shape ``(H, W, 3)`` RGB。
+        overlay_image: shape ``(H, W, 3)`` RGB。
         cell_instance_mask: shape ``(H, W)`` 實例遮罩。
         results: 每個細胞的定量結果。
         output_path: 輸出 PNG 路徑。
@@ -144,7 +124,7 @@ def export_overlay_visualization(
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    canvas = cv2.cvtColor(masked_dish_image.copy(), cv2.COLOR_RGB2BGR)
+    canvas = cv2.cvtColor(overlay_image.copy(), cv2.COLOR_RGB2BGR)
     _draw_cell_boundaries(canvas, cell_instance_mask)
     _draw_cell_labels(canvas, results)
 
@@ -192,7 +172,7 @@ def _draw_cell_labels(
 # ------------------------------------------------------------------
 
 def export_per_cell_images(
-    masked_dish_image: np.ndarray,
+    overlay_image: np.ndarray,
     cell_instance_mask: np.ndarray,
     results: List[CellAnalysisResult],
     output_dir: Path,
@@ -201,7 +181,7 @@ def export_per_cell_images(
     """裁切每個細胞的局部影像並儲存。
 
     Args:
-        masked_dish_image: shape ``(H, W, 3)`` RGB。
+        overlay_image: shape ``(H, W, 3)`` RGB。
         cell_instance_mask: shape ``(H, W)`` 實例遮罩。
         results: 細胞量化結果。
         output_dir: 輸出資料夾 (``cells/`` 子目錄)。
@@ -216,7 +196,7 @@ def export_per_cell_images(
     saved_paths: List[Path] = []
     for cell in results:
         path = _export_single_cell(
-            masked_dish_image,
+            overlay_image,
             cell_instance_mask,
             cell,
             cells_dir,
@@ -261,10 +241,11 @@ def _export_single_cell(
 # ------------------------------------------------------------------
 
 def export_cell_dot_annotations(
-    masked_dish_image: np.ndarray,
+    overlay_image: np.ndarray,
     cell_instance_mask: np.ndarray,
     results: List[CellAnalysisResult],
     output_dir: Path,
+    visualization_image: np.ndarray = None,
     slide_id: str = "unknown",
     tile_id: str = "unknown",
     model_version: str = "v1.0.0",
@@ -273,10 +254,11 @@ def export_cell_dot_annotations(
     """統一匯出 CSV + overlay PNG + per-cell PNG。
 
     Args:
-        masked_dish_image: 遮罩後 DISH 影像。
+        overlay_image: 遮罩後 IHC-DISH 疊合影像。
         cell_instance_mask: 實例遮罩。
         results: 細胞量化結果列表。
         output_dir: 匯出根目錄。
+        visualization_image: 視覺化底圖；若為 None 則使用 overlay_image。
         slide_id: 玻片識別碼。
         tile_id: Tile 識別碼。
         model_version: 模型版本。
@@ -293,15 +275,20 @@ def export_cell_dot_annotations(
         config_hash=config_hash,
     )
 
+    vis_image = (
+        overlay_image if visualization_image is None
+        else visualization_image
+    )
+
     export_overlay_visualization(
-        masked_dish_image,
+        vis_image,
         cell_instance_mask,
         results,
         output_dir / f"{tile_id}_overlay.png",
     )
 
     export_per_cell_images(
-        masked_dish_image,
+        overlay_image,
         cell_instance_mask,
         results,
         output_dir,
