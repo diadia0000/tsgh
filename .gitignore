@@ -17,3 +17,4 @@ output/
 models/
 dish_cellpose_v*
 config.py
+tile/*
