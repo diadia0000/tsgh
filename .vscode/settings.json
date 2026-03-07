@@ -1,0 +1,38 @@
+{
+  "files.watcherExclude": {
+    "**/.venv/**": true,
+    "**/__pycache__/**": true,
+    "**/picture/**": true,
+    "**/models/**": true,
+    "**/output/**": true,
+    "**/artifacts/**": true,
+    "**/tile/**": true,
+    "**/train/**": true,
+    "**/test_output/**": true,
+    "**/.git/objects/**": true
+  },
+  "search.exclude": {
+    "**/.venv/**": true,
+    "**/__pycache__/**": true,
+    "**/picture/**": true,
+    "**/models/**": true,
+    "**/output/**": true,
+    "**/artifacts/**": true,
+    "**/tile/**": true,
+    "**/train/**": true,
+    "**/test_output/**": true
+  },
+  "python.analysis.exclude": [
+    "**/.venv/**",
+    "**/__pycache__/**",
+    "picture/**",
+    "**/models/**",
+    "**/output/**",
+    "**/artifacts/**",
+    "**/tile/**",
+    "**/train/**",
+    "**/test_output/**"
+  ],
+  "python.analysis.indexing": false,
+  "python.analysis.diagnosticMode": "openFilesOnly"
+}
