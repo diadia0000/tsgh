@@ -6,7 +6,7 @@ trigger: always_on
 
 ## 環境配置
 
-- **Python venv**: `/home/hispadmin/tsgh/.venv`
+- **Python venv**: `/home/sec312/project/tsgh/.venv`
 - **Python version**: 3.11.14
 ## 1. 架構優先 (Architecture First)
 

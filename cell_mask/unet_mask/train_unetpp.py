@@ -225,101 +225,88 @@ def get_val_transforms(image_size: Tuple[int, int]) -> A.Compose:
 
 class CombinedLoss(nn.Module):
     """
-    組合損失函數: Dice Loss + Cross-Entropy Loss
-    
-    Attributes:
-        dice_weight: Dice Loss 權重
-        ce_weight: Cross-Entropy Loss 權重
-        class_weights: 類別權重 (用於 CE Loss)
+    組合損失函數: Focal Loss + Dice Loss
+
+    Focal Loss 自動降低易分類像素的權重，聚焦邊界等困難區域，
+    比 CE 更適合類別不平衡的分割任務。
     """
-    
+
     def __init__(
         self,
         dice_weight: float = 0.5,
-        ce_weight: float = 0.5,
-        class_weights: Optional[List[float]] = None,
+        focal_weight: float = 0.5,
+        focal_gamma: float = 2.0,
     ) -> None:
-        """
-        初始化損失函數
-        
-        Args:
-            dice_weight: Dice Loss 權重
-            ce_weight: Cross-Entropy Loss 權重
-            class_weights: 類別權重列表 [非膜, 膜]
-        """
         super().__init__()
         self.dice_weight = dice_weight
-        self.ce_weight = ce_weight
-        
-        # Dice Loss (SMP 提供)
+        self.focal_weight = focal_weight
+
         self.dice_loss = smp.losses.DiceLoss(
             mode='multiclass',
-            from_logits=True
+            from_logits=True,
         )
-        
-        # Cross-Entropy Loss
-        if class_weights is not None:
-            weight = torch.tensor(class_weights, dtype=torch.float32)
-            self.ce_loss = nn.CrossEntropyLoss(weight=weight)
-        else:
-            self.ce_loss = nn.CrossEntropyLoss()
-    
+
+        self.focal_loss = smp.losses.FocalLoss(
+            mode='multiclass',
+            gamma=focal_gamma,
+        )
+
     def forward(
         self,
         pred: torch.Tensor,
-        target: torch.Tensor
+        target: torch.Tensor,
     ) -> torch.Tensor:
-        """
-        計算組合損失
-        
-        Args:
-            pred: 模型輸出 (B, C, H, W)
-            target: Ground Truth (B, H, W)
-            
-        Returns:
-            總損失值
-        """
         dice = self.dice_loss(pred, target)
-        
-        # CE Loss 需要將 class_weights 移到正確的 device
-        if hasattr(self.ce_loss, 'weight') and self.ce_loss.weight is not None:
-            self.ce_loss.weight = self.ce_loss.weight.to(pred.device)
-        
-        ce = self.ce_loss(pred, target)
-        
-        return self.dice_weight * dice + self.ce_weight * ce
+        focal = self.focal_loss(pred, target)
+        return self.dice_weight * dice + self.focal_weight * focal
 
 
-def calculate_miou(
+def build_confusion_matrix(
     pred: torch.Tensor,
     target: torch.Tensor,
-    num_classes: int = 2
-) -> float:
+    num_classes: int = 2,
+) -> torch.Tensor:
     """
-    計算 Mean IoU
-    
+    計算混淆矩陣 (留在 GPU 上，不呼叫 .item())
+
     Args:
         pred: 模型輸出 (B, C, H, W)
         target: Ground Truth (B, H, W)
         num_classes: 類別數量
-        
+
+    Returns:
+        混淆矩陣 (num_classes, num_classes)，cm[i, j] = 真實 i 預測 j 的像素數
+    """
+    pred_labels = pred.argmax(dim=1).flatten()  # (B*H*W,)
+    target_flat = target.flatten()               # (B*H*W,)
+
+    # 用線性索引一次算出整個混淆矩陣
+    indices = target_flat * num_classes + pred_labels
+    cm = torch.bincount(indices, minlength=num_classes ** 2)
+    return cm.reshape(num_classes, num_classes).float()
+
+
+def miou_from_confusion_matrix(cm: torch.Tensor) -> float:
+    """
+    從累積的混淆矩陣計算 Mean IoU
+
+    當某 class 的 union == 0（真實與預測皆無該 class），視為 IoU = 1.0。
+
+    Args:
+        cm: 混淆矩陣 (num_classes, num_classes)
+
     Returns:
         Mean IoU 值
     """
-    pred_labels = pred.argmax(dim=1)  # (B, H, W)
-    
-    ious = []
-    for cls in range(num_classes):
-        pred_mask = (pred_labels == cls)
-        target_mask = (target == cls)
-        
-        intersection = (pred_mask & target_mask).sum().float()
-        union = (pred_mask | target_mask).sum().float()
-        
-        if union > 0:
-            ious.append((intersection / union).item())
-    
-    return np.mean(ious) if ious else 0.0
+    intersection = cm.diag()
+    union = cm.sum(dim=1) + cm.sum(dim=0) - intersection
+
+    ious = torch.where(
+        union > 0,
+        intersection / union,
+        torch.ones_like(intersection),  # 預測也是空，算正確
+    )
+    return ious.mean().item()
 
 
 def split_dataset(
@@ -421,43 +408,44 @@ def train_one_epoch(
     """
     model.train()
     total_loss = 0.0
-    total_miou = 0.0
     n_batches = 0
-    
+    cm_sum = None  # 累積混淆矩陣
+
     optimizer.zero_grad()
-    
+
     pbar = tqdm(loader, desc='Training', leave=False)
     for batch_idx, (images, masks) in enumerate(pbar):
         images = images.to(device)
         masks = masks.to(device)
-        
+
         # 混合精度前向傳播
         with autocast(device_type='cuda'):
             outputs = model(images)
             loss = criterion(outputs, masks) / accumulation_steps
-        
+
         # 反向傳播
         scaler.scale(loss).backward()
-        
+
         # 梯度累積
         if (batch_idx + 1) % accumulation_steps == 0:
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
-        
-        # 計算指標
+
+        # 計算指標（累積混淆矩陣，不逐 batch 呼叫 .item()）
         total_loss += loss.item() * accumulation_steps
         with torch.no_grad():
-            miou = calculate_miou(outputs, masks)
-            total_miou += miou
+            cm = build_confusion_matrix(outputs, masks)
+            cm_sum = cm if cm_sum is None else cm_sum + cm
         n_batches += 1
-        
+
         pbar.set_postfix({
             'loss': f'{loss.item() * accumulation_steps:.4f}',
-            'mIoU': f'{miou:.4f}'
+            'mIoU': f'{miou_from_confusion_matrix(cm_sum):.4f}'
         })
-    
-    return total_loss / n_batches, total_miou / n_batches
+
+    epoch_miou = miou_from_confusion_matrix(cm_sum) if cm_sum is not None else 0.0
+    return total_loss / n_batches, epoch_miou
 
 
 @torch.no_grad()
@@ -481,29 +469,30 @@ def validate(
     """
     model.eval()
     total_loss = 0.0
-    total_miou = 0.0
     n_batches = 0
-    
+    cm_sum = None
+
     pbar = tqdm(loader, desc='Validating', leave=False)
     for images, masks in pbar:
         images = images.to(device)
         masks = masks.to(device)
-        
+
         with autocast(device_type='cuda'):
             outputs = model(images)
             loss = criterion(outputs, masks)
-        
+
         total_loss += loss.item()
-        miou = calculate_miou(outputs, masks)
-        total_miou += miou
+        cm = build_confusion_matrix(outputs, masks)
+        cm_sum = cm if cm_sum is None else cm_sum + cm
         n_batches += 1
-        
+
         pbar.set_postfix({
             'loss': f'{loss.item():.4f}',
-            'mIoU': f'{miou:.4f}'
+            'mIoU': f'{miou_from_confusion_matrix(cm_sum):.4f}'
         })
-    
-    return total_loss / n_batches, total_miou / n_batches
+
+    epoch_miou = miou_from_confusion_matrix(cm_sum) if cm_sum is not None else 0.0
+    return total_loss / n_batches, epoch_miou
 
 
 def save_checkpoint(
@@ -616,8 +605,7 @@ def main() -> None:
     # 損失函數
     criterion = CombinedLoss(
         dice_weight=config.dice_weight,
-        ce_weight=config.ce_weight,
-        class_weights=config.class_weights,
+        focal_weight=config.ce_weight,
     )
     
     # 優化器

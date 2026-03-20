@@ -31,10 +31,10 @@ class Config:
     # ========== 數據規格 ==========
     # 影像尺寸
     image_size: Tuple[int, int] = (1024, 1024)
-    # 類別數量 (二分類: 非膜=0, 咖啡色膜=1)
+    # 類別數量 (二分類: 背景=0, 細胞區域=1)
     num_classes: int = 2
     # 類別名稱
-    class_names: List[str] = field(default_factory=lambda: ["Non-membrane", "Membrane"])
+    class_names: List[str] = field(default_factory=lambda: ["Background", "Cell-Region"])
     
     # ========== 數據集分割 ==========
     # 訓練集比例 80%
@@ -130,7 +130,7 @@ class Config:
         }
     })
     
-    # ========== LAB Mask 生成參數 ==========
+    # ========== Pseudo-Label 生成參數 ==========
     # 輸入影像路徑 (檔案或目錄)
     kmeans_input_path: Path = field(default_factory=lambda: Path(__file__).parent / "tile/train/her2_chose")
     # Mask 輸出目錄
@@ -139,14 +139,25 @@ class Config:
     kmeans_vis_dir: Path = field(default_factory=lambda: Path(__file__).parent / "output/kmeans_vis")
     # 是否儲存視覺化結果
     kmeans_save_visualization: bool = True
-    
-    # --- LAB 色彩空間分析參數 ---
-    # 最小亮度 (排除太暗區域)
-    lab_l_min: float = 5.0
-    # 最大亮度 (排除太亮區域/背景)
-    lab_l_max: float = 80.0
-    # 是否融合 DAB 通道 (HED) 進行雙重確認 (True=更精準, False=只用 LAB)
-    use_dab_fusion: bool = True
+
+    # --- QuPath 染色矩陣 (Color Deconvolution) ---
+    # 每列為一種染劑在 RGB 光學密度空間的吸收向量
+    # Row 0: Hematoxylin, Row 1: DAB, Row 2: Residual
+    stain_matrix: List[List[float]] = field(default_factory=lambda: [
+        [0.651, 0.701, 0.290],   # Hematoxylin
+        [0.269, 0.568, 0.778],   # DAB
+        [0.633, -0.713, 0.302],  # Residual
+    ])
+
+    # --- 填充細胞區域參數 ---
+    # DAB 濃度固定閾值 (separate_stains 輸出的光學密度，通常 0~1.5)
+    dab_threshold: float = 0.15
+    # 形態學閉合核大小 (越大越能修補膜上斷裂缺口，但過大會合併相鄰細胞)
+    fill_close_kernel: int = 11
+    # 最小細胞面積 (像素，過濾雜訊小區域)
+    fill_min_cell_area: int = 200
+    # 邊緣細胞最大面積 (碰邊界的背景區域小於此值視為邊緣細胞內部)
+    fill_max_edge_hole_area: int = 5000
     
     # ========== 視覺化參數 (二分類) ==========
     # Overlay 透明度 (0.0 = 完全透明, 1.0 = 完全不透明)
