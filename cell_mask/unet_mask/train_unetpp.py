@@ -3,9 +3,6 @@ UNet++ HER2 細胞膜語義分割訓練腳本
 
 使用 LAB 色彩空間生成的偽標籤進行訓練
 模型架構: UNet++ with DenseNet121 Encoder (ImageNet pretrained)
-
-Author: TSGH AI Team
-Date: 2026-02-03
 """
 
 import logging
@@ -312,22 +309,20 @@ def miou_from_confusion_matrix(cm: torch.Tensor) -> float:
 def split_dataset(
     image_dir: Path,
     mask_dir: Path,
-    train_ratio: float = 0.8,
-    val_ratio: float = 0.1,
+    train_ratio: float = 0.85,
     seed: int = 42,
-) -> Tuple[List[Path], List[Path], List[Path], List[Path], List[Path], List[Path]]:
+) -> Tuple[List[Path], List[Path], List[Path], List[Path]]:
     """
-    分割資料集為訓練/驗證/測試集
-    
+    分割資料集為訓練/驗證集
+
     Args:
         image_dir: 影像目錄
         mask_dir: Mask 目錄
-        train_ratio: 訓練集比例
-        val_ratio: 驗證集比例
+        train_ratio: 訓練集比例，剩餘為驗證集
         seed: 隨機種子
-        
+
     Returns:
-        (train_images, train_masks, val_images, val_masks, test_images, test_masks)
+        (train_images, train_masks, val_images, val_masks)
     """
     # 收集所有影像
     extensions = ['.tiff', '.tif', '.png', '.jpg', '.jpeg']
@@ -335,9 +330,9 @@ def split_dataset(
     for ext in extensions:
         image_paths.extend(image_dir.glob(f'*{ext}'))
         image_paths.extend(image_dir.glob(f'*{ext.upper()}'))
-    
+
     image_paths = sorted(set(image_paths))
-    
+
     # 配對 Mask
     paired_data = []
     for img_path in image_paths:
@@ -345,33 +340,28 @@ def split_dataset(
         mask_path = mask_dir / mask_name
         if mask_path.exists():
             paired_data.append((img_path, mask_path))
-    
+
     logger.info(f"找到 {len(paired_data)} 筆配對資料")
-    
+
     # 隨機打亂
     np.random.seed(seed)
     np.random.shuffle(paired_data)
-    
+
     # 分割
-    n_total = len(paired_data)
-    n_train = int(n_total * train_ratio)
-    n_val = int(n_total * val_ratio)
-    
+    n_train = int(len(paired_data) * train_ratio)
+
     train_data = paired_data[:n_train]
-    val_data = paired_data[n_train:n_train + n_val]
-    test_data = paired_data[n_train + n_val:]
-    
+    val_data = paired_data[n_train:]
+
     # 解包
     train_images = [x[0] for x in train_data]
     train_masks = [x[1] for x in train_data]
     val_images = [x[0] for x in val_data]
     val_masks = [x[1] for x in val_data]
-    test_images = [x[0] for x in test_data]
-    test_masks = [x[1] for x in test_data]
-    
-    logger.info(f"資料分割: 訓練={len(train_images)}, 驗證={len(val_images)}, 測試={len(test_images)}")
-    
-    return train_images, train_masks, val_images, val_masks, test_images, test_masks
+
+    logger.info(f"資料分割: 訓練={len(train_images)}, 驗證={len(val_images)}")
+
+    return train_images, train_masks, val_images, val_masks
 
 
 @dataclass
@@ -549,13 +539,10 @@ def main() -> None:
     logger.info("=" * 60)
     
     # 分割資料集
-    (train_images, train_masks, 
-     val_images, val_masks, 
-     test_images, test_masks) = split_dataset(
-        image_dir=getattr(config, 'train_image_dir', Path(__file__).parent / "tile/train/her2_chose"),
-        mask_dir=getattr(config, 'kmeans_mask_dir', getattr(config, 'pseudo_label_mask_dir', getattr(config, 'mask_dir', Path(__file__).parent / "output/mask"))),
+    train_images, train_masks, val_images, val_masks = split_dataset(
+        image_dir=config.train_image_dir,
+        mask_dir=config.pseudo_label_mask_dir,
         train_ratio=config.train_ratio,
-        val_ratio=config.val_ratio,
         seed=config.random_seed,
     )
     

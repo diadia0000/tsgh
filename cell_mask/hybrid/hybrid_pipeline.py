@@ -42,7 +42,7 @@ from m1_overlay import (
 )
 from m2_segmentation import CellposeSegmenter, segment_masked_dish
 from m3_dot_quant import CellAnalysisResult, quantify_overlay_signals
-from m4_export import export_cell_dot_annotations
+from m4_export import export_cell_dot_annotations, export_overlay_visualization
 
 # ------------------------------------------------------------------
 # Logging 設定
@@ -93,6 +93,7 @@ def process_single_tile(
     cellpose_segmenter: CellposeSegmenter,
     output_dir: Path,
     cfg_hash: str,
+    merge_dir: Optional[Path] = None,
 ) -> Optional[List[CellAnalysisResult]]:
     """處理單一配對 tile 的完整流水線。
 
@@ -116,9 +117,7 @@ def process_single_tile(
         core_mask = generate_ihc_core_mask(
             ihc_tile_path,
             unet_inferencer,
-            dilate_kernel=config.membrane_dilate_kernel,
-            close_kernel=config.membrane_close_kernel,
-            max_boundary_gap=config.max_boundary_gap,
+            close_kernel=config.core_close_kernel,
         )
 
         if core_mask.sum() == 0:
@@ -224,6 +223,24 @@ def process_single_tile(
             config_hash=cfg_hash,
         )
 
+        # ---- Merge overlay: 將 cellpose 細胞邊界繪製在原始合併影像上 ----
+        merge_tile_path = _find_merge_tile(merge_dir, tile_id)
+        if merge_tile_path is not None:
+            merge_image = _read_rgb(merge_tile_path)
+            if merge_image.shape[:2] == instance_mask.shape[:2]:
+                export_overlay_visualization(
+                    merge_image,
+                    instance_mask,
+                    results,
+                    tile_output / f"{tile_id}_merge_overlay.png",
+                )
+                logger.info("Merge overlay 匯出完成: %s", tile_id)
+            else:
+                logger.warning(
+                    "Tile %s: merge 影像尺寸 %s 與 mask 尺寸 %s 不匹配，跳過 merge overlay",
+                    tile_id, merge_image.shape[:2], instance_mask.shape[:2],
+                )
+
         elapsed = time.perf_counter() - start_time
         logger.info(
             "Tile %s 處理完成: %d 細胞, %.2f 秒",
@@ -239,6 +256,17 @@ def process_single_tile(
     except Exception as exc:
         logger.error("Tile %s 處理失敗: %s", tile_id, exc, exc_info=True)
         return None
+
+
+def _find_merge_tile(merge_dir: Optional[Path], tile_id: str) -> Optional[Path]:
+    """嘗試在 merge 目錄中找到對應的合併影像。"""
+    if merge_dir is None or not merge_dir.exists():
+        return None
+    for ext in config.supported_extensions:
+        candidate = merge_dir / f"{tile_id}{ext}"
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _read_rgb(path: Path) -> np.ndarray:
@@ -259,6 +287,7 @@ def run_batch(
     ihc_dir: Path,
     dish_dir: Path,
     output_dir: Path,
+    merge_dir: Optional[Path] = None,
 ) -> dict:
     """批次掃描目錄並處理所有配對 tile。
 
@@ -266,6 +295,7 @@ def run_batch(
         ihc_dir: IHC tile 目錄。
         dish_dir: DISH tile 目錄。
         output_dir: 輸出根目錄。
+        merge_dir: 合併影像目錄 (可選)，用於產出 merge overlay。
 
     Returns:
         ``{"success": int, "failed": int, "skipped": int}`` 統計。
@@ -295,7 +325,8 @@ def run_batch(
             "[%d/%d] 處理 tile: %s", idx, total, dish_path.stem
         )
         result = process_single_tile(
-            ihc_path, dish_path, unet, cellpose, output_dir, cfg_hash
+            ihc_path, dish_path, unet, cellpose, output_dir, cfg_hash,
+            merge_dir=merge_dir,
         )
         if result is None:
             stats["failed"] += 1
@@ -374,7 +405,8 @@ def main() -> None:
     if args.batch:
         ihc_dir = config.ihc_test_dir if args.test else config.ihc_tile_dir
         dish_dir = config.dish_test_dir if args.test else config.dish_tile_dir
-        run_batch(ihc_dir, dish_dir, output_dir)
+        merge_dir = config.merge_test_dir if args.test else config.merge_tile_dir
+        run_batch(ihc_dir, dish_dir, output_dir, merge_dir=merge_dir)
     elif args.ihc and args.dish:
         _run_single_tile_cli(args.ihc, args.dish, output_dir)
     else:
@@ -395,7 +427,8 @@ def _run_single_tile_cli(
     cellpose = _init_cellpose_segmenter()
 
     process_single_tile(
-        ihc_path, dish_path, unet, cellpose, output_dir, cfg_hash
+        ihc_path, dish_path, unet, cellpose, output_dir, cfg_hash,
+        merge_dir=config.merge_tile_dir,
     )
 
 

@@ -1,10 +1,10 @@
 """
-UNet++ 推論 + 細胞核心萃取 — hybrid pipeline 專用模組
+UNet++ 推論 + 膜預測後處理 — hybrid pipeline 專用模組
 
 整合功能:
   1. UNetPPInference: UNet++ 細胞膜語義分割推論器
         (FP32 + cudnn.benchmark + inference_mode 加速)
-  2. extract_cell_cores: 從膜遮罩萃取被包圍的細胞內部核心
+  2. postprocess_membrane_mask: 輕量後處理（形態學閉合）
 
 本模組為 hybrid 資料夾的在地版本，不依賴 unet_mask 目錄。
 
@@ -22,8 +22,7 @@ import torch
 import segmentation_models_pytorch as smp
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
-from scipy import ndimage
-from skimage import io, measure
+from skimage import io
 
 logger = logging.getLogger(__name__)
 
@@ -403,92 +402,32 @@ class UNetPPInference:
 
 
 # =====================================================================
-# Part 2: 細胞核心萃取
+# Part 2: 膜預測後處理
 # =====================================================================
 
-def extract_cell_cores(
-    membrane_mask: np.ndarray,
-    dilate_kernel_size: int = 7,
-    close_kernel_size: int = 20,
-    max_boundary_gap: int = 0,
+def postprocess_membrane_mask(
+    raw_mask: np.ndarray,
+    close_kernel_size: int = 7,
 ) -> np.ndarray:
-    """
-    從細胞膜遮罩中萃取出被包圍的細胞內部 (Cell Cores)。
-    支援封閉邊界缺口，可萃取邊緣細胞。
+    """對 UNet++ 的原始膜預測做輕量後處理。
 
-    演算法步驟：
-    1. 形態學閉合 (Closing)：以較大 Kernel 將膜上斷裂的中小型缺口縫合起來。
-    2. 膨脹 (Dilation)：將修補好的膜稍微加粗，確保絕對 watertight 防止填充外漏。
-    3. 封閉邊界 (Close Edge Gaps)：尋找接觸影像邊界的短缺口並閉合。
-    4. 填充 (Fill Holes)：把被膜包圍的內部孔洞填滿。
-    5. 邏輯相減：填充區域 - 閉合後的細胞膜 = 內部核心。
-       (使用閉合後的膜而非原始膜，避免 Closing 橋接像素殘留為白線)
+    模型已直接輸出 filled blob（整塊棕色細胞膜區域），
+    僅需連接微小斷裂。
 
     Args:
-        membrane_mask: UNet++ 輸出的細胞膜二值化遮罩 (H, W)，值域 0 或 1。
-        dilate_kernel_size: 膨脹核大小，確保水密性。
-        close_kernel_size: 閉合核大小，縫合破裂的膜。
-        max_boundary_gap: 允許閉合的邊界最大缺口長度 (pixels)。
-            設為 0 時停用邊界缺口封閉。
+        raw_mask: UNet++ 輸出的二值 mask (H, W)，值域 {0, 1}。
+        close_kernel_size: 閉合核大小 (pixels)，越大可跨越越寬的斷裂。
 
     Returns:
-        乾淨的細胞內部核心二值化遮罩 (H, W)，值域 {0, 1}。
+        後處理後的二值 mask (H, W)，uint8 {0, 1}。
     """
-    membrane_uint8 = (membrane_mask > 0).astype(np.uint8)
+    mask = (raw_mask > 0).astype(np.uint8)
 
-    # 1. 形態學閉合：縫合斷裂缺口
     if close_kernel_size > 0:
-        close_kernel = cv2.getStructuringElement(
+        kernel = cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE,
             (close_kernel_size, close_kernel_size),
         )
-        closed_membrane = cv2.morphologyEx(
-            membrane_uint8, cv2.MORPH_CLOSE, close_kernel
-        )
-    else:
-        closed_membrane = membrane_uint8.copy()
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
-    # 2. 膨脹細胞膜
-    dilate_kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE,
-        (dilate_kernel_size, dilate_kernel_size),
-    )
-    dilated_membrane = cv2.dilate(closed_membrane, dilate_kernel, iterations=1)
-
-    # 3. 封閉邊緣缺口 (針對邊緣細胞)
-    # max_boundary_gap=0 時停用，避免過度保護邊界造成 ROI 擴張。
-    if max_boundary_gap > 0:
-        boundary_mask = np.zeros_like(dilated_membrane)
-        boundary_mask[0, :] = 1
-        boundary_mask[-1, :] = 1
-        boundary_mask[:, 0] = 1
-        boundary_mask[:, -1] = 1
-
-        zero_boundary = np.logical_and(boundary_mask == 1, dilated_membrane == 0)
-        labeled_boundary, num = measure.label(
-            zero_boundary, connectivity=2, return_num=True
-        )
-
-        for i in range(1, num + 1):
-            gap_mask = labeled_boundary == i
-            if np.sum(gap_mask) <= max_boundary_gap:
-                dilated_membrane[gap_mask] = 1
-
-    # 4. 拓樸孔洞填充
-    filled_mask = ndimage.binary_fill_holes(dilated_membrane).astype(np.uint8)
-
-    # 5. 移除膨脹造成的外部光暈 (Halo)
-    exterior_background = (filled_mask == 0).astype(np.uint8)
-    restored_exterior = cv2.dilate(
-        exterior_background, dilate_kernel, iterations=1
-    )
-
-    true_core_region = (restored_exterior == 0).astype(np.uint8)
-
-    # 邏輯相減：使用 closed_membrane (非原始 membrane_uint8)
-    # 閉合產生的橋接像素也必須被排除，否則會殘留白線
-    core_mask = np.logical_and(
-        true_core_region, np.logical_not(closed_membrane)
-    ).astype(np.uint8)
-
-    return core_mask
+    return mask

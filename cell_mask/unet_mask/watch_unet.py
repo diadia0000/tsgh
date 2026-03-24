@@ -510,7 +510,7 @@ def main() -> None:
     
     # 設定路徑
     model_path = config.model_save_dir / "best_model.pth"
-    input_dir = config.base_dir / "train" / "test"
+    input_dir = config.base_dir / "tile" / "test"
     output_dir = config.base_dir / "output" / "watch_results"
     output_dir.mkdir(parents=True, exist_ok=True)
     

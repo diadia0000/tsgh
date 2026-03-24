@@ -128,6 +128,45 @@ def threshold_red(
     return mask.astype(np.uint8)
 
 
+def threshold_red_hsv(
+    image: np.ndarray,
+    hue_ranges: list = None,
+    sat_min: float = 0.40,
+    val_min: float = 0.35,
+) -> np.ndarray:
+    """使用 HSV 色彩空間分離紅/品紅色 dot (CEP17 Fast Red)。
+
+    Fast Red 染劑偏品紅色調 (Hue ~325-355°)，HSV 對染色強度變異
+    比 RGB 閾值更穩健。
+
+    Args:
+        image: shape ``(H, W, 3)``、``float64``、[0, 1]。
+        hue_ranges: Hue 區間列表 (0-360°)，預設 ``[(0, 20), (325, 360)]``。
+        sat_min: 最低飽和度。
+        val_min: 最低明度。
+
+    Returns:
+        shape ``(H, W)``、``uint8``、{0, 1} 二值遮罩。
+    """
+    if hue_ranges is None:
+        hue_ranges = [(0, 20), (325, 360)]
+
+    img_uint8 = (np.clip(image, 0, 1) * 255).astype(np.uint8)
+    hsv = cv2.cvtColor(img_uint8, cv2.COLOR_RGB2HSV)
+
+    # OpenCV HSV: H=0-180, S=0-255, V=0-255
+    h = hsv[:, :, 0].astype(np.float64) * 2.0   # → 0-360
+    s = hsv[:, :, 1].astype(np.float64) / 255.0  # → 0-1
+    v = hsv[:, :, 2].astype(np.float64) / 255.0  # → 0-1
+
+    hue_mask = np.zeros(h.shape, dtype=bool)
+    for lo, hi in hue_ranges:
+        hue_mask |= (h >= lo) & (h <= hi)
+
+    mask = hue_mask & (s >= sat_min) & (v >= val_min)
+    return mask.astype(np.uint8)
+
+
 # ------------------------------------------------------------------
 # 雜訊移除與形態學後處理
 # ------------------------------------------------------------------
@@ -175,6 +214,39 @@ def morphological_postprocess(
     result = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
     result = cv2.morphologyEx(result, cv2.MORPH_OPEN, kernel)
     return result
+
+
+def filter_by_circularity(
+    binary: np.ndarray,
+    min_circularity: float = 0.4,
+) -> np.ndarray:
+    """過濾非圓形的 connected component，排除邊緣碎片與拉長 artifact。
+
+    circularity = 4π × area / perimeter²，完美圓 = 1.0。
+    DISH 的 dot 通常 > 0.4。
+
+    Args:
+        binary: shape ``(H, W)``、``uint8``、{0, 1}。
+        min_circularity: 最低圓度閾值。
+
+    Returns:
+        shape ``(H, W)``、``uint8``、{0, 1}。
+    """
+    contours, _ = cv2.findContours(
+        binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE,
+    )
+    filtered = np.zeros_like(binary)
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < 1:
+            continue
+        perimeter = cv2.arcLength(cnt, True)
+        if perimeter == 0:
+            continue
+        circularity = 4.0 * np.pi * area / (perimeter * perimeter)
+        if circularity >= min_circularity:
+            cv2.drawContours(filtered, [cnt], -1, 1, -1)
+    return filtered
 
 
 # ------------------------------------------------------------------
@@ -323,9 +395,11 @@ def quantify_overlay_signals(
     img_norm = normalize_image(masked_overlay_image)
     img_gamma = gamma_adjust(img_norm, sigma=gamma_sigma, alpha=gamma_alpha)
 
-    # Step 3: 顏色閾值分離
+    # Step 3: 顏色閾值分離 (RGB + HSV 聯集)
     black_binary = threshold_black(img_gamma, black_brightness_thresh)
-    red_binary = threshold_red(img_gamma, red_r_min, red_b_max, red_diff_min)
+    red_binary_rgb = threshold_red(img_gamma, red_r_min, red_b_max, red_diff_min)
+    red_binary_hsv = threshold_red_hsv(img_gamma)
+    red_binary = np.maximum(red_binary_rgb, red_binary_hsv)
 
     # Step 4: 雜訊移除
     black_binary = remove_small_components(black_binary, min_dot_area)
@@ -334,6 +408,10 @@ def quantify_overlay_signals(
     # Step 5: 形態學後處理
     black_binary = morphological_postprocess(black_binary, morph_kernel_size)
     red_binary = morphological_postprocess(red_binary, morph_kernel_size)
+
+    # Step 5.5: 圓度過濾 — 排除非圓形 artifact
+    black_binary = filter_by_circularity(black_binary, min_circularity=0.4)
+    red_binary = filter_by_circularity(red_binary, min_circularity=0.4)
 
     # Step 6–7: 逐細胞計數
     cell_ids = sorted(set(np.unique(cell_instance_mask)) - {0})

@@ -69,10 +69,9 @@ class Config:
     unet_num_classes: int = 2
     unet_image_size: Tuple[int, int] = (1024, 1024)
 
-    # ========== Core Extraction 參數 ==========
-    membrane_dilate_kernel: int = 7
-    membrane_close_kernel: int = 20
-    max_boundary_gap: int = 400
+    # ========== Core Mask 後處理參數 ==========
+    # 形態學閉合核大小，連接預測中微小的斷裂
+    core_close_kernel: int = 7
 
     # ========== Overlay 參數 (M1) ==========
     mask_blur_sigma: float = 0.0
@@ -90,9 +89,9 @@ class Config:
     gamma_sigma: float = 0.7
     gamma_alpha: float = 1.0
     black_brightness_thresh: float = 0.30
-    red_r_min: float = 0.45
-    red_b_max: float = 0.35
-    red_diff_min: float = 0.10
+    red_r_min: float = 0.50
+    red_b_max: float = 0.52
+    red_diff_min: float = 0.15
     min_dot_area: int = 3
     morph_kernel_size: int = 3
     cluster_area_factor: float = 2.5

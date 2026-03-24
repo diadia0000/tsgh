@@ -45,7 +45,6 @@ LEARNING_RATE = 5e-6              # 繼續訓練時使用較小學習率
 WEIGHT_DECAY = 0.1                # 權重衰減
 BATCH_SIZE = 8                    # 批次大小
 MIN_TRAIN_MASKS = 1               # 最少訓練 mask 數量
-TEST_SPLIT = 0.2                  # 測試集比例 (20%)
 
 # 資料增強參數
 SCALE_RANGE = 1.0                 # 縮放範圍: 圖片會縮放 (1-range/2) ~ (1+range/2)，即 0.5x ~ 1.5x
@@ -182,23 +181,7 @@ def train_cellpose_model(images, masks, file_names):
     # 開始訓練
     print("\n開始訓練...")
     
-    # 分割訓練/測試集
-    n_total = len(images)
-    n_test = max(1, int(n_total * TEST_SPLIT))  # 至少 1 個測試樣本
-    n_train = n_total - n_test
-    
-    # 隨機打亂索引
-    np.random.seed(42)  # 固定隨機種子以便復現
-    indices = np.random.permutation(n_total)
-    train_indices = indices[:n_train]
-    test_indices = indices[n_train:]
-    
-    train_images = [images[i] for i in train_indices]
-    train_masks = [masks[i] for i in train_indices]
-    test_images = [images[i] for i in test_indices]
-    test_masks = [masks[i] for i in test_indices]
-    
-    print(f"訓練集: {len(train_images)} 張, 測試集: {len(test_images)} 張")
+    print(f"訓練集: {len(images)} 張 (全部用於訓練)")
     
     # 注意: train_seg 會在 save_path 下建立 models 子目錄
     # 所以這裡用父目錄，避免 models/models 的問題
@@ -207,10 +190,10 @@ def train_cellpose_model(images, masks, file_names):
     # 套用顏色增強
     if USE_COLOR_AUGMENTATION:
         print(f"\n套用顏色增強...")
-        train_images_aug = apply_color_augmentation(train_images)
+        train_images_aug = apply_color_augmentation(images)
         print(f"  ✓ 已增強 {len(train_images_aug)} 張訓練圖片")
     else:
-        train_images_aug = train_images
+        train_images_aug = images
     
     print(f"\n縮放範圍: {SCALE_RANGE}")
     print(f"重新縮放: {RESCALE}")
@@ -218,9 +201,7 @@ def train_cellpose_model(images, masks, file_names):
     model_path, train_losses, test_losses = train.train_seg(
         model.net,
         train_data=train_images_aug,
-        train_labels=train_masks,
-        test_data=test_images,      # 加入測試集
-        test_labels=test_masks,     # 加入測試集
+        train_labels=masks,
         save_path=save_base,        # 改用父目錄
         n_epochs=N_EPOCHS,
         learning_rate=LEARNING_RATE,
@@ -263,7 +244,7 @@ def main():
         return
     
     # 2. 訓練模型
-    model_path, train_losses, test_losses = train_cellpose_model(images, masks, file_names)
+    model_path, train_losses, _ = train_cellpose_model(images, masks, file_names)
     
     print("\n" + "=" * 60)
     print("全部完成! 🎉")

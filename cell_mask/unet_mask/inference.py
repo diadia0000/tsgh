@@ -402,7 +402,7 @@ def main() -> None:
     model_path = config.model_save_dir / "best_model.pth"
     
     # 輸入路徑 (可以是單張影像或目錄)
-    input_path = config.base_dir / "train" / "test"  # 測試影像目錄
+    input_path = config.base_dir / "tile" / "test"  # 測試影像目錄
     
     # 輸出目錄
     output_dir = config.base_dir / "output" / "inference_results"

@@ -18,7 +18,6 @@
 
 - LAB 色彩空間生成僞標籤 (Pseudo Labels)
 - UNet++ (DenseNet121 Encoder) 細胞膜分割
-- Marker-Controlled Watershed 細胞區域分割
 - 配置化管理 (`config.py`)
 
 ### 🧩 影像磚切割與處理

@@ -5,8 +5,8 @@ M1: IHC-DISH 遮罩疊加模組
 保留 ROI 區域的原始像素，背景填充為指定值。
 
 依賴:
-  - UNet++ 膜分割推論器 (inference.UNetPPInference)
-  - 核心萃取器 (inference.extract_cell_cores)
+  - UNet++ 膜分割推論器 (unet_inference.UNetPPInference)
+  - 膜預測後處理 (unet_inference.postprocess_membrane_mask)
 """
 
 import logging
@@ -54,32 +54,29 @@ def parse_tile_coords(tile_name: str) -> Tuple[int, int]:
 def generate_ihc_core_mask(
     ihc_tile_path: Path,
     unet_inferencer: object,
-    dilate_kernel: int = 7,
-    close_kernel: int = 20,
-    max_boundary_gap: int = 0,
+    close_kernel: int = 7,
 ) -> np.ndarray:
-    """透過 UNet++ 推論 + 核心萃取生成 IHC Her2+ 核心遮罩。
+    """透過 UNet++ 推論 + 輕量後處理生成 IHC Her2+ 核心遮罩。
+
+    模型已直接輸出 filled blob（整塊棕色細胞膜區域），
+    後處理僅連接微小斷裂。
 
     當影像大於模型訓練尺寸時，自動以滑動視窗推論。
 
     Args:
         ihc_tile_path: IHC tile 影像路徑。
         unet_inferencer: 已初始化的 ``UNetPPInference`` 物件。
-        dilate_kernel: 膜膨脹核大小 (pixels)。
-        close_kernel: 形態學閉合核大小 (pixels)。
-        max_boundary_gap: 允許閉合的邊界最大缺口長度 (pixels)。
-            設為 0 時停用邊界缺口封閉。
+        close_kernel: 形態學閉合核大小 (pixels)，連接微小斷裂。
+
     Returns:
         shape ``(H, W)``、值域 ``{0, 1}`` 的 ``uint8`` 核心遮罩。
     """
-    from unet_inference import extract_cell_cores  # noqa: WPS433
+    from unet_inference import postprocess_membrane_mask  # noqa: WPS433
 
-    membrane_mask: np.ndarray = unet_inferencer.predict_single(ihc_tile_path)
-    core_mask = extract_cell_cores(
-        membrane_mask,
-        dilate_kernel_size=dilate_kernel,
+    raw_mask: np.ndarray = unet_inferencer.predict_single(ihc_tile_path)
+    core_mask = postprocess_membrane_mask(
+        raw_mask,
         close_kernel_size=close_kernel,
-        max_boundary_gap=max_boundary_gap,
     )
     return core_mask.astype(np.uint8)
 
