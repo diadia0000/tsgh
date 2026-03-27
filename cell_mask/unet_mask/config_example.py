@@ -80,6 +80,7 @@ class Config:
     fill_close_kernel: int = 11
     fill_min_cell_area: int = 200
     fill_max_edge_hole_area: int = 5000
+    fill_open_kernel: int = 5
 
     # ========== 數據規格 ==========
     image_size: Tuple[int, int] = (1024, 1024)

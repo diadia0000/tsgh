@@ -114,8 +114,9 @@ def separate_dab_qupath(
 def fill_enclosed_regions(
     dab_binary: np.ndarray,
     close_kernel_size: int = 11,
-    min_cell_area: int = 200,
+    min_cell_area: int = 500,
     max_edge_hole_area: int = 5000,
+    open_kernel_size: int = 5,
 ) -> np.ndarray:
     """
     將二值化膜遮罩轉換為被膜包圍的填充細胞區域（含邊緣細胞）
@@ -127,7 +128,8 @@ def fill_enclosed_regions(
        - 不碰邊界的背景 → 被膜完全包圍 → 填充
        - 碰邊界但面積小 → 邊緣細胞內部 → 填充
        - 碰邊界且面積大 → 真正背景 → 保留
-    4. 移除過小前景區域 → 過濾雜訊
+    4. 形態學開運算 → 移除小突起與薄連接雜訊
+    5. 面積過濾 → 移除過小的前景區域
 
     Args:
         dab_binary: 二值化後的膜遮罩 (H, W)，uint8 0/1
@@ -135,6 +137,7 @@ def fill_enclosed_regions(
         min_cell_area: 最小細胞面積 (像素)
         max_edge_hole_area: 邊緣細胞最大面積 (像素)，碰邊界的背景區域
                             小於此值視為邊緣細胞內部而非真正背景
+        open_kernel_size: 形態學開運算核大小（移除小突起雜訊，0=不執行）
 
     Returns:
         filled_mask: 填充後的細胞區域遮罩 (H, W)，uint8 0/1
@@ -182,13 +185,21 @@ def fill_enclosed_regions(
             filled[region] = 1
         # else: 碰邊界且面積大 → 真正背景 → 保留為 0
 
-    # 4. 移除過小前景區域 (雜訊過濾)
+    # 4. 形態學開運算 - 移除小突起與薄連接雜訊
+    if open_kernel_size > 0:
+        open_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (open_kernel_size, open_kernel_size)
+        )
+        filled = cv2.morphologyEx(filled, cv2.MORPH_OPEN, open_kernel)
+
+    # 5. 面積過濾 - 移除過小的前景區域（雜訊）
     labeled_regions, num_regions = measure.label(
         filled, connectivity=2, return_num=True
     )
     for i in range(1, num_regions + 1):
         region = (labeled_regions == i)
-        if np.sum(region) < min_cell_area:
+        area = np.sum(region)
+        if area < min_cell_area:
             filled[region] = 0
 
     return filled
@@ -201,6 +212,7 @@ def generate_mask(
     fill_close_kernel: int = 11,
     fill_min_cell_area: int = 200,
     fill_max_edge_hole_area: int = 5000,
+    fill_open_kernel: int = 5,
 ) -> Tuple[np.ndarray, dict]:
     """
     從 IHC-HER2 影像生成填充細胞區域遮罩
@@ -214,6 +226,7 @@ def generate_mask(
         fill_close_kernel: 形態學閉合核大小
         fill_min_cell_area: 最小細胞面積
         fill_max_edge_hole_area: 邊緣細胞最大面積
+        fill_open_kernel: 形態學開運算核大小
 
     Returns:
         mask: 填充細胞區域遮罩 (H, W)，值域 0 或 255
@@ -231,6 +244,7 @@ def generate_mask(
         close_kernel_size=fill_close_kernel,
         min_cell_area=fill_min_cell_area,
         max_edge_hole_area=fill_max_edge_hole_area,
+        open_kernel_size=fill_open_kernel,
     )
 
     mask_output = (filled_region * 255).astype(np.uint8)
@@ -367,6 +381,7 @@ def process_single_image(
             fill_close_kernel=config.fill_close_kernel,
             fill_min_cell_area=config.fill_min_cell_area,
             fill_max_edge_hole_area=config.fill_max_edge_hole_area,
+            fill_open_kernel=config.fill_open_kernel,
         )
 
         # 儲存遮罩 (R 通道, 背景=黑色)

@@ -408,15 +408,17 @@ class UNetPPInference:
 def postprocess_membrane_mask(
     raw_mask: np.ndarray,
     close_kernel_size: int = 7,
+    min_area: int = 550,
 ) -> np.ndarray:
     """對 UNet++ 的原始膜預測做輕量後處理。
 
     模型已直接輸出 filled blob（整塊棕色細胞膜區域），
-    僅需連接微小斷裂。
+    僅需連接微小斷裂，並移除面積過小的碎片。
 
     Args:
         raw_mask: UNet++ 輸出的二值 mask (H, W)，值域 {0, 1}。
         close_kernel_size: 閉合核大小 (pixels)，越大可跨越越寬的斷裂。
+        min_area: 最小連通區域面積 (pixels)，低於此值的碎片會被移除。
 
     Returns:
         後處理後的二值 mask (H, W)，uint8 {0, 1}。
@@ -429,5 +431,13 @@ def postprocess_membrane_mask(
             (close_kernel_size, close_kernel_size),
         )
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    if min_area > 0:
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+            mask, connectivity=8,
+        )
+        for i in range(1, num_labels):
+            if stats[i, cv2.CC_STAT_AREA] < min_area:
+                mask[labels == i] = 0
 
     return mask
