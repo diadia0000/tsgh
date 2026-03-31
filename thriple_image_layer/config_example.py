@@ -31,13 +31,23 @@ class ModalityConfig:
 
 
 @dataclass
+class PreprocessConfig:
+    """Module 1 前處理參數配置
+
+    Attributes:
+        num_processes: 平行進程數量 (None = 自動: cpu_count - 2)
+        strip_height: 條狀區塊高度 (原始座標系 pixels)
+    """
+
+    num_processes: Optional[int] = None
+    strip_height: int = 4096
+
+
+@dataclass
 class ValisConfig:
     """VALIS 配準參數配置"""
-    
-    max_processed_image_dim_px: int = 2048
-    max_non_rigid_registration_dim_px: int = 2048
+
     align_to_reference: bool = True
-    reference_img_f: str = "HER2_processed.tiff"
 
 
 @dataclass
@@ -131,7 +141,10 @@ class RegistrationConfig:
     
     # 影像模態列表
     modalities: List[ModalityConfig] = field(default_factory=list)
-    
+
+    # Module 1 前處理參數
+    preprocess: PreprocessConfig = field(default_factory=PreprocessConfig)
+
     # VALIS 配準參數
     valis: ValisConfig = field(default_factory=ValisConfig)
     
@@ -199,7 +212,17 @@ class RegistrationConfig:
             Optional[ModalityConfig]: 參考模態配置
         """
         return self.get_modality_by_name(self.reference_modality)
-    
+
+    @property
+    def reference_img_f(self) -> Optional[str]:
+        """參考影像檔名 (從 reference_modality 自動推導)
+
+        Returns:
+            Optional[str]: 參考影像檔名
+        """
+        ref = self.get_reference_modality()
+        return ref.filename if ref else None
+
     @property
     def transform_params_dir(self) -> Path:
         """變換參數目錄

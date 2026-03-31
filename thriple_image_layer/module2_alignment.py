@@ -14,16 +14,17 @@ def align_images(
     Returns:
         registration.Valis: VALIS 對準器物件
     """
+    input_dir = config.input_dir
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 建立影像列表
-    img_list = [str(output_dir / m.filename) for m in config.modalities]
-    
-    # 設定參考影像
+
+    # 建立影像列表 (從 input_dir 讀取 Module 1 輸出的 TIFF)
+    img_list = [str(input_dir / m.filename) for m in config.modalities]
+
+    # 設定參考影像 (從 reference_modality 自動推導)
     reference_img_f = None
-    if config.valis.reference_img_f:
-        reference_img_f = str(output_dir / config.valis.reference_img_f)
+    if config.reference_img_f:
+        reference_img_f = str(input_dir / config.reference_img_f)
     
     # 自訂特徵檢測器 - 增加特徵點數量
     detector = feature_detectors.DiskFD(num_features=10000)  # 預設 7500
@@ -33,16 +34,14 @@ def align_images(
     # 注意：matcher 內部已經包含 detector，不需要額外傳入 feature_detector_cls
     # VALIS 會自動判斷是否需要使用 NonRigidTileRegistrar 進行分塊處理（基於記憶體需求）
     registrar = registration.Valis(
-        src_dir=str(output_dir),
+        src_dir=str(input_dir),
         dst_dir=str(output_dir),
         name="Transform_Params",
         reference_img_f=reference_img_f,
         align_to_reference=config.valis.align_to_reference,
-        max_processed_image_dim_px=config.valis.max_processed_image_dim_px,
-        max_non_rigid_registration_dim_px=config.valis.max_non_rigid_registration_dim_px,
         img_list=img_list,
         compose_non_rigid=True,
-        max_image_dim_px=2048,
+        max_image_dim_px=1024,
         non_rigid_registrar_cls=non_rigid_registrars.SimpleElastixWarper,  # B-spline 配準
         non_rigid_reg_params={
             # 傳遞給 SimpleElastixWarper 的參數
