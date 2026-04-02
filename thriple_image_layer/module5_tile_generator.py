@@ -30,23 +30,34 @@ def _read_region_openslide(
     width: int,
     height: int,
     level: int = 0,
+    pad_to: Tuple[int, int] = None,
 ) -> np.ndarray:
-    """使用 OpenSlide 讀取指定區域
+    """使用 OpenSlide 讀取指定區域，邊界不足時以白色填充至指定尺寸
 
     Args:
         slide: OpenSlide 物件
         x: 左上角 X 座標 (pixels, level 0)
         y: 左上角 Y 座標 (pixels, level 0)
-        width: 區域寬度 (pixels)
-        height: 區域高度 (pixels)
+        width: 實際讀取寬度 (pixels, 已裁切至影像邊界)
+        height: 實際讀取高度 (pixels, 已裁切至影像邊界)
         level: 金字塔層級
+        pad_to: (target_w, target_h) 若提供，將結果填充至此尺寸
 
     Returns:
         np.ndarray: RGB 影像陣列 (H, W, 3)
     """
     # OpenSlide 的 read_region 返回 RGBA，需轉換為 RGB
     region = slide.read_region((x, y), level, (width, height))
-    return np.array(region.convert("RGB"))
+    tile = np.array(region.convert("RGB"))
+
+    if pad_to is not None:
+        target_w, target_h = pad_to
+        if width < target_w or height < target_h:
+            padded = np.full((target_h, target_w, 3), 255, dtype=np.uint8)
+            padded[:height, :width] = tile
+            return padded
+
+    return tile
 
 
 def _save_tile_tiff(
@@ -74,19 +85,21 @@ def _save_triple_tiles_openslide(args: Tuple) -> int:
     """同時保存三組對應的 tiles (HER2, DISH, Merged)
 
     Args:
-        args: (her2_path, dish_path, merged_path, output_dirs, x, y, w, h, compression, level)
+        args: (her2_path, dish_path, merged_path, output_dirs,
+               x, y, w, h, tile_w, tile_h, compression, level)
 
     Returns:
         int: 1 表示成功
     """
     (her2_path, dish_path, merged_path,
-     output_dirs, x, y, w, h, compression, level) = args
+     output_dirs, x, y, w, h, tile_w, tile_h, compression, level) = args
 
     her2_dir, dish_dir, merged_dir = output_dirs
+    pad_to = (tile_w, tile_h)
 
     # 開啟並讀取 HER2 tile
     with openslide.OpenSlide(str(her2_path)) as her2_slide:
-        her2_tile = _read_region_openslide(her2_slide, x, y, w, h, level)
+        her2_tile = _read_region_openslide(her2_slide, x, y, w, h, level, pad_to)
     _save_tile_tiff(
         her2_tile,
         her2_dir / f"tile_x{x}_y{y}.tiff",
@@ -95,7 +108,7 @@ def _save_triple_tiles_openslide(args: Tuple) -> int:
 
     # 開啟並讀取 DISH tile
     with openslide.OpenSlide(str(dish_path)) as dish_slide:
-        dish_tile = _read_region_openslide(dish_slide, x, y, w, h, level)
+        dish_tile = _read_region_openslide(dish_slide, x, y, w, h, level, pad_to)
     _save_tile_tiff(
         dish_tile,
         dish_dir / f"tile_x{x}_y{y}.tiff",
@@ -104,7 +117,7 @@ def _save_triple_tiles_openslide(args: Tuple) -> int:
 
     # 開啟並讀取 Merged tile
     with openslide.OpenSlide(str(merged_path)) as merged_slide:
-        merged_tile = _read_region_openslide(merged_slide, x, y, w, h, level)
+        merged_tile = _read_region_openslide(merged_slide, x, y, w, h, level, pad_to)
     _save_tile_tiff(
         merged_tile,
         merged_dir / f"tile_x{x}_y{y}.tiff",
@@ -200,7 +213,8 @@ def generate_triple_tiles(
             h = min(tile_height, height - y_pos)
             tasks.append((
                 her2_tiff, dish_tiff, merged_tiff,
-                output_dirs, x_pos, y_pos, w, h, compression, level
+                output_dirs, x_pos, y_pos, w, h,
+                tile_width, tile_height, compression, level
             ))
 
     print(f"預計生成 {len(tasks)} 組 tiles（每組包含 HER2, DISH, Merged）\n")

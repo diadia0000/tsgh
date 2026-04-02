@@ -126,7 +126,11 @@ class CziPreprocessor:
             shutil.rmtree(self.temp_dir)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         
-        self.num_processes = num_processes if num_processes else cpu_count()-10
+        self.num_processes = (
+            num_processes
+            or config.preprocess.num_processes
+            or max(1, cpu_count() - 2)
+        )
         print(f"將使用 {self.num_processes} 個獨立進程 (記憶體安全模式)")
 
     def get_conversion_tasks(self) -> List[Dict[str, Any]]:
@@ -134,7 +138,7 @@ class CziPreprocessor:
         # 條狀區塊高度 (原始座標系)
         # 注意：這是在原始解析度下的像素數
         # read_mosaic 會根據 scale_factor 自動縮放輸出
-        strip_height = 4096
+        strip_height = self.config.preprocess.strip_height
         
         file_plans = []
         

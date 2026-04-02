@@ -61,7 +61,7 @@ def generate_thumbnail(
             level=level,
             non_rigid=use_non_rigid,
             crop="overlap",
-            compression='jpeg',
+            compression='deflate',
             Q=100,
             pyramid=True
         )
@@ -70,12 +70,12 @@ def generate_thumbnail(
     if her2_temp_ome.exists():
         print(f"找到現有的 HER2 暫存檔案，跳過重新生成: {her2_temp_ome.name}")
     else:
-        print("對齊並儲存 HER2 影像 (non_rigid=False, 參考影像無需非剛性變換)...")
+        print("對齊並儲存 HER2 影像 (non_rigid=True)...")
         her2_temp = temp_dir / f"her2_warped_lv{level}.tiff"
         her2_obj.warp_and_save_slide(
             str(her2_temp),
             level=level,
-            non_rigid=False,
+            non_rigid=True,
             crop="overlap",
             compression='jpeg',
             Q=100,

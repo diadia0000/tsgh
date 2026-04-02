@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import cell_mask.unet_mask.manual_mask_gui; print\\(''Import OK''\\)\")",
+      "Bash(python -c \"import SimpleITK as sitk; print\\(dir\\(sitk\\)[:20]\\)\")",
+      "Bash(python -c \"import SimpleITK as sitk; print\\(hasattr\\(sitk, ''GetDefaultParameterMap''\\)\\); print\\(hasattr\\(sitk, ''ElastixImageFilter''\\)\\)\")",
+      "Bash(.venv/Scripts/python.exe thriple_image_layer/module3_roi_evaluation.py)",
+      "Bash(find e:/Class/tsgh/.venv -name registration.py -path */valis/*)",
+      "Bash(.venv/Scripts/python.exe -c \":*)"
+    ]
+  }
+}
