@@ -132,16 +132,21 @@ class HER2MembraneDataset(Dataset):
         return image, mask
 
 
-def get_train_transforms(image_size: Tuple[int, int]) -> A.Compose:
+def get_train_transforms(image_size: Tuple[int, int], augmentation: dict) -> A.Compose:
     """
     取得訓練時的資料增強
-    
+
     Args:
         image_size: 輸出影像尺寸 (H, W)
-        
+        augmentation: config.augmentation dict
+
     Returns:
         Albumentations Compose 物件
     """
+    cj = augmentation.get("color_jitter", {})
+    gb = augmentation.get("gaussian_blur", {})
+    et = augmentation.get("elastic_transform", {})
+
     return A.Compose([
         # 確保最小尺寸 (處理邊緣 tile)
         A.PadIfNeeded(
@@ -151,11 +156,11 @@ def get_train_transforms(image_size: Tuple[int, int]) -> A.Compose:
             fill=255,  # 白色填充 (背景)
             fill_mask=0,  # mask 填充 0 (非膜)
         ),
-        
+
         # 幾何變換
-        A.RandomRotate90(p=0.5),
-        A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.5),
+        A.RandomRotate90(p=0.5 if augmentation.get("random_rotate90", True) else 0.0),
+        A.HorizontalFlip(p=0.5 if augmentation.get("horizontal_flip", True) else 0.0),
+        A.VerticalFlip(p=0.5 if augmentation.get("vertical_flip", True) else 0.0),
         A.Affine(
             translate_percent=(-0.1, 0.1),
             scale=(0.9, 1.1),
@@ -163,26 +168,29 @@ def get_train_transforms(image_size: Tuple[int, int]) -> A.Compose:
             border_mode=0,
             p=0.5
         ),
-        
+
         # 彈性變形 (模擬細胞形變)
         A.ElasticTransform(
-            alpha=50,
-            sigma=5,
-            p=0.3
+            alpha=et.get("alpha", 50),
+            sigma=et.get("sigma", 5),
+            p=et.get("p", 0.3),
         ),
-        
+
         # 顏色增強 (應對染色差異)
         A.ColorJitter(
-            brightness=0.2,
-            contrast=0.2,
-            saturation=0.2,
-            hue=0.05,
-            p=0.5
+            brightness=cj.get("brightness", 0.2),
+            contrast=cj.get("contrast", 0.2),
+            saturation=cj.get("saturation", 0.2),
+            hue=cj.get("hue", 0.05),
+            p=0.5,
         ),
-        
+
         # 模糊 (應對對焦差異)
-        A.GaussianBlur(blur_limit=(3, 7), p=0.3),
-        
+        A.GaussianBlur(
+            blur_limit=gb.get("blur_limit", (3, 7)),
+            p=gb.get("p", 0.3),
+        ),
+
         # 正規化 + 轉 Tensor
         A.Normalize(
             mean=[0.485, 0.456, 0.406],
@@ -550,7 +558,7 @@ def main() -> None:
     train_dataset = HER2MembraneDataset(
         image_paths=train_images,
         mask_paths=train_masks,
-        transform=get_train_transforms(config.image_size),
+        transform=get_train_transforms(config.image_size, config.augmentation),
     )
     
     val_dataset = HER2MembraneDataset(
@@ -567,15 +575,18 @@ def main() -> None:
         num_workers=config.num_workers,
         pin_memory=config.pin_memory,
         drop_last=True,
-
+        persistent_workers=True,
+        prefetch_factor=4,
     )
-    
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=config.batch_size,
         shuffle=False,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory,
+        persistent_workers=True,
+        prefetch_factor=4,
     )
     
     # 建立模型
@@ -592,7 +603,7 @@ def main() -> None:
     # 損失函數
     criterion = CombinedLoss(
         dice_weight=config.dice_weight,
-        focal_weight=config.ce_weight,
+        focal_weight=config.focal_weight,
     )
     
     # 優化器

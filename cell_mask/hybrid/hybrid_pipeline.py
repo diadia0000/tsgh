@@ -1,8 +1,14 @@
 """
 IHC-DISH Overlay & Analysis Pipeline — 主入口
 
-串接 M1 (Overlay) → M2 (Segmentation) → M3 (Dot Quantification) → M4 (Export)。
+串接 M1 (Overlay) → M2 (Segmentation) → M3 (Cell Results) → M4 (Export)。
 支援單 tile 處理與批次掃描。
+
+流程:
+  - M1: IHC → UNet++ mask → mask on IHC & DISH → 50/50 alpha blend
+  - M2: Cellpose 分割 IHC-DISH 疊合影像 → cell instance mask
+  - M3: 將 M2 cell mask 套用至 dish_mask_overlay → 逐細胞結果
+  - M4: CSV + overlay 視覺化 + 固定 256×256 逐細胞裁切
 
 Usage:
     # 單 tile
@@ -41,7 +47,10 @@ from m1_overlay import (
     parse_tile_coords,
 )
 from m2_segmentation import CellposeSegmenter, segment_masked_dish
-from m3_dot_quant import CellAnalysisResult, quantify_overlay_signals
+from m3_dot_quant import (
+    CellAnalysisResult,
+    build_all_positive_results,
+)
 from m4_export import export_cell_dot_annotations, export_overlay_visualization
 
 # ------------------------------------------------------------------
@@ -104,16 +113,17 @@ def process_single_tile(
         cellpose_segmenter: 已初始化的 CellposeSegmenter。
         output_dir: 輸出目錄。
         cfg_hash: 配置雜湊。
+        merge_dir: 合併影像目錄 (可選)。
 
     Returns:
-        量化結果列表，失敗時回傳 None。
+        分類結果列表，失敗時回傳 None。
     """
     tile_id = dish_tile_path.stem
     tile_output = output_dir / tile_id
     start_time = time.perf_counter()
 
     try:
-        # ---- M1: 產生核心遮罩並疊加至 DISH ----
+        # ---- M1: 產生核心遮罩 + IHC-DISH 50/50 疊合 ----
         core_mask = generate_ihc_core_mask(
             ihc_tile_path,
             unet_inferencer,
@@ -133,13 +143,14 @@ def process_single_tile(
                 tile_id=tile_id,
                 model_version=config.model_version,
                 config_hash=cfg_hash,
+                crop_size=config.cell_crop_size,
             )
             return []
 
         dish_image = _read_rgb(dish_tile_path)
         ihc_image = _read_rgb(ihc_tile_path)
 
-        # Step 1: 用 IHC 單獨產生的 core_mask 對 IHC 上遮罩
+        # M1 Step 1: IHC core mask → masked IHC
         masked_ihc = apply_mask_to_ihc_image(
             ihc_image,
             core_mask,
@@ -147,7 +158,7 @@ def process_single_tile(
             background_fill_value=config.background_fill_value,
         )
 
-        # Step 3: 將 ihc_core_mask 套到 DISH 上，得到 dish_mask_overlay
+        # M1 Step 2: IHC core mask → masked DISH
         dish_mask_overlay = overlay_ihc_mask_on_dish(
             dish_image,
             core_mask,
@@ -155,72 +166,95 @@ def process_single_tile(
             background_fill_value=config.background_fill_value,
         )
 
-        # Step 4: dish_mask_overlay 與 masked_ihc 各 50% 融合
+        # M1 Step 3: 50/50 alpha blend → IHC-DISH 疊合影像
         overlay_image = fuse_masked_ihc_with_dish(
             dish_mask_overlay,
             masked_ihc,
             ihc_alpha=config.overlay_alpha,
         )
 
+        # 明確定義 M2 Cellpose 的輸入影像
+        m2_input_overlay = overlay_image
+
         # ---- M1 中間結果落地 ----
         tile_output.mkdir(parents=True, exist_ok=True)
-        # Step 2: 輸出 ihc_core_mask（黑白二值: 0/255）
         io.imsave(
             str(tile_output / f"{tile_id}_ihc_core_mask.png"),
             (core_mask * 255).astype(np.uint8),
             check_contrast=False,
         )
-        # 上了遮罩的 IHC（IHC+ 區域保留，背景填黑）
         io.imsave(
             str(tile_output / f"{tile_id}_masked_ihc.png"),
             masked_ihc,
             check_contrast=False,
         )
-        # DISH 套上 IHC core mask 後的中間圖
+        io.imsave(
+            str(tile_output / f"{tile_id}_ihc_tumor.png"),
+            masked_ihc,
+            check_contrast=False,
+        )
         io.imsave(
             str(tile_output / f"{tile_id}_dish_mask_overlay.png"),
             dish_mask_overlay,
             check_contrast=False,
         )
-        # IHC-DISH 疊合圖（僅供醫師目視判讀參考）
         io.imsave(
-            str(tile_output / f"{tile_id}_ihc_dish_overlay.png"),
+            str(tile_output / f"{tile_id}_dish_tumor.png"),
+            dish_mask_overlay,
+            check_contrast=False,
+        )
+        io.imsave(
+            str(tile_output / f"{tile_id}_ihc_dish_overlay_raw.png"),
             overlay_image,
             check_contrast=False,
         )
+        io.imsave(
+            str(tile_output / f"{tile_id}_m2_input_overlay.png"),
+            m2_input_overlay,
+            check_contrast=False,
+        )
 
-        # ---- M2: Cellpose 分割 (使用 DISH mask overlay) ----
+        # ---- M2: Cellpose 分割 IHC-DISH 疊合影像 ----
         instance_mask = segment_masked_dish(
-            dish_mask_overlay,
+            m2_input_overlay,
             cellpose_segmenter,
             remove_border=config.clear_border_cells,
         )
 
-        # ---- M3: Dot 定量 (使用 DISH mask overlay) ----
-        results = quantify_overlay_signals(
-            dish_mask_overlay,
-            instance_mask,
-            gamma_sigma=config.gamma_sigma,
-            gamma_alpha=config.gamma_alpha,
-            black_brightness_thresh=config.black_brightness_thresh,
-            red_r_min=config.red_r_min,
-            red_b_max=config.red_b_max,
-            red_diff_min=config.red_diff_min,
-            min_dot_area=config.min_dot_area,
-            morph_kernel_size=config.morph_kernel_size,
-            cluster_area_factor=config.cluster_area_factor,
+        io.imsave(
+            str(tile_output / f"{tile_id}_m2_cell_instance_mask.tiff"),
+            instance_mask.astype(np.uint16),
+            check_contrast=False,
+        )
+        io.imsave(
+            str(tile_output / f"{tile_id}_m2_cell_instance_binary.png"),
+            ((instance_mask > 0).astype(np.uint8) * 255),
+            check_contrast=False,
         )
 
-        # ---- M4: 匯出 (底圖使用 DISH mask overlay) ----
+        # ---- M3: 將 M2 cell mask 套用至 dish_mask_overlay ----
+        results = build_all_positive_results(instance_mask)
+
+        # ---- M4: 匯出 (單細胞來源為 dish_mask_overlay) ----
         export_cell_dot_annotations(
             dish_mask_overlay,
             instance_mask,
             results,
             tile_output,
+            visualization_image=dish_mask_overlay,
             slide_id=config.slide_id,
             tile_id=tile_id,
             model_version=config.model_version,
             config_hash=cfg_hash,
+            crop_size=config.cell_crop_size,
+        )
+
+        # 醫師檢視圖: IHC-DISH 疊合底圖 + 細胞邊界/標記
+        export_overlay_visualization(
+            overlay_image,
+            instance_mask,
+            results,
+            tile_output / f"{tile_id}_ihc_dish_overlay.png",
         )
 
         # ---- Merge overlay: 將 cellpose 細胞邊界繪製在原始合併影像上 ----
@@ -242,10 +276,12 @@ def process_single_tile(
                 )
 
         elapsed = time.perf_counter() - start_time
+        pos_count = sum(1 for r in results if r.is_her2_positive)
         logger.info(
-            "Tile %s 處理完成: %d 細胞, %.2f 秒",
+            "Tile %s 處理完成: %d 細胞 (%d 陽性), %.2f 秒",
             tile_id,
             len(results),
+            pos_count,
             elapsed,
         )
         return results

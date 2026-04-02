@@ -36,14 +36,14 @@ TRAIN_IMAGE_DIR = BASE_DIR / "train" / "train_picture"   # tiff 圖片檔
 MODEL_DIR = str(BASE_DIR / "models")                     # 模型輸出目錄
 
 # 訓練參數
-MODEL_NAME = "cellpose"   # 模型名稱
+MODEL_NAME = "cellpose_ihc_dish"   # 模型名稱
 # 使用之前訓練的模型繼續訓練 (設為 None 或 "cyto3" 則從頭開始)
 INITIAL_MODEL = "cyto3"  # 繼續訓練
-N_EPOCHS = 200                    # 訓練輪數
-LEARNING_RATE = 5e-6              # 繼續訓練時使用較小學習率
-WEIGHT_DECAY = 0.1                # 權重衰減
-BATCH_SIZE = 16                    # 批次大小
-MIN_TRAIN_MASKS = 4               # 最少訓練 mask 數量
+N_EPOCHS = 250 # 訓練輪數
+LEARNING_RATE = 2e-4  
+WEIGHT_DECAY = 1e-4 # 或是 1e-4
+BATCH_SIZE = 8 # 批次大小
+MIN_TRAIN_MASKS = 4 # 最少訓練 mask 數量
 
 # 資料增強參數
 SCALE_RANGE = 1.0                 # 縮放範圍: 圖片會縮放 (1-range/2) ~ (1+range/2)，即 0.5x ~ 1.5x
@@ -262,22 +262,22 @@ def train_cellpose_model(
     print(f"訓練輪數: {N_EPOCHS}")
     print(f"批次大小: {BATCH_SIZE}")
 
-    if os.path.exists(str(INITIAL_MODEL)):
-        print(f"載入已訓練模型: {INITIAL_MODEL}")
-        model = models.CellposeModel(
-            gpu=True,
-            pretrained_model=INITIAL_MODEL
-        )
-    else:
-        print(f"使用預設模型: {INITIAL_MODEL}")
-        model = models.CellposeModel(
-            gpu=True,
-            pretrained_model=INITIAL_MODEL
-        )
+    model = models.CellposeModel(
+        gpu=True,
+        pretrained_model=INITIAL_MODEL
+    )
+
+    # 切分 train / test (90% / 10%)
+    split_idx = int(len(images) * 0.9)
+    train_images = images[:split_idx]
+    train_masks = masks[:split_idx]
+    test_images = images[split_idx:]
+    test_masks = masks[split_idx:]
+    print(f"\n資料切分: {len(train_images)} 張訓練 / {len(test_images)} 張驗證")
 
     # 擴充訓練集 (原始 + N 份顏色增強副本)
     print(f"\n產生顏色增強副本 (x{N_AUG_COPIES})...")
-    train_images, train_masks = expand_with_augmentation(images, masks)
+    train_images, train_masks = expand_with_augmentation(train_images, train_masks)
 
     print(f"\n縮放範圍: {SCALE_RANGE}")
     print(f"重新縮放: {RESCALE}")
@@ -285,11 +285,12 @@ def train_cellpose_model(
 
     # train_seg 會在 save_path 下建立 models 子目錄
     save_base = str(Path(MODEL_DIR).parent)
-
     model_path, train_losses, test_losses = train.train_seg(
         model.net,
         train_data=train_images,
         train_labels=train_masks,
+        test_data=test_images,    # 加入驗證集
+        test_labels=test_masks,   # 加入驗證集
         save_path=save_base,
         n_epochs=N_EPOCHS,
         learning_rate=LEARNING_RATE,

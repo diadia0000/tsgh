@@ -2,20 +2,18 @@
 M4: CSV 與視覺化匯出模組
 
 匯出內容:
-  1. ``tile_report.csv`` — 每列一個細胞的定量紀錄。
-  2. ``overlay_vis.png`` — 全 tile 細胞邊界 + dot 標註疊加圖。
-  3. ``cells/cell_{id}.png`` — 逐細胞裁切標註影像。
+  1. ``tile_report.csv`` — 每列一個細胞的分類紀錄。
+  2. ``overlay_vis.png`` — 全 tile 細胞邊界 + 分類標註疊加圖。
+  3. ``cells/cell_{id}.png`` — 逐細胞固定尺寸裁切影像。
 """
 
 import csv
 import logging
-import math
 from pathlib import Path
 from typing import List
 
 import cv2
 import numpy as np
-from scipy import ndimage
 
 from m3_dot_quant import CellAnalysisResult
 
@@ -25,9 +23,9 @@ logger = logging.getLogger(__name__)
 # 顏色常數 (BGR for OpenCV)
 # ------------------------------------------------------------------
 _COLOR_BOUNDARY = (0, 255, 0)     # 綠色：細胞邊界
-_COLOR_BLACK_DOT = (255, 0, 0)    # 藍色：black dot 標記
-_COLOR_RED_DOT = (0, 0, 255)      # 紅色：red dot 標記
-_COLOR_TEXT = (255, 255, 255)      # 白色：文字標籤
+_COLOR_POSITIVE = (0, 0, 255)     # 紅色：HER2 陽性
+_COLOR_NEGATIVE = (255, 0, 0)     # 藍色：HER2 陰性
+_COLOR_TEXT = (255, 255, 255)     # 白色：文字標籤
 
 
 # ------------------------------------------------------------------
@@ -36,9 +34,10 @@ _COLOR_TEXT = (255, 255, 255)      # 白色：文字標籤
 
 _CSV_HEADER = [
     "cell_id",
-    "red dot",
-    "black dot",
-    "ratio",
+    "centroid_x",
+    "centroid_y",
+    "is_her2_positive",
+    "hematoxylin_ratio",
 ]
 
 
@@ -50,12 +49,10 @@ def export_tile_csv(
     model_version: str = "v1.0.0",
     config_hash: str = "00000000",
 ) -> Path:
-    """匯出單張 tile 的細胞量化結果至 CSV。
-
-    若 ``results`` 為空，僅寫入表頭 (header-only CSV)。
+    """匯出單張 tile 的細胞分類結果至 CSV。
 
     Args:
-        results: 細胞量化結果列表。
+        results: 細胞分類結果列表。
         output_path: CSV 儲存路徑。
         slide_id: 玻片識別碼。
         tile_id: Tile 識別碼。
@@ -71,34 +68,18 @@ def export_tile_csv(
         writer = csv.writer(fh)
         writer.writerow(_CSV_HEADER)
         for cell in results:
-            writer.writerow(_format_csv_row(cell))
+            writer.writerow([
+                cell.cell_id,
+                f"{cell.centroid_x:.1f}",
+                f"{cell.centroid_y:.1f}",
+                cell.is_her2_positive,
+                f"{cell.hematoxylin_ratio:.4f}",
+            ])
 
     logger.info(
         "CSV 匯出完成: %s (%d 列)", output_path.name, len(results)
     )
     return output_path
-
-
-def _format_csv_row(
-    cell: CellAnalysisResult,
-) -> list:
-    """將單一 CellAnalysisResult 轉換為 CSV 列。"""
-    ratio_str = _ratio_to_str(cell.ratio)
-    return [
-        cell.cell_id,
-        cell.red_dot_count,
-        cell.black_dot_count,
-        ratio_str,
-    ]
-
-
-def _ratio_to_str(ratio: float) -> str:
-    """ratio → CSV 字串格式。"""
-    if math.isinf(ratio):
-        return "inf"
-    if math.isnan(ratio):
-        return "nan"
-    return f"{ratio:.4f}"
 
 
 # ------------------------------------------------------------------
@@ -111,12 +92,12 @@ def export_overlay_visualization(
     results: List[CellAnalysisResult],
     output_path: Path,
 ) -> Path:
-    """匯出含有細胞邊界和 dot 標註的疊加圖。
+    """匯出含有細胞邊界和分類標註的疊加圖。
 
     Args:
         overlay_image: shape ``(H, W, 3)`` RGB。
         cell_instance_mask: shape ``(H, W)`` 實例遮罩。
-        results: 每個細胞的定量結果。
+        results: 每個細胞的分類結果。
         output_path: 輸出 PNG 路徑。
 
     Returns:
@@ -151,41 +132,46 @@ def _draw_cell_labels(
     canvas: np.ndarray,
     results: List[CellAnalysisResult],
 ) -> None:
-    """在每個細胞質心處繪製 B/R 計數標籤。"""
+    """在每個細胞質心處繪製 +/- 分類標籤。"""
     for cell in results:
-        label = f"B{cell.black_dot_count}/R{cell.red_dot_count}"
+        label = "+" if cell.is_her2_positive else "-"
+        color = _COLOR_POSITIVE if cell.is_her2_positive else _COLOR_NEGATIVE
         position = (int(cell.centroid_x), int(cell.centroid_y))
         cv2.putText(
             canvas,
             label,
             position,
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.3,
-            _COLOR_TEXT,
+            0.4,
+            color,
             1,
             cv2.LINE_AA,
         )
 
 
 # ------------------------------------------------------------------
-# 逐細胞裁切影像
+# 逐細胞固定尺寸裁切影像
 # ------------------------------------------------------------------
 
 def export_per_cell_images(
-    overlay_image: np.ndarray,
+    source_image: np.ndarray,
     cell_instance_mask: np.ndarray,
     results: List[CellAnalysisResult],
     output_dir: Path,
-    padding: int = 10,
+    crop_size: int = 64,
 ) -> List[Path]:
-    """裁切每個細胞的局部影像並儲存。
+    """以 Cellpose instance mask 形狀輸出每個細胞的固定尺寸影像。
+
+    每顆細胞先以 instance mask 萃取原始形狀，細胞外背景填 255。
+    之後放入固定 ``crop_size x crop_size`` 白底畫布；若原始細胞塊超過尺寸
+    則以中心裁切保留中間區域。
 
     Args:
-        overlay_image: shape ``(H, W, 3)`` RGB。
+        source_image: shape ``(H, W, 3)`` RGB。
         cell_instance_mask: shape ``(H, W)`` 實例遮罩。
-        results: 細胞量化結果。
+        results: 細胞分類結果。
         output_dir: 輸出資料夾 (``cells/`` 子目錄)。
-        padding: 裁切外擴像素數。
+        crop_size: 裁切尺寸 (正方形邊長, pixels)。
 
     Returns:
         儲存成功的檔案路徑列表。
@@ -194,46 +180,77 @@ def export_per_cell_images(
     cells_dir.mkdir(parents=True, exist_ok=True)
 
     saved_paths: List[Path] = []
+
     for cell in results:
-        path = _export_single_cell(
-            overlay_image,
-            cell_instance_mask,
-            cell,
-            cells_dir,
-            padding,
+        region_mask = (cell_instance_mask == cell.cell_id)
+        if not np.any(region_mask):
+            continue
+
+        cell_crop = _extract_mask_shaped_cell(
+            source_image,
+            region_mask,
         )
-        if path is not None:
-            saved_paths.append(path)
+        fixed_crop = _fit_to_fixed_canvas(
+            cell_crop,
+            crop_size=crop_size,
+            fill_value=255,
+        )
+
+        crop_bgr = cv2.cvtColor(fixed_crop, cv2.COLOR_RGB2BGR)
+        cell_path = cells_dir / f"cell_{cell.cell_id}.png"
+        cv2.imwrite(str(cell_path), crop_bgr)
+        saved_paths.append(cell_path)
 
     logger.info("匯出 %d 張 per-cell 影像至 %s", len(saved_paths), cells_dir)
     return saved_paths
 
 
-def _export_single_cell(
+def _extract_mask_shaped_cell(
     image: np.ndarray,
-    mask: np.ndarray,
-    cell: CellAnalysisResult,
-    output_dir: Path,
-    padding: int,
-) -> Path:
-    """裁切並儲存單一細胞影像。"""
-    region = (mask == cell.cell_id)
-    rows, cols = np.where(region)
-    if rows.size == 0:
-        return None
+    region_mask: np.ndarray,
+) -> np.ndarray:
+    """依 instance mask 形狀擷取單細胞區域，細胞外填 255。
 
-    h, w = image.shape[:2]
-    r_min = max(0, rows.min() - padding)
-    r_max = min(h, rows.max() + padding + 1)
-    c_min = max(0, cols.min() - padding)
-    c_max = min(w, cols.max() + padding + 1)
+    Args:
+        image: shape ``(H, W, 3)``。
+        region_mask: shape ``(H, W)``、bool。
 
-    crop = image[r_min:r_max, c_min:c_max].copy()
-    crop_bgr = cv2.cvtColor(crop, cv2.COLOR_RGB2BGR)
+    Returns:
+        shape ``(h_cell, w_cell, 3)``。
+    """
+    ys, xs = np.where(region_mask)
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
 
-    cell_path = output_dir / f"cell_{cell.cell_id}.png"
-    cv2.imwrite(str(cell_path), crop_bgr)
-    return cell_path
+    src_patch = image[y0:y1, x0:x1]
+    mask_patch = region_mask[y0:y1, x0:x1]
+
+    cell_patch = np.full(src_patch.shape, 255, dtype=image.dtype)
+    cell_patch[mask_patch] = src_patch[mask_patch]
+    return cell_patch
+
+
+def _fit_to_fixed_canvas(
+    patch: np.ndarray,
+    crop_size: int,
+    fill_value: int = 255,
+) -> np.ndarray:
+    """將任意尺寸 patch 放入固定尺寸白底畫布。"""
+    h, w = patch.shape[:2]
+    canvas = np.full((crop_size, crop_size, 3), fill_value, dtype=patch.dtype)
+
+    src_y0 = max((h - crop_size) // 2, 0)
+    src_x0 = max((w - crop_size) // 2, 0)
+    src_y1 = src_y0 + min(h, crop_size)
+    src_x1 = src_x0 + min(w, crop_size)
+
+    trimmed = patch[src_y0:src_y1, src_x0:src_x1]
+    th, tw = trimmed.shape[:2]
+
+    dst_y0 = (crop_size - th) // 2
+    dst_x0 = (crop_size - tw) // 2
+    canvas[dst_y0:dst_y0 + th, dst_x0:dst_x0 + tw] = trimmed
+    return canvas
 
 
 # ------------------------------------------------------------------
@@ -250,19 +267,21 @@ def export_cell_dot_annotations(
     tile_id: str = "unknown",
     model_version: str = "v1.0.0",
     config_hash: str = "00000000",
+    crop_size: int = 64,
 ) -> None:
     """統一匯出 CSV + overlay PNG + per-cell PNG。
 
     Args:
-        overlay_image: 遮罩後 IHC-DISH 疊合影像。
+        overlay_image: IHC-DISH 疊合影像。
         cell_instance_mask: 實例遮罩。
-        results: 細胞量化結果列表。
+        results: 細胞分類結果列表。
         output_dir: 匯出根目錄。
         visualization_image: 視覺化底圖；若為 None 則使用 overlay_image。
         slide_id: 玻片識別碼。
         tile_id: Tile 識別碼。
         model_version: 模型版本。
         config_hash: 配置雜湊。
+        crop_size: 單細胞裁切尺寸 (pixels)。
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -292,4 +311,5 @@ def export_cell_dot_annotations(
         cell_instance_mask,
         results,
         output_dir,
+        crop_size=crop_size,
     )

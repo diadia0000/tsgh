@@ -1,8 +1,10 @@
 """
 M2: Cellpose 實例分割模組
 
-在遮罩後的 DISH 影像上執行 Cellpose 推論，
+在 IHC-DISH 50/50 alpha blending 疊合影像上執行 Cellpose 推論，
 產出 ``cell_instance_mask`` (背景=0, 細胞ID=1..N)。
+
+模型已在醫師標註的 IHC-DISH 疊合影像上重新訓練。
 """
 
 import logging
@@ -90,15 +92,15 @@ def segment_masked_dish(
     segmenter: CellposeSegmenter,
     remove_border: bool = True,
 ) -> np.ndarray:
-    """在遮罩後的 DISH 影像上執行 Cellpose 分割。
+    """在 IHC-DISH 疊合影像上執行 Cellpose 分割。
 
-    傳入的應為經 ``overlay_ihc_mask_on_dish`` 產生的 dish_mask_overlay，
-    即以 IHC core mask 遮罩後的 DISH 影像，
+    傳入的應為經 ``fuse_masked_ihc_with_dish`` 產生的
+    IHC-DISH 50/50 alpha blending 疊合影像，
     非 ROI 區域已填充為背景值。
 
     Args:
         masked_overlay_image: shape ``(H, W, 3)``、``uint8``。
-            非 ROI 區域應為 ``background_fill_value``。
+            IHC-DISH 疊合影像。
         segmenter: 已初始化的 ``CellposeSegmenter``。
         remove_border: 是否移除碰觸邊界的細胞。
 
@@ -126,11 +128,8 @@ def _remove_border_cells(instance_mask: np.ndarray) -> np.ndarray:
     """
     before_ids = set(np.unique(instance_mask)) - {0}
 
-    binary = (instance_mask > 0).astype(np.uint8)
-    cleared = clear_border(binary)
-    keep_mask = cleared > 0
-
-    cleaned = np.where(keep_mask, instance_mask, 0)
+    cleaned = clear_border(instance_mask)
+    cleaned = cleaned.astype(np.int32)
 
     after_ids = set(np.unique(cleaned)) - {0}
     removed_count = len(before_ids) - len(after_ids)

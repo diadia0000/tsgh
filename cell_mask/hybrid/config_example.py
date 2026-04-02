@@ -49,7 +49,15 @@ class Config:
     output_dir: Path = field(
         default_factory=lambda: Path(__file__).parent / "output"
     )
-    # 合併結果目錄
+    # 合併結果目錄（批次 tile）
+    merge_tile_dir: Path = field(
+        default_factory=lambda: Path(__file__).parent / "tile" / "merge"
+    )
+    # 合併結果目錄（test_picture）
+    merge_test_dir: Path = field(
+        default_factory=lambda: Path(__file__).parent / "test_picture" / "mearge"
+    )
+    # 舊欄位保留，供舊版程式碼相容使用
     merge_dir: Path = field(
         default_factory=lambda: Path(__file__).parent / "merge"
     )
@@ -59,9 +67,9 @@ class Config:
     unet_model_path: Path = field(
         default_factory=lambda: Path(__file__).parent / "models" / "best_model_unet.pth"
     )
-    # Cellpose 實例分割模型
+    # Cellpose 實例分割模型 (retrained on IHC-DISH blended overlay)
     cellpose_model_path: Path = field(
-        default_factory=lambda: Path(__file__).parent / "models" / "dish_cellpose"
+        default_factory=lambda: Path(__file__).parent / "models" / "cellpose_ihc_dish_best"
     )
 
     # ========== UNet++ 參數 ==========
@@ -76,7 +84,7 @@ class Config:
     # ========== Overlay 參數 (M1) ==========
     mask_blur_sigma: float = 0.0
     background_fill_value: int = 255
-    overlay_alpha: float = 0.35
+    overlay_alpha: float = 0.5
 
     # ========== Cellpose 參數 (M2) ==========
     cellpose_diameter: Optional[float] = None
@@ -85,16 +93,8 @@ class Config:
     cellpose_gpu: bool = True
     clear_border_cells: bool = True
 
-    # ========== Dot 定量參數 (M3) ==========
-    gamma_sigma: float = 0.7
-    gamma_alpha: float = 1.0
-    black_brightness_thresh: float = 0.30
-    red_r_min: float = 0.50
-    red_b_max: float = 0.52
-    red_diff_min: float = 0.15
-    min_dot_area: int = 3
-    morph_kernel_size: int = 3
-    cluster_area_factor: float = 2.5
+    # ========== 單細胞裁切參數 (M4) ==========
+    cell_crop_size: int = 256
 
     # ========== 執行參數 ==========
     num_workers: int = 4
