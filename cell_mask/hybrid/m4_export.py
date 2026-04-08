@@ -15,7 +15,7 @@ from typing import List
 import cv2
 import numpy as np
 
-from m3_dot_quant import CellAnalysisResult
+from cell_mask.hybrid.m3_cells_generator import CellAnalysisResult
 
 logger = logging.getLogger(__name__)
 

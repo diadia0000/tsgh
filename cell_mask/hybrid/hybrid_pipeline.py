@@ -32,10 +32,12 @@ from typing import List, Optional
 import numpy as np
 from skimage import io
 
-# 將 hybrid 目錄加入 sys.path 以便 config import
+# 將專案根目錄與 hybrid 目錄加入 sys.path，確保直接執行腳本時可解析套件匯入
 _HYBRID_DIR = Path(__file__).resolve().parent
-if str(_HYBRID_DIR) not in sys.path:
-    sys.path.insert(0, str(_HYBRID_DIR))
+_PROJECT_ROOT = _HYBRID_DIR.parent.parent
+for _path in (str(_PROJECT_ROOT), str(_HYBRID_DIR)):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 from config import config, compute_config_hash
 from m1_overlay import (
@@ -47,7 +49,7 @@ from m1_overlay import (
     parse_tile_coords,
 )
 from m2_segmentation import CellposeSegmenter, segment_masked_dish
-from m3_dot_quant import (
+from cell_mask.hybrid.m3_cells_generator import (
     CellAnalysisResult,
     build_all_positive_results,
 )
