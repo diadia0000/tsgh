@@ -71,6 +71,10 @@ class Config:
     cellpose_model_path: Path = field(
         default_factory=lambda: Path(__file__).parent / "models" / "cellpose_ihc_dish_best"
     )
+    # Cellpose DISH 細胞核偵測模型（用於多核細胞排除，取代 HED 閾值法）
+    cellpose_dish_model_path: Path = field(
+        default_factory=lambda: Path(__file__).parent / "models" / "cellpose_dish_best"
+    )
 
     # ========== UNet++ 參數 ==========
     unet_encoder_name: str = "efficientnet-b4"
@@ -86,12 +90,83 @@ class Config:
     background_fill_value: int = 255
     overlay_alpha: float = 0.5
 
-    # ========== Cellpose 參數 (M2) ==========
+    # ========== Cellpose 參數 (M2: IHC-DISH 細胞分割) ==========
     cellpose_diameter: Optional[float] = None
     cellpose_flow_threshold: float = 0.4
     cellpose_cellprob_threshold: float = 0.0
     cellpose_gpu: bool = True
     clear_border_cells: bool = True
+
+    # ========== Cellpose 參數 (M3b: DISH 細胞核偵測，多核排除用) ==========
+    cellpose_dish_diameter: Optional[float] = None
+    cellpose_dish_flow_threshold: float = 0.4
+    cellpose_dish_cellprob_threshold: float = 0.0
+    cellpose_dish_erode_radius: int = 3     # 核 mask 往內縮像素數，0=不縮
+
+    # ========== DISH 訊號點偵測參數 (M3b) ==========
+    # 方案: LAB + H-morphology + 多準則閘控（see docs/dish_dot_detection_spec.md v0.2）
+    #
+    # --- 全域 / 背景 ---
+    dot_background_l_threshold: float = 95.0
+    dot_seed_dilate_radius: int = 3
+    dot_cell_roi_dilate: int = 0
+
+    # --- 點位歸屬 (cell assignment) ---
+    dot_assignment_min_overlap_ratio: float = 0.20
+    dot_assignment_max_distance: float = 3.0
+    dot_assignment_boundary_margin: float = 0.5
+
+    # --- 紅點 (CEP17) ---
+    dot_red_h: float = 12.0
+    dot_red_a_min: float = 25.0
+    dot_red_min_area: int = 7
+    dot_red_max_area: int = 400
+    dot_red_min_circularity: float = 0.55
+    dot_red_min_solidity: float = 0.65
+    dot_red_ring_gap: int = 2
+    dot_red_ring_width: int = 5
+    dot_red_min_contrast: float = 10.0
+
+    # --- 黑點 (HER2) ---
+    dot_black_h: float = 12.0
+    dot_black_l_max: float = 58.0
+    dot_black_min_area: int = 3
+    dot_black_max_area: int = 260
+    dot_black_max_radius: float = 9.0
+    dot_black_min_circularity: float = 0.40
+    dot_black_min_solidity: float = 0.50
+    dot_black_ring_gap: int = 2
+    dot_black_ring_width: int = 5
+    dot_black_min_contrast: float = 14.0
+    dot_black_min_ring_l: float = 30.0
+    dot_black_max_chroma: float = 24.0
+    dot_black_max_median_chroma: float = 22.0
+    dot_black_max_p90_chroma: float = 32.0
+    dot_black_p20_l_max: float = 56.0
+    dot_black_seed_dilate_radius: int = 1
+    dot_black_very_dark_l_max: float = 40.0
+    dot_black_very_dark_min_contrast: float = 10.0
+
+    # --- 藍色區塊 (Hematoxylin 核) 排除用 ---
+    # 使用 HED 色彩反卷積 H 通道 + per-cell 自適應策略：
+    #   1. min_signal 寬鬆閘門篩掉純噪聲細胞
+    #   2. threshold_triangle 於每個細胞自己的 H 直方圖算門檻（對染色變化穩健）
+    #   3. distance-transform watershed 分離相鄰核
+    # 取代原本 8 個絕對閾值（h、h_min、h_low、region_h_peak、seed_dilate…）的精調流程。
+    dot_blue_min_signal: float = 0.05     # 絕對下限 floor：final_thr = max(thr_triangle, min_signal)
+    dot_blue_min_area: int = 40           # 最小核面積（像素）
+    dot_blue_max_area: int = 2500         # 最大核面積（像素）
+    dot_blue_expected_radius: int = 6     # 預期核半徑，watershed peak 最小間距（像素）
+    dot_blue_close_radius: int = 1        # 形態學閉運算半徑，避免單核細小裂縫被切成多區
+    dot_blue_exclude_threshold: int = 2   # DISH 核重疊數 ≥ 此值 → 排除（多核細胞）
+
+    # --- 群聚合併 ---
+    dot_merge_distance: float = 3.0
+    dot_black_merge_distance: float = 1.4
+
+    # --- HER2 擴增判定 ---
+    dot_amplification_ratio: float = 2.0
+    dot_her2_count_threshold: int = 6
 
     # ========== 單細胞裁切參數 (M4) ==========
     cell_crop_size: int = 256

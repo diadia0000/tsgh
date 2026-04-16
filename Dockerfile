@@ -3,9 +3,9 @@
 # 基於您的 venv 環境（Python 3.11.14）建立
 # ============================================================
 
-# 基礎映像：NVIDIA CUDA 12.8.1 + cuDNN + Ubuntu 24.04
+# 基礎映像：NVIDIA CUDA 13.0 + cuDNN + Ubuntu 24.04
 # 來源：https://hub.docker.com/r/nvidia/cuda
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+FROM nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04
 
 # 環境變數設定
 ENV DEBIAN_FRONTEND=noninteractive

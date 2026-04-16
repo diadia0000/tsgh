@@ -53,6 +53,7 @@ from cell_mask.hybrid.m3_cells_generator import (
     CellAnalysisResult,
     build_all_positive_results,
 )
+from m3_dot_detection import detect_all_dots, merge_dot_results_to_cell_analysis
 from m4_export import export_cell_dot_annotations, export_overlay_visualization
 
 # ------------------------------------------------------------------
@@ -83,12 +84,23 @@ def _init_unet_inferencer():
 
 
 def _init_cellpose_segmenter() -> CellposeSegmenter:
-    """延遲初始化 Cellpose 分割器。"""
+    """延遲初始化 Cellpose 分割器（M2 IHC-DISH 細胞分割）。"""
     return CellposeSegmenter(
         model_path=config.cellpose_model_path,
         diameter=config.cellpose_diameter,
         flow_threshold=config.cellpose_flow_threshold,
         cellprob_threshold=config.cellpose_cellprob_threshold,
+        gpu=config.cellpose_gpu,
+    )
+
+
+def _init_dish_cellpose_segmenter() -> CellposeSegmenter:
+    """延遲初始化 DISH 細胞核偵測 Cellpose 分割器（M3b 多核排除用）。"""
+    return CellposeSegmenter(
+        model_path=config.cellpose_dish_model_path,
+        diameter=config.cellpose_dish_diameter,
+        flow_threshold=config.cellpose_dish_flow_threshold,
+        cellprob_threshold=config.cellpose_dish_cellprob_threshold,
         gpu=config.cellpose_gpu,
     )
 
@@ -102,6 +114,7 @@ def process_single_tile(
     dish_tile_path: Path,
     unet_inferencer: object,
     cellpose_segmenter: CellposeSegmenter,
+    dish_cellpose_segmenter: CellposeSegmenter,
     output_dir: Path,
     cfg_hash: str,
     merge_dir: Optional[Path] = None,
@@ -112,7 +125,8 @@ def process_single_tile(
         ihc_tile_path: IHC tile 影像路徑。
         dish_tile_path: DISH tile 影像路徑。
         unet_inferencer: 已初始化的 UNetPPInference。
-        cellpose_segmenter: 已初始化的 CellposeSegmenter。
+        cellpose_segmenter: 已初始化的 CellposeSegmenter（M2 IHC-DISH 細胞分割）。
+        dish_cellpose_segmenter: 已初始化的 CellposeSegmenter（M3b DISH 核偵測）。
         output_dir: 輸出目錄。
         cfg_hash: 配置雜湊。
         merge_dir: 合併影像目錄 (可選)。
@@ -234,8 +248,19 @@ def process_single_tile(
             check_contrast=False,
         )
 
-        # ---- M3: 將 M2 cell mask 套用至 dish_mask_overlay ----
+        # ---- M3: 逐細胞分析 ----
+        # M3a: 所有細胞標記為陽性（centroid + cell_id）
         results = build_all_positive_results(instance_mask)
+
+        # M3b: DISH 細胞核偵測（用純 DISH 圖） + 紅/黑點偵測 + 多核排除
+        dish_nucleus_mask = dish_cellpose_segmenter.predict(dish_image)
+        all_dots, per_cell_dots = detect_all_dots(
+            dish_mask_overlay,
+            instance_mask,
+            config,
+            dish_nucleus_mask=dish_nucleus_mask,
+        )
+        results = merge_dot_results_to_cell_analysis(results, per_cell_dots)
 
         # ---- M4: 匯出 (單細胞來源為 dish_mask_overlay) ----
         export_cell_dot_annotations(
@@ -354,6 +379,7 @@ def run_batch(
 
     unet = _init_unet_inferencer()
     cellpose = _init_cellpose_segmenter()
+    dish_cellpose = _init_dish_cellpose_segmenter()
 
     stats = {"success": 0, "failed": 0, "skipped": 0}
     total = len(paired_tiles)
@@ -363,7 +389,7 @@ def run_batch(
             "[%d/%d] 處理 tile: %s", idx, total, dish_path.stem
         )
         result = process_single_tile(
-            ihc_path, dish_path, unet, cellpose, output_dir, cfg_hash,
+            ihc_path, dish_path, unet, cellpose, dish_cellpose, output_dir, cfg_hash,
             merge_dir=merge_dir,
         )
         if result is None:
@@ -463,9 +489,10 @@ def _run_single_tile_cli(
     cfg_hash = compute_config_hash(config)
     unet = _init_unet_inferencer()
     cellpose = _init_cellpose_segmenter()
+    dish_cellpose = _init_dish_cellpose_segmenter()
 
     process_single_tile(
-        ihc_path, dish_path, unet, cellpose, output_dir, cfg_hash,
+        ihc_path, dish_path, unet, cellpose, dish_cellpose, output_dir, cfg_hash,
         merge_dir=config.merge_tile_dir,
     )
 

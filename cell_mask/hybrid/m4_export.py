@@ -9,6 +9,7 @@ M4: CSV 與視覺化匯出模組
 
 import csv
 import logging
+import math
 from pathlib import Path
 from typing import List
 
@@ -34,11 +35,22 @@ _COLOR_TEXT = (255, 255, 255)     # 白色：文字標籤
 
 _CSV_HEADER = [
     "cell_id",
-    "centroid_x",
-    "centroid_y",
-    "is_her2_positive",
-    "hematoxylin_ratio",
+    "reddot",
+    "blackdot",
+    "ratio",
 ]
+
+
+def _format_count(val: int, excluded: bool) -> str:
+    return "NaN" if excluded else str(int(val))
+
+
+def _format_ratio(ratio: float, excluded: bool) -> str:
+    if excluded:
+        return "NaN"
+    if ratio == float("inf") or ratio == 0.0 or math.isnan(ratio):
+        return "NaN"
+    return f"{ratio:.4f}"
 
 
 def export_tile_csv(
@@ -68,12 +80,15 @@ def export_tile_csv(
         writer = csv.writer(fh)
         writer.writerow(_CSV_HEADER)
         for cell in results:
+            excluded = bool(getattr(cell, "excluded", False))
+            ratio = getattr(cell, "her2_cep17_ratio", 0.0)
+            red = getattr(cell, "cep17_dot_count", 0)
+            black = getattr(cell, "her2_dot_count", 0)
             writer.writerow([
                 cell.cell_id,
-                f"{cell.centroid_x:.1f}",
-                f"{cell.centroid_y:.1f}",
-                cell.is_her2_positive,
-                f"{cell.hematoxylin_ratio:.4f}",
+                _format_count(red, excluded),
+                _format_count(black, excluded),
+                _format_ratio(ratio, excluded),
             ])
 
     logger.info(

@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Read(//tmp/**)",
-      "Bash(python3 -c ':*)",
-      "Bash(python -c \"import sklearn; print\\('sklearn:', sklearn.__version__\\)\")"
-    ]
-  }
-}

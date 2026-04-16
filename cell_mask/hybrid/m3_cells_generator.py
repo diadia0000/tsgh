@@ -37,6 +37,13 @@ class CellAnalysisResult:
     centroid_y: float
     is_her2_positive: bool
     hematoxylin_ratio: float
+    # --- M3b DISH 點位偵測結果（預設值允許舊流程零變動沿用）---
+    her2_dot_count: int = 0
+    cep17_dot_count: int = 0
+    her2_cep17_ratio: float = 0.0
+    is_amplified: bool = False
+    blue_region_count: int = 0
+    excluded: bool = False
 
 
 # ------------------------------------------------------------------
