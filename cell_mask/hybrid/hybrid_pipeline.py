@@ -399,6 +399,12 @@ def run_batch(
         else:
             stats["success"] += 1
 
+    # TODO(slide-level): 若需整體玻片統計，於此聚合 per-tile summary。
+    # 作法：讓 process_single_tile() 額外回傳 DotStatsSummary，收集到 list 後：
+    #   from cell_mask.hybrid.m4_export import DotStatsSummary, write_summary_csv
+    #   slide_stats = DotStatsSummary.aggregate(per_tile_summaries)
+    #   write_summary_csv(slide_stats, output_dir / f"{run_id}_slide_summary.csv")
+
     _log_batch_summary(run_id, stats, total)
     return stats
 

@@ -36,7 +36,12 @@ from config import config  # noqa: E402
 from cell_mask.hybrid.m3_cells_generator import (  # noqa: E402
     build_all_positive_results,
 )
-from cell_mask.hybrid.m4_export import _format_count, _format_ratio  # noqa: E402
+from cell_mask.hybrid.m4_export import (  # noqa: E402
+    DotStatsSummary,
+    _format_count,
+    _format_ratio,
+    write_summary_csv,
+)
 from m2_segmentation import CellposeSegmenter  # noqa: E402
 from m3_dot_detection import (  # noqa: E402
     CellDotResult,
@@ -419,6 +424,18 @@ def main() -> None:
     _export_per_cell_crops(
         dish, mask, cell_results, per_cell_dots,
         OUTPUT_DIR, crop_size=128,
+    )
+
+    # 匯出分類統計摘要
+    stats = DotStatsSummary.from_results(cell_results)
+    write_summary_csv(stats, OUTPUT_DIR / f"{TILE_ID}_summary.csv")
+    logger.info(
+        "分類摘要 — 有效雙色細胞: %d | ratio<2: %d (%.1f%%) | ratio>=2: %d (%.1f%%) "
+        "| copy<4: %d | copy[4,6): %d | copy>=6: %d",
+        stats.valid_cells,
+        stats.ratio_lt2, 100 * stats.ratio_lt2 / max(stats.valid_cells, 1),
+        stats.ratio_gte2, 100 * stats.ratio_gte2 / max(stats.valid_cells, 1),
+        stats.copy_lt4, stats.copy_4to5, stats.copy_gte6,
     )
 
     logger.info("全部輸出已寫入: %s", OUTPUT_DIR)
