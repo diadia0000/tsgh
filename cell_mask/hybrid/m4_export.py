@@ -340,7 +340,7 @@ def write_summary_csv(
     stats: DotStatsSummary,
     output_path: Path,
 ) -> Path:
-    """將 DotStatsSummary 寫成 CSV，百分比於此時計算。"""
+    """Write DotStatsSummary to CSV; percentages are computed here."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     n = stats.valid_cells
@@ -349,20 +349,20 @@ def write_summary_csv(
         return f"{count / n * 100:.1f}%" if n > 0 else "N/A"
 
     rows = [
-        ["統計項目", "數量", "百分比"],
-        ["有效腫瘤細胞（同時含紅點與黑點）", n, "100%" if n > 0 else "N/A"],
-        ["黑點/紅點 比值 < 2", stats.ratio_lt2, pct(stats.ratio_lt2)],
-        ["黑點/紅點 比值 ≥ 2", stats.ratio_gte2, pct(stats.ratio_gte2)],
-        ["HER2 套數（黑點）< 4", stats.copy_lt4, pct(stats.copy_lt4)],
-        ["HER2 套數（黑點）4–5", stats.copy_4to5, pct(stats.copy_4to5)],
-        ["HER2 套數（黑點）≥ 6", stats.copy_gte6, pct(stats.copy_gte6)],
+        ["Metric", "Count", "Percentage"],
+        ["Valid tumor cells (both HER2 and CEP17 dots present)", n, "100%" if n > 0 else "N/A"],
+        ["HER2/CEP17 ratio < 2", stats.ratio_lt2, pct(stats.ratio_lt2)],
+        ["HER2/CEP17 ratio >= 2", stats.ratio_gte2, pct(stats.ratio_gte2)],
+        ["HER2 copy number (black dots) < 4", stats.copy_lt4, pct(stats.copy_lt4)],
+        ["HER2 copy number (black dots) 4-5", stats.copy_4to5, pct(stats.copy_4to5)],
+        ["HER2 copy number (black dots) >= 6", stats.copy_gte6, pct(stats.copy_gte6)],
     ]
 
     with output_path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerows(rows)
 
-    logger.info("統計摘要匯出完成: %s (有效細胞 %d 顆)", output_path.name, n)
+    logger.info("Summary CSV exported: %s (%d valid cells)", output_path.name, n)
     return output_path
 
 

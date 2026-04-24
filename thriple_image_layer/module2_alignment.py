@@ -62,8 +62,8 @@ def align_images(
 
     # 設定參考影像 (從 reference_modality 自動推導)
     reference_img_f = None
-    if config.reference_img_f:
-        reference_img_f = str(input_dir / config.reference_img_f)
+    if config.valis.reference_img_f:
+        reference_img_f = str(input_dir / config.valis.reference_img_f)
     
     # 自訂特徵檢測器 - 增加特徵點數量
     detector = feature_detectors.DiskFD(num_features=20000)  # 預設 7500
@@ -71,6 +71,15 @@ def align_images(
     
     max_image_dim_px = 1024
     elastix_params = _build_elastix_params(max_image_dim_px)
+
+    non_rigid_reg_params = {
+        # 傳遞給 SimpleElastixWarper 的參數
+        # B-spline 天然無翻折問題，更適合醫學影像配準
+        "params": elastix_params,
+        "ammi_weight": 0.5,  # AdvancedMattesMutualInformation 互信息權重
+        "bending_penalty_weight": 0.03,  # 降低平滑懲罰以增加非剛性形變
+        "kp_weight": 0,  # 控制點權重（無控制點時會自動忽略）
+    }
 
     # 初始化 VALIS 配準器
     # 注意：matcher 內部已經包含 detector，不需要額外傳入 feature_detector_cls
@@ -86,17 +95,10 @@ def align_images(
         max_processed_image_dim_px=1024,
         max_image_dim_px=max_image_dim_px,
         non_rigid_registrar_cls=non_rigid_registrars.SimpleElastixWarper,  # B-spline 配準
-        non_rigid_reg_params={
-            # 傳遞給 SimpleElastixWarper 的參數
-            # B-spline 天然無翻折問題，更適合醫學影像配準
-            "params": elastix_params,
-            "ammi_weight": 0.8,  # AdvancedMattesMutualInformation 互信息權重
-            "bending_penalty_weight": 0.12,  # 降低平滑懲罰以增加非剛性形變
-            "kp_weight": 0.08,  # 控制點權重（無控制點時會自動忽略）
-        },
+        non_rigid_reg_params=non_rigid_reg_params,
         matcher=matcher,
     )
-    
+
     # 執行配準
     print("開始執行配準...")
     registrar.register()

@@ -1,0 +1,54 @@
+[project]
+name = "tsgh"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "valis-wsi>=1.2.0",
+    "numpy<2",
+    "cellpose",
+    "segmentation-models-pytorch",
+    "timm",
+    "torch",
+    "torchvision",
+    "albumentations",
+    "opencv-contrib-python-headless<4.9",
+    "scikit-image",
+    "scikit-learn",
+    "scipy",
+    "pandas>=2",
+    "matplotlib",
+    "tifffile",
+    "imagecodecs",
+    "pyvips",
+    "ome-types",
+    "aicspylibczi",
+    "czifile",
+    "zarr",
+    "dask",
+    "tiler",
+    "shapely",
+    "geojson",
+    "roifile",
+    "tqdm",
+    "pyyaml",
+    "huggingface-hub",
+    "einops",
+    "ipykernel",
+    "jupyter-client",
+    "openpyxl",
+    "natsort",
+    "kornia",
+    "openslide-python>=1.4.3",
+    "pillow>=10",
+]
+
+[tool.uv]
+override-dependencies = [
+    "scikit-image>=0.22,<0.25",
+    "numpy<2",
+    "opencv-contrib-python-headless<4.9",
+    "opencv-python-headless<4.9",
+    "opencv-contrib-python<4.9",
+    "opencv-python<4.9",
+    "zarr<3",
+]

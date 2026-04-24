@@ -8,6 +8,9 @@
 import os
 import sys
 
+# 必須在 import pyvips 之前設定，libvips 啟動時才會讀
+_VIPS_THREADS = max(1, (os.cpu_count() or 4) - 4)
+os.environ["VIPS_CONCURRENCY"] = str(_VIPS_THREADS)
 
 import shutil
 from pathlib import Path
@@ -17,6 +20,18 @@ from typing import List, Dict, Any, Tuple
 import numpy as np
 import pyvips
 import aicspylibczi
+
+# 動態設定 concurrency（不同 pyvips 版本 API 不一樣，逐一嘗試）
+for _setter in (
+    lambda n: pyvips.base.concurrency_set(n),
+    lambda n: pyvips.voperation.concurrency_set(n),
+    lambda n: pyvips.concurrency_set(n),
+):
+    try:
+        _setter(_VIPS_THREADS)
+        break
+    except AttributeError:
+        continue
 from tqdm import tqdm
 import gc
 try:
@@ -53,6 +68,9 @@ def process_strip_worker(task: Dict[str, Any]) -> Tuple[bool, str, int]:
     strip_idx: int = task["strip_index"]
     modality: str = task["modality"]
     
+    if os.path.exists(out_path):
+        return (True, out_path, strip_idx)
+
     try:
         # 開啟 CZI 檔案
         czi = aicspylibczi.CziFile(input_path)
@@ -122,15 +140,9 @@ class CziPreprocessor:
         
         # 暫存目錄
         self.temp_dir = self.output_dir / "temp_strips"
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         
-        self.num_processes = (
-            num_processes
-            or config.preprocess.num_processes
-            or max(1, cpu_count() - 2)
-        )
+        self.num_processes = config.preprocess.num_processes-4
         print(f"將使用 {self.num_processes} 個獨立進程 (記憶體安全模式)")
 
     def get_conversion_tasks(self) -> List[Dict[str, Any]]:
@@ -191,7 +203,9 @@ class CziPreprocessor:
                         "strip_index": i,
                         "modality": modality.name
                     })
-                
+
+                del czi
+
                 file_plans.append({
                     "modality": modality.name,
                     "output_path": str(output_path),
@@ -223,7 +237,6 @@ class CziPreprocessor:
         # 使用多進程池執行
         # maxtasksperchild=10 讓每個 worker 處理一定數量後重啟，避免記憶體洩漏
         failed_strips = []
-        
         with Pool(processes=self.num_processes, maxtasksperchild=60) as pool:
             # imap_unordered 不保證順序，但更快
             results = list(tqdm(
@@ -242,11 +255,6 @@ class CziPreprocessor:
             print(f"\n{len(failed_strips)} 個區塊處理失敗，中止組裝")
             return
             
-        # --- 關鍵修正：組裝階段解放 CPU ---
-        # 前面為了多進程限制了單核，現在要改回多執行緒模式
-        # 這樣 tiffsave 才能利用所有核心進行壓縮和寫入
-        print(f"切換為多執行緒模式 (Concurrency: {self.num_processes})")
-        os.environ['VIPS_CONCURRENCY'] = str(self.num_processes)
         # 組裝最終影像
         print("\n組裝 BigTIFF 影像...")
         
@@ -271,21 +279,16 @@ class CziPreprocessor:
                 
                 BATCH_SIZE = 16  # 每批處理的 strips 數量
                 
-                first_strip = pyvips.Image.new_from_file(strip_paths[0], access='sequential')
-                print(f"  每個區塊: {first_strip.width} x {first_strip.height}")
-                print(f"  預計總高度: {first_strip.height * len(strip_paths)}")
-                del first_strip
-                
                 # 第一階段：分批組裝
                 print(f"  分批組裝 ({BATCH_SIZE} strips/batch)...")
                 batches = []
                 for batch_start in range(0, len(strip_paths), BATCH_SIZE):
                     batch_paths = strip_paths[batch_start:batch_start + BATCH_SIZE]
                     
-                    # 在批次內使用 join
-                    batch_result = pyvips.Image.new_from_file(batch_paths[0], access='sequential')
+                    # 在批次內使用 join (.v 檔 memory-mapped，access='random' 可多 thread)
+                    batch_result = pyvips.Image.new_from_file(batch_paths[0], access='random')
                     for p in batch_paths[1:]:
-                        strip = pyvips.Image.new_from_file(p, access='sequential')
+                        strip = pyvips.Image.new_from_file(p, access='random')
                         batch_result = batch_result.join(strip, 'vertical', expand=True)
                     
                     batches.append(batch_result)
@@ -308,19 +311,16 @@ class CziPreprocessor:
                 # 這樣可以避免 "tiff2vips: page 1 differs from page 0" 錯誤
                 result.tiffsave(
                     out_path,
-                    compression="jpeg",  # JPEG 壓縮減少檔案大小
-                    Q=95,                # JPEG 品質
+                    compression="zstd",
                     tile=True,           # 必須使用 tile 格式
-                    tile_width=1024,      # tile 尺寸
-                    tile_height=1024,
+                    tile_width=2048,      # tile 尺寸
+                    tile_height=2048,
                     bigtiff=True,        # 支援大於 4GB 檔案
                     pyramid=True,        # 生成金字塔層級
                     subifd=True,         # 使用 SubIFD 格式存放金字塔層級 (VALIS 相容)
                 )
                 
-                # 檢查檔案大小
-                import os as os_module
-                size_gb = os_module.path.getsize(out_path) / (1024**3)
+                size_gb = os.path.getsize(out_path) / (1024**3)
                 print(f"✓ 完成: {out_path} ({size_gb:.2f} GB)")
                 
             except Exception as e:

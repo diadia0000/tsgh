@@ -59,10 +59,9 @@ def generate_thumbnail(
         dish_obj.warp_and_save_slide(
             str(dish_temp),
             level=level,
-            non_rigid=use_non_rigid,
+            non_rigid=True,
             crop="overlap",
-            compression='deflate',
-            Q=100,
+            compression='lzw',
             pyramid=True
         )
 
@@ -77,15 +76,14 @@ def generate_thumbnail(
             level=level,
             non_rigid=True,
             crop="overlap",
-            compression='jpeg',
-            Q=100,
+            compression='lzw',
             pyramid=True,
         )
     
     # 使用 pyvips 讀取並合併（串流處理，不會一次載入全部記憶體）
     print(f"合併影像中 (使用一般 0.5/0.5 融合)...")
-    dish_vips = pyvips.Image.new_from_file(str(dish_temp_ome), access='sequential')
-    her2_vips = pyvips.Image.new_from_file(str(her2_temp_ome), access='sequential')
+    dish_vips = pyvips.Image.new_from_file(str(dish_temp_ome), access='random')
+    her2_vips = pyvips.Image.new_from_file(str(her2_temp_ome), access='random')
     
     # 記錄原始尺寸（用於最終裁剪）
     target_width = dish_vips.width
@@ -110,8 +108,7 @@ def generate_thumbnail(
         str(output_path),
         pyramid=True,
         bigtiff=True,
-        compression='jpeg',
-        Q=100
+        compression='lzw',
     )
 
     print(f"已儲存: {output_path}")

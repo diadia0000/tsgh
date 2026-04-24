@@ -1,7 +1,7 @@
-統計項目,數量,百分比
-有效腫瘤細胞（同時含紅點與黑點）,15,100%
-黑點/紅點 比值 < 2,6,40.0%
-黑點/紅點 比值 ≥ 2,9,60.0%
-HER2 套數（黑點）< 4,13,86.7%
-HER2 套數（黑點）4–5,2,13.3%
-HER2 套數（黑點）≥ 6,0,0.0%
+Metric,Count,Percentage
+Valid tumor cells (both HER2 and CEP17 dots present),15,100%
+HER2/CEP17 ratio < 2,6,40.0%
+HER2/CEP17 ratio >= 2,9,60.0%
+HER2 copy number (black dots) < 4,13,86.7%
+HER2 copy number (black dots) 4-5,2,13.3%
+HER2 copy number (black dots) >= 6,0,0.0%
