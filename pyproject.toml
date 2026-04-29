@@ -23,7 +23,6 @@ dependencies = [
     "ome-types",
     "aicspylibczi",
     "czifile",
-    "zarr",
     "dask",
     "tiler",
     "shapely",
@@ -40,6 +39,7 @@ dependencies = [
     "kornia",
     "openslide-python>=1.4.3",
     "pillow>=10",
+    "openslide-bin>=4.0.0.13",
 ]
 
 [tool.uv]
@@ -50,5 +50,4 @@ override-dependencies = [
     "opencv-python-headless<4.9",
     "opencv-contrib-python<4.9",
     "opencv-python<4.9",
-    "zarr>=3.1.5",
 ]

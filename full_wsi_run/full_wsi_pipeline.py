@@ -38,8 +38,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import psutil
-import tifffile
-import zarr
+import openslide
 
 # ---- path wiring so we can reuse cell_mask.hybrid modules -----------------
 _THIS_DIR = Path(__file__).resolve().parent
@@ -63,6 +62,7 @@ from cell_mask.hybrid.m3_cells_generator import (  # noqa: E402
 )
 from m3_dot_detection import detect_all_dots, merge_dot_results_to_cell_analysis  # noqa: E402
 from m4_export import DotStatsSummary, write_summary_csv  # noqa: E402
+from m5_tiffwriter import BigTiffWriter  # noqa: E402
 from unet_inference import UNetPPInference, postprocess_membrane_mask  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -78,41 +78,27 @@ logger = logging.getLogger("full_wsi")
 # ---------------------------------------------------------------------------
 
 class WSIReader:
-    """Lazy tile reader for a tiled BigTIFF via tifffile + zarr."""
+    """Lazy tile reader for a WSI via openslide."""
 
     def __init__(self, path: Path) -> None:
         if not path.exists():
             raise FileNotFoundError(f"WSI not found: {path}")
         self.path = path
-        self._store = tifffile.imread(str(path), aszarr=True)
-        root = zarr.open(self._store, mode="r")
-        if isinstance(root, zarr.Group):
-            self._arr = root["0"]
-        else:
-            self._arr = root
-        if self._arr.ndim != 3 or self._arr.shape[2] != 3:
-            raise ValueError(
-                f"Expected (H, W, 3) WSI, got {self._arr.shape} at {path}"
-            )
-        self.height, self.width = self._arr.shape[:2]
+        self._slide = openslide.OpenSlide(str(path))
+        self.width, self.height = self._slide.dimensions
         logger.info(
-            "WSI loaded: %s shape=(%d,%d,3) dtype=%s",
-            path.name, self.height, self.width, self._arr.dtype,
+            "WSI loaded: %s shape=(%d,%d,3)",
+            path.name, self.height, self.width,
         )
 
     def read(self, y0: int, x0: int, y1: int, x1: int) -> np.ndarray:
         y1c = min(y1, self.height)
         x1c = min(x1, self.width)
-        patch = np.asarray(self._arr[y0:y1c, x0:x1c, :])
-        if patch.dtype != np.uint8:
-            patch = patch.astype(np.uint8)
-        return patch
+        region = self._slide.read_region((x0, y0), 0, (x1c - x0, y1c - y0))
+        return np.array(region)[:, :, :3]
 
     def close(self) -> None:
-        try:
-            self._store.close()
-        except Exception:
-            pass
+        self._slide.close()
 
 
 # ---------------------------------------------------------------------------
@@ -187,13 +173,9 @@ class StageProfiler:
     def __init__(self) -> None:
         self.totals: dict = {}
         self.counts: dict = {}
-        self._cuda = False
-        try:
-            import torch  # noqa: WPS433
-            self._cuda = bool(torch.cuda.is_available())
-            self._torch = torch
-        except Exception:
-            self._torch = None
+        import torch  # noqa: WPS433
+        self._cuda = bool(torch.cuda.is_available())
+        self._torch = torch
 
     def section(self, name: str, cuda: bool = True):
         """``cuda=True`` 時 enter/exit 都會 ``torch.cuda.synchronize()``，
@@ -240,138 +222,12 @@ class _Section:
 
 
 def _gpu_mem_mb() -> Optional[Tuple[float, float]]:
-    try:
-        import torch  # noqa: WPS433
-        if not torch.cuda.is_available():
-            return None
-        alloc = torch.cuda.memory_allocated() / (1024 ** 2)
-        peak = torch.cuda.max_memory_allocated() / (1024 ** 2)
-        return alloc, peak
-    except Exception:
+    import torch  # noqa: WPS433
+    if not torch.cuda.is_available():
         return None
-
-
-# ---------------------------------------------------------------------------
-# Stitched output writer (BigTIFF, uint8 core mask + uint32 instance mask)
-# ---------------------------------------------------------------------------
-
-class BigTiffWriter:
-    """Slide 尺寸 mask 輸出。
-
-    - ``pyramidal=False``：直接寫 striped uncompressed BigTIFF（memmap），
-      支援 random-access 寫入；檔案會接近 ``H*W*itemsize``。
-    - ``pyramidal=True`` (uint8 only)：迴圈期間先寫到 ``<path>.raw`` 暫存
-      uncompressed memmap；``close()`` 時轉成 tiled、JPEG 壓縮、含
-      ``pyramid_levels`` 階金字塔的 BigTIFF，然後刪掉 .raw 檔。
-      uint32 / uint16 等 dtype JPEG 不支援，這時會 fallback 為非 pyramidal。
-    """
-
-    def __init__(
-        self,
-        path: Path,
-        height: int,
-        width: int,
-        dtype: np.dtype,
-        *,
-        pyramidal: bool = False,
-        jpeg_quality: int = 85,
-        pyramid_levels: int = 4,
-        tile_size: int = 256,
-    ) -> None:
-        self.path = path
-        self.height = height
-        self.width = width
-        self.dtype = np.dtype(dtype)
-        # JPEG 只支援 uint8 photometric=minisblack/RGB；其他 dtype 自動關閉
-        # pyramidal/JPEG，退回原本的 uncompressed memmap。
-        self._pyramidal = bool(pyramidal) and self.dtype == np.uint8
-        self._jpeg_quality = jpeg_quality
-        self._pyramid_levels = pyramid_levels
-        self._tile_size = tile_size
-
-        bytes_per = self.dtype.itemsize
-        needed = height * width * bytes_per / (1024 ** 3)
-        logger.info(
-            "BigTiff %s: 預留 %.2f GiB (dtype=%s, pyramidal=%s)",
-            path.name, needed, self.dtype, self._pyramidal,
-        )
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Pyramidal 模式時先寫到 .raw 暫存檔；最終檔在 close() 時產出。
-        self._raw_path = (
-            path.with_name(path.name + ".raw") if self._pyramidal else path
-        )
-        self._mm = tifffile.memmap(
-            str(self._raw_path),
-            shape=(height, width),
-            dtype=self.dtype,
-            bigtiff=True,
-        )
-
-    def write(self, y0: int, x0: int, patch: np.ndarray) -> None:
-        h, w = patch.shape[:2]
-        y1 = min(y0 + h, self.height)
-        x1 = min(x0 + w, self.width)
-        self._mm[y0:y1, x0:x1] = patch[:y1 - y0, :x1 - x0].astype(self.dtype)
-
-    def close(self) -> None:
-        try:
-            self._mm.flush()
-        except Exception:
-            pass
-        try:
-            del self._mm
-        except Exception:
-            pass
-        if self._pyramidal:
-            try:
-                self._finalize_pyramidal_jpeg()
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    "%s: pyramidal JPEG conversion failed; "
-                    "保留 raw 檔以便手動轉檔", self.path.name,
-                )
-
-    def _finalize_pyramidal_jpeg(self) -> None:
-        """以 pyvips 把 raw uncompressed BigTIFF 轉成 tiled JPEG 金字塔。
-
-        libvips 內建 streaming pyramid generation：``access="sequential"``
-        + ``pyramid=True`` 會自動產生多階金字塔且不把整張圖載進 RAM。
-        """
-        import pyvips  # noqa: WPS433
-
-        logger.info(
-            "%s: pyvips tiffsave → tiled JPEG pyramid (Q=%d, tile=%d)…",
-            self.path.name, self._jpeg_quality, self._tile_size,
-        )
-        t0 = time.perf_counter()
-        src = pyvips.Image.new_from_file(
-            str(self._raw_path), access="sequential",
-        )
-        # tile + pyramid + JPEG + BigTIFF；libvips 自己決定 pyramid 深度
-        # （下到 tile_size 為止）。subifd=True 讓 levels 用 SubIFD 排放，
-        # QuPath / OpenSlide / ASAP 都支援這種 layout。
-        src.tiffsave(
-            str(self.path),
-            tile=True,
-            tile_width=self._tile_size,
-            tile_height=self._tile_size,
-            pyramid=True,
-            compression="jpeg",
-            Q=int(self._jpeg_quality),
-            bigtiff=True,
-            subifd=True,
-        )
-        try:
-            self._raw_path.unlink()
-        except Exception:
-            pass
-
-        size_mb = self.path.stat().st_size / (1024 ** 2)
-        logger.info(
-            "%s: pyramidal JPEG BigTIFF written (%.1f MB, %.1fs)",
-            self.path.name, size_mb, time.perf_counter() - t0,
-        )
+    alloc = torch.cuda.memory_allocated() / (1024 ** 2)
+    peak = torch.cuda.max_memory_allocated() / (1024 ** 2)
+    return alloc, peak
 
 
 def process_window_batch(
@@ -593,11 +449,9 @@ def run(
             H, W, np.uint8,
             pyramidal=config.stitched_core_pyramidal,
             jpeg_quality=config.stitched_core_jpeg_quality,
-            pyramid_levels=config.stitched_core_pyramid_levels,
             tile_size=config.stitched_core_tile_size,
         )
     if config.save_stitched_instance_mask:
-        # uint32 instance mask 不支援 JPEG；保留 uncompressed memmap。
         inst_writer = BigTiffWriter(
             output_dir / f"{config.slide_id}_instance_mask.tiff",
             H, W, np.uint32,
@@ -662,6 +516,7 @@ def run(
     profiler = StageProfiler()
     state = _PipelineState()  # 共用可變狀態（只由 post thread 寫入）
     state.slide_summary = DotStatsSummary()
+    _thread_errors: List[BaseException] = []
 
     # ---- Stream pipeline: I/O thread → GPU main → Post thread ----
     # 每個 batch 約 350 MB (IHC+DISH+masks)；queue 容量 = pipeline_queue_size。
@@ -697,18 +552,19 @@ def run(
                         kept_ihc.append(ihc_patch)
                         kept_dish.append(dish_patch)
                 io_q.put((kept_windows, kept_ihc, kept_dish, n_blank))
-        except Exception:  # noqa: BLE001
-            logger.exception("io_worker failed")
+        except Exception as exc:
+            _thread_errors.append(exc)
+            raise
         finally:
             io_q.put(SENTINEL)
 
     def post_worker() -> None:
         """Owned-box / CSV / stitch / summary。所有共用狀態只在這裡寫。"""
-        while True:
-            item = post_q.get()
-            if item is SENTINEL:
-                break
-            try:
+        try:
+            while True:
+                item = post_q.get()
+                if item is SENTINEL:
+                    break
                 (kept_windows, kept_ihc, kept_dish,
                  batch_outputs, n_blank, batch_elapsed) = item
                 state.skipped_blank += n_blank
@@ -720,9 +576,6 @@ def run(
                             state.processed_so_far, total,
                             run_start, state.skipped_blank,
                         )
-                if batch_outputs is None:
-                    state.processed_so_far += len(kept_windows)
-                    continue
                 with profiler.section("post_loop", cuda=False):
                     post_start = time.perf_counter()
                     results_per_window: List[List[CellAnalysisResult]] = [
@@ -742,14 +595,9 @@ def run(
                             if not results:
                                 continue
                             if dish_overlay is None or dish_nuc_mask is None:
-                                tile_id = f"w_y{y0}_x{x0}"
-                                logger.warning(
-                                    "%s missing dish overlay/nucleus mask; "
-                                    "skip dot detection",
-                                    tile_id,
+                                raise RuntimeError(
+                                    f"w_y{y0}_x{x0}: missing dish overlay/nucleus mask"
                                 )
-                                results_per_window[i] = results
-                                continue
                             results_per_window[i] = results
                             dish_indices.append(i)
 
@@ -897,8 +745,9 @@ def run(
                         row["gpu_elapsed_sec"] = round(per_window_gpu, 3)
                         row["post_elapsed_sec"] = round(per_window_post, 3)
                     state.per_window_timings.extend(timing_rows)
-            except Exception:  # noqa: BLE001
-                logger.exception("post_worker batch failed (continuing)")
+        except Exception as exc:
+            _thread_errors.append(exc)
+            raise
 
     io_thread = threading.Thread(target=io_worker, name="io_worker", daemon=True)
     post_thread = threading.Thread(target=post_worker, name="post_worker", daemon=True)
@@ -917,22 +766,11 @@ def run(
                 post_q.put(([], [], [], [], n_blank, 0.0))
                 continue
             bstart = time.perf_counter()
-            try:
-                batch_outputs = process_window_batch(
-                    kept_ihc, kept_dish, unet, cellpose, dish_cellpose,
-                    cellpose_batch_size=config.cellpose_batch_size,
-                    profiler=profiler,
-                )
-            except Exception as exc:  # noqa: BLE001
-                tile_ids = [f"w_y{w[0]}_x{w[1]}" for w in kept_windows]
-                logger.error(
-                    "batch [%s] 失敗: %s",
-                    ",".join(tile_ids), exc, exc_info=True,
-                )
-                post_q.put(
-                    (kept_windows, kept_ihc, kept_dish, None, n_blank, 0.0),
-                )
-                continue
+            batch_outputs = process_window_batch(
+                kept_ihc, kept_dish, unet, cellpose, dish_cellpose,
+                cellpose_batch_size=config.cellpose_batch_size,
+                profiler=profiler,
+            )
             batch_elapsed = time.perf_counter() - bstart
             profiler.record("batch_total", batch_elapsed)
             post_q.put(
@@ -946,6 +784,8 @@ def run(
         post_q.put(SENTINEL)
         io_thread.join()
         post_thread.join()
+        if _thread_errors:
+            raise _thread_errors[0]
 
     # 把封裝的狀態解出來給後面的 benchmark 流程用
     global_cell_counter = state.global_cell_counter
