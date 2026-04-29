@@ -5,8 +5,6 @@
     多核排除：Cellpose DISH 模型對純 DISH 圖偵測細胞核 instance，
               計算每個 IHC 細胞與 DISH 核 instance 的重疊數量；
               重疊數 ≥ dot_blue_exclude_threshold → 排除（多核細胞）。
-
-若未提供 dish_nucleus_mask（向下相容），退而使用 HED 色彩反卷積 H 通道偵測。
 """
 
 from __future__ import annotations
@@ -19,20 +17,15 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from scipy.ndimage import distance_transform_edt
 from scipy.spatial import cKDTree
-from skimage.color import rgb2hed, rgb2lab
-from skimage.feature import peak_local_max
-from skimage.filters import threshold_otsu, threshold_triangle
+from skimage.color import rgb2lab
 from skimage.measure import label, regionprops
 from skimage.morphology import (
-    binary_closing,
     binary_dilation,
     binary_erosion,
     disk,
     h_maxima,
     h_minima,
-    remove_small_objects,
 )
-from skimage.segmentation import watershed
 
 from cell_mask.hybrid.m3_cells_generator import CellAnalysisResult
 
@@ -82,7 +75,7 @@ def detect_all_dots(
     dish_image: np.ndarray,
     instance_mask: np.ndarray,
     config: object,
-    dish_nucleus_mask: Optional[np.ndarray] = None,
+    dish_nucleus_mask: np.ndarray,
 ) -> Tuple[List[DetectedDot], Dict[int, CellDotResult]]:
     """偵測 dish_image 中所有 HER2 黑點與 CEP17 紅點，並分配至各細胞。
 
@@ -91,7 +84,7 @@ def detect_all_dots(
         instance_mask: (H, W) 整數，0=背景，1..N=細胞ID。
         config: 具有 ``dot_*`` 欄位的配置物件。
         dish_nucleus_mask: (H, W) int，0=背景，1..M=DISH 細胞核 ID（Cellpose 輸出）。
-            提供時以 DISH 重疊計數取代 HED 藍色核偵測；為 None 時退回 HED 方法。
+            用於計算多核重疊以排除多核細胞。
 
     Returns:
         (all_dots, per_cell_results)
@@ -106,7 +99,6 @@ def detect_all_dots(
     instance_mask_i32 = instance_mask.astype(np.int32, copy=False)
 
     L, a, b = _rgb_to_lab(dish_image)
-    h_chan = _rgb_to_hematoxylin(dish_image)
     bg_mask, cell_roi = _build_masks(L, instance_mask_i32, config)
 
     if not cell_roi.any():
@@ -154,19 +146,12 @@ def detect_all_dots(
     red_dots = _merge_close_dots(red_dots, red_merge_distance)
     black_dots = _merge_close_dots(black_dots, black_merge_distance)
 
-    # 多核排除計數：優先使用 Cellpose DISH 模型，未提供時退回 HED 偵測
-    if dish_nucleus_mask is not None:
-        blue_count_by_cell = _count_dish_nucleus_overlaps(
-            dish_nucleus_mask=dish_nucleus_mask.astype(np.int32, copy=False),
-            strict_instance_mask=instance_mask_i32,
-            cfg=config,
-        )
-    else:
-        blue_count_by_cell = _detect_blue_regions(
-            h_chan=h_chan,
-            strict_instance_mask=instance_mask_i32,
-            cfg=config,
-        )
+    # 多核排除計數：以 Cellpose DISH 核 instance 與 IHC 細胞重疊為依據
+    blue_count_by_cell = _count_dish_nucleus_overlaps(
+        dish_nucleus_mask=dish_nucleus_mask.astype(np.int32, copy=False),
+        strict_instance_mask=instance_mask_i32,
+        cfg=config,
+    )
 
     all_dots = red_dots + black_dots
     per_cell = _group_dots_by_cell(
@@ -188,15 +173,6 @@ def _rgb_to_lab(img_rgb: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray
     """RGB uint8 → LAB float32，回傳 (L, a, b)。"""
     lab = rgb2lab(img_rgb).astype(np.float32)
     return lab[..., 0], lab[..., 1], lab[..., 2]
-
-
-def _rgb_to_hematoxylin(img_rgb: np.ndarray) -> np.ndarray:
-    """RGB uint8 → HED 反卷積後的 H (Hematoxylin) 通道 float32。
-
-    H 通道值越大代表蘇木精染色越濃（藍紫核），白背景與 DAB 黑點趨近 0。
-    """
-    hed = rgb2hed(img_rgb).astype(np.float32)
-    return hed[..., 0]
 
 
 def _build_masks(
@@ -523,152 +499,6 @@ def _count_dish_nucleus_overlaps(
         sum(1 for v in counts.values() if v >= int(getattr(cfg, "dot_blue_exclude_threshold", 2))),
     )
     return counts
-
-
-# ------------------------------------------------------------------
-# 藍色區塊 (Hematoxylin 核) 偵測 — 向下相容備援方法
-# ------------------------------------------------------------------
-
-def _detect_blue_regions(
-    h_chan: np.ndarray,
-    strict_instance_mask: np.ndarray,
-    cfg: object,
-) -> Dict[int, int]:
-    """偵測細胞核（藍色）區塊，回傳 ``{cell_id: region_count}``。
-
-    使用 HED 色彩反卷積後的 H (Hematoxylin) 通道：H 越大 = 蘇木精染色越濃。
-    HER2 黑點屬於 DAB 通道，在 H 通道強度近 0，不會在核中央造成洞，
-    因此單一核不會被切成多個 CC（這是 LAB b* 版本的根本痛點）。
-
-    策略（per-cell 自適應 + 絕對下限 floor）：
-      1. Per-cell threshold_triangle 在細胞自己的 H 直方圖上算門檻
-      2. 用 max(thr_triangle, min_signal) 當最終門檻 — floor 防止弱信號細胞
-         被過度切分（沒有真正的藍色染色時 Triangle 仍會在噪聲上找 split）
-      3. 形態學清理 + 小物件移除
-      4. Distance-transform watershed 分離相鄰核
-      5. 面積過濾計數
-
-    核心優勢：在**有明顯染色的細胞**上門檻完全由該細胞自己的 H 分布決定
-    （適應染色強度差異）；在**弱染色/無核細胞**上 min_signal floor 擋掉噪聲
-    過度切分。取代原本 8 個絕對閾值精調流程。
-    """
-    min_signal = float(getattr(cfg, "dot_blue_min_signal", 0.05))
-    min_area = int(getattr(cfg, "dot_blue_min_area", 40))
-    max_area = int(getattr(cfg, "dot_blue_max_area", 2500))
-    expected_radius = int(getattr(cfg, "dot_blue_expected_radius", 6))
-    close_radius = int(getattr(cfg, "dot_blue_close_radius", 1))
-
-    counts: Dict[int, int] = {}
-
-    cell_ids = sorted(set(np.unique(strict_instance_mask)) - {0})
-    for cid in cell_ids:
-        cell_id = int(cid)
-        cell_mask_full = (strict_instance_mask == cell_id)
-        if not np.any(cell_mask_full):
-            continue
-
-        ys, xs = np.where(cell_mask_full)
-        y0, y1 = int(ys.min()), int(ys.max()) + 1
-        x0, x1 = int(xs.min()), int(xs.max()) + 1
-
-        cell_mask = cell_mask_full[y0:y1, x0:x1]
-        h_local = h_chan[y0:y1, x0:x1]
-
-        # Step 1: Per-cell 自適應門檻（Triangle 對偏態直方圖穩定；失敗退 Otsu）
-        h_in_cell = h_local[cell_mask]
-        if h_in_cell.size == 0:
-            continue
-        try:
-            thr_adaptive = float(threshold_triangle(h_in_cell))
-        except Exception:
-            try:
-                thr_adaptive = float(threshold_otsu(h_in_cell))
-            except Exception:
-                continue
-
-        # Step 2: 絕對下限 floor — 弱信號細胞用 min_signal 擋掉雜訊切分
-        thr = max(thr_adaptive, min_signal)
-        nucleus_mask = (h_local > thr) & cell_mask
-        if not nucleus_mask.any():
-            continue
-
-        # Step 3: 形態學清理 + 小物件移除
-        if close_radius > 0:
-            nucleus_mask = binary_closing(nucleus_mask, disk(close_radius))
-            nucleus_mask &= cell_mask
-        nucleus_mask = remove_small_objects(nucleus_mask, min_size=min_area)
-        if not nucleus_mask.any():
-            continue
-
-        # Step 4: Distance-transform watershed 分離相鄰核
-        distance = distance_transform_edt(nucleus_mask)
-        peak_coords = peak_local_max(
-            distance,
-            min_distance=max(expected_radius, 1),
-            labels=nucleus_mask.astype(np.int32),
-        )
-        if peak_coords.size == 0:
-            # 無內部峰值（如單一小核）→ 整個 nucleus_mask 視為一區
-            labels_ws = label(nucleus_mask, connectivity=2)
-        else:
-            peak_img = np.zeros_like(nucleus_mask, dtype=bool)
-            peak_img[tuple(peak_coords.T)] = True
-            markers = label(peak_img, connectivity=2)
-            labels_ws = watershed(-distance, markers, mask=nucleus_mask)
-
-        # Step 5: 面積過濾計數
-        region_count = 0
-        for p in regionprops(labels_ws):
-            if min_area <= p.area <= max_area:
-                region_count += 1
-
-        if region_count > 0:
-            counts[cell_id] = region_count
-
-    if not counts:
-        logger.info("_detect_blue_regions: 無候選藍色區塊")
-        return {}
-
-    logger.info(
-        "_detect_blue_regions: %d 藍色區塊分佈於 %d 顆細胞",
-        int(sum(counts.values())), len(counts),
-    )
-    return counts
-
-
-def _merge_close_blue(
-    items: List[Tuple[int, float, float]],
-    merge_distance: float,
-) -> List[Tuple[int, float, float]]:
-    """同一 cell_id 內，距離 < merge_distance 的藍色區塊合併為一個。"""
-    if merge_distance <= 0 or len(items) < 2:
-        return items
-
-    coords = np.array([[y, x] for _, y, x in items], dtype=np.float64)
-    tree = cKDTree(coords)
-    pairs = tree.query_pairs(r=merge_distance)
-
-    parent = list(range(len(items)))
-
-    def find(i: int) -> int:
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
-
-    for i, j in pairs:
-        if items[i][0] != items[j][0]:
-            continue
-        ri, rj = find(i), find(j)
-        if ri != rj:
-            parent[ri] = rj
-
-    seen: Dict[int, Tuple[int, float, float]] = {}
-    for idx, item in enumerate(items):
-        root = find(idx)
-        if root not in seen:
-            seen[root] = item
-    return list(seen.values())
 
 
 # ------------------------------------------------------------------

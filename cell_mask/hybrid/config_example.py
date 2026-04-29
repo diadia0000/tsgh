@@ -147,17 +147,8 @@ class Config:
     dot_black_very_dark_l_max: float = 40.0
     dot_black_very_dark_min_contrast: float = 10.0
 
-    # --- 藍色區塊 (Hematoxylin 核) 排除用 ---
-    # 使用 HED 色彩反卷積 H 通道 + per-cell 自適應策略：
-    #   1. min_signal 寬鬆閘門篩掉純噪聲細胞
-    #   2. threshold_triangle 於每個細胞自己的 H 直方圖算門檻（對染色變化穩健）
-    #   3. distance-transform watershed 分離相鄰核
-    # 取代原本 8 個絕對閾值（h、h_min、h_low、region_h_peak、seed_dilate…）的精調流程。
-    dot_blue_min_signal: float = 0.05     # 絕對下限 floor：final_thr = max(thr_triangle, min_signal)
-    dot_blue_min_area: int = 40           # 最小核面積（像素）
-    dot_blue_max_area: int = 2500         # 最大核面積（像素）
-    dot_blue_expected_radius: int = 6     # 預期核半徑，watershed peak 最小間距（像素）
-    dot_blue_close_radius: int = 1        # 形態學閉運算半徑，避免單核細小裂縫被切成多區
+    # --- 多核排除 ---
+    # 以 Cellpose DISH 模型輸出的細胞核 instance 與 IHC 細胞重疊計數判定多核。
     dot_blue_exclude_threshold: int = 2   # DISH 核重疊數 ≥ 此值 → 排除（多核細胞）
 
     # --- 群聚合併 ---

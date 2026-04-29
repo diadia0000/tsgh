@@ -274,14 +274,17 @@ def process_single_tile(
             model_version=config.model_version,
             config_hash=cfg_hash,
             crop_size=config.cell_crop_size,
+            all_dots=all_dots,
+            per_cell_dots=per_cell_dots,
         )
 
-        # 醫師檢視圖: IHC-DISH 疊合底圖 + 細胞邊界/標記
+        # 醫師檢視圖: IHC-DISH 疊合底圖 + 細胞邊界/AMP 標記 + 點位
         export_overlay_visualization(
             overlay_image,
             instance_mask,
             results,
             tile_output / f"{tile_id}_ihc_dish_overlay.png",
+            all_dots=all_dots,
         )
 
         # ---- Merge overlay: 將 cellpose 細胞邊界繪製在原始合併影像上 ----
@@ -294,6 +297,7 @@ def process_single_tile(
                     instance_mask,
                     results,
                     tile_output / f"{tile_id}_merge_overlay.png",
+                    all_dots=all_dots,
                 )
                 logger.info("Merge overlay 匯出完成: %s", tile_id)
             else:
