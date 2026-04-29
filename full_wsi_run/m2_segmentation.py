@@ -63,24 +63,6 @@ class CellposeSegmenter:
             diameter,
         )
 
-    def predict(self, image: np.ndarray) -> np.ndarray:
-        """執行單張影像的實例分割。
-
-        Args:
-            image: shape ``(H, W, 3)``、``uint8`` RGB 影像。
-
-        Returns:
-            shape ``(H, W)``、``int32`` 實例遮罩。
-            背景=0, 細胞ID=1..N。
-        """
-        masks, _, _ = self.model.eval(
-            image,
-            diameter=self.diameter,
-            flow_threshold=self.flow_threshold,
-            cellprob_threshold=self.cellprob_threshold,
-        )
-        return masks.astype(np.int32)
-
     def predict_batch(
         self,
         images: list,

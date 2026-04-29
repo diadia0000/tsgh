@@ -1,7 +1,7 @@
 # Full WSI Run
 
 單入口、sliding-window 方式，對整張 WSI 跑完整 `full_wsi_run` pipeline (M1→M4)。
-用於實測硬體極限，並回報「跑完一張全圖要多久」。
+
 
 ## 架構
 
@@ -33,8 +33,6 @@ python full_wsi_pipeline.py --window 2048 --overlap 128 --limit 20  # smoke test
 | `{slide_id}_summary.csv` | 全 slide 統計（有效雙色細胞、ratio<2/≥2、copy 分布） |
 | `{slide_id}_core_mask.tiff` | （選） stitched UNet++ mask, uint8 BigTIFF |
 | `{slide_id}_instance_mask.tiff` | （選） stitched Cellpose instance mask, uint32 BigTIFF |
-| `per_window_timings.csv` | 每個 window 的耗時 / cell 數 / RSS |
-| `benchmark.json` | 總耗時、總細胞數、peak RAM / GPU、slide summary |
 | `windows/w_y{Y}_x{X}/...` | （選） 保留每個 window 的完整產物，開啟 `save_per_window_artifacts` 才有 |
 
 ## 硬體預估

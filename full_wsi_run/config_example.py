@@ -9,7 +9,7 @@
   - 各 window 走完整 M1→M4，結果合併為 slide-level 輸出
 
 對硬體的要求主要來自 Cellpose 單塊 inference 以及選擇性的 stitched instance mask
-(uint32 BigTIFF, 約為 H*W*4 bytes)。實際 RAM / VRAM / 時間會記錄在 benchmark.json。
+(uint32 BigTIFF, 約為 H*W*4 bytes)。
 """
 
 from dataclasses import dataclass, field

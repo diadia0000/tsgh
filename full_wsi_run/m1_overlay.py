@@ -3,82 +3,10 @@ M1: IHC-DISH 遮罩疊加模組
 
 將 IHC Her2+ 核心遮罩 (core mask) 套用至 DISH 影像，
 保留 ROI 區域的原始像素，背景填充為指定值。
-
-依賴:
-  - UNet++ 膜分割推論器 (unet_inference.UNetPPInference)
-  - 膜預測後處理 (unet_inference.postprocess_membrane_mask)
 """
 
-import logging
-import re
-from pathlib import Path
-from typing import Optional, Tuple
-
-import cv2
 import numpy as np
 from scipy.ndimage import gaussian_filter
-
-logger = logging.getLogger(__name__)
-
-# ------------------------------------------------------------------
-# Tile 座標解析
-# ------------------------------------------------------------------
-_TILE_COORD_PATTERN = re.compile(r"tile_x(\d+)_y(\d+)")
-
-
-def parse_tile_coords(tile_name: str) -> Tuple[int, int]:
-    """從 tile 檔名解析 (x, y) 座標。
-
-    Args:
-        tile_name: 檔名 (含或不含副檔名), 例如 ``tile_x1024_y2048.tiff``。
-
-    Returns:
-        (x, y) 整數座標 tuple。
-
-    Raises:
-        ValueError: 無法從檔名中解析座標。
-    """
-    match = _TILE_COORD_PATTERN.search(tile_name)
-    if match is None:
-        raise ValueError(
-            f"無法從 '{tile_name}' 解析座標，"
-            f"預期格式: tile_x{{int}}_y{{int}}"
-        )
-    return int(match.group(1)), int(match.group(2))
-
-
-# ------------------------------------------------------------------
-# IHC Core Mask 產生器
-# ------------------------------------------------------------------
-
-def generate_ihc_core_mask(
-    ihc_tile_path: Path,
-    unet_inferencer: object,
-    close_kernel: int = 7,
-) -> np.ndarray:
-    """透過 UNet++ 推論 + 輕量後處理生成 IHC Her2+ 核心遮罩。
-
-    模型已直接輸出 filled blob（整塊棕色細胞膜區域），
-    後處理僅連接微小斷裂。
-
-    當影像大於模型訓練尺寸時，自動以滑動視窗推論。
-
-    Args:
-        ihc_tile_path: IHC tile 影像路徑。
-        unet_inferencer: 已初始化的 ``UNetPPInference`` 物件。
-        close_kernel: 形態學閉合核大小 (pixels)，連接微小斷裂。
-
-    Returns:
-        shape ``(H, W)``、值域 ``{0, 1}`` 的 ``uint8`` 核心遮罩。
-    """
-    from unet_inference import postprocess_membrane_mask  # noqa: WPS433
-
-    raw_mask: np.ndarray = unet_inferencer.predict_single(ihc_tile_path)
-    core_mask = postprocess_membrane_mask(
-        raw_mask,
-        close_kernel_size=close_kernel,
-    )
-    return core_mask.astype(np.uint8)
 
 
 # ------------------------------------------------------------------
@@ -214,61 +142,3 @@ def _validate_overlay_inputs(
             f"空間維度不匹配: dish={dish_image.shape[:2]}, "
             f"mask={ihc_core_mask.shape[:2]}"
         )
-
-
-# ------------------------------------------------------------------
-# 批次配對 Tile 載入
-# ------------------------------------------------------------------
-
-def find_paired_tiles(
-    ihc_dir: Path,
-    dish_dir: Path,
-    extensions: Optional[list] = None,
-) -> list:
-    """搜尋座標相同的 IHC/DISH tile 配對。
-
-    Args:
-        ihc_dir: IHC tile 資料夾。
-        dish_dir: DISH tile 資料夾。
-        extensions: 允許的副檔名列表 (含 '.')。
-
-    Returns:
-        已排序的 ``[(ihc_path, dish_path), ...]`` 列表。
-        座標不匹配的 tile 會以 warning 記錄並跳過。
-    """
-    if extensions is None:
-        extensions = [".tiff", ".tif", ".png"]
-
-    ihc_map = _build_coord_map(ihc_dir, extensions)
-    dish_map = _build_coord_map(dish_dir, extensions)
-
-    paired: list = []
-    all_coords = set(ihc_map.keys()) | set(dish_map.keys())
-
-    for coord in sorted(all_coords):
-        if coord not in ihc_map:
-            logger.warning("DISH tile 缺少對應 IHC: coord=%s", coord)
-            continue
-        if coord not in dish_map:
-            logger.warning("IHC tile 缺少對應 DISH: coord=%s", coord)
-            continue
-        paired.append((ihc_map[coord], dish_map[coord]))
-
-    logger.info("配對完成: %d 對 tile", len(paired))
-    return paired
-
-
-def _build_coord_map(
-    tile_dir: Path,
-    extensions: list,
-) -> dict:
-    """建立 {(x, y): Path} 座標索引。"""
-    coord_map: dict = {}
-    for ext in extensions:
-        for filepath in tile_dir.glob(f"*{ext}"):
-            try:
-                coord = parse_tile_coords(filepath.stem)
-                coord_map[coord] = filepath
-            except ValueError:
-                logger.debug("跳過無法解析座標的檔案: %s", filepath.name)
-    return coord_map

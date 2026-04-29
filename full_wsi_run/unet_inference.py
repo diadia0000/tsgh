@@ -187,19 +187,6 @@ class UNetPPInference:
         h, w = original_size
         return mask[:h, :w]
 
-    def predict_proba(
-        self,
-        output: torch.Tensor,
-        original_size: Tuple[int, int],
-    ) -> np.ndarray:
-        """
-        取得機率預測 (Softmax) → (H, W, C)
-        """
-        proba = torch.softmax(output, dim=1).squeeze(0)
-        proba = proba.permute(1, 2, 0).cpu().numpy()
-        h, w = original_size
-        return proba[:h, :w, :]
-
     # ----------------------------------------------------------
     # 推論
     # ----------------------------------------------------------
@@ -208,18 +195,15 @@ class UNetPPInference:
     def predict_single(
         self,
         image: Union[np.ndarray, Path, str],
-        return_proba: bool = False,
-    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+    ) -> np.ndarray:
         """
         單張影像推論 (FP32 + inference_mode)
 
         Args:
             image: 輸入影像 (ndarray 或 路徑)
-            return_proba: 是否回傳機率圖
 
         Returns:
             mask: 二值 Mask (H, W)
-            proba: 機率圖 (H, W, C)，僅當 return_proba=True
         """
         if isinstance(image, (str, Path)):
             image = io.imread(str(image))
@@ -240,26 +224,19 @@ class UNetPPInference:
             )
 
         # 直接推論
-        return self._predict_direct(image, return_proba=return_proba)
+        return self._predict_direct(image)
 
     def _predict_direct(
         self,
         image: np.ndarray,
-        return_proba: bool = False,
-    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+    ) -> np.ndarray:
         """直接推論 (影像 ≤ image_size)。"""
         tensor, original_size = self.preprocess(image)
         tensor = tensor.to(self.device)
 
         output = self.model(tensor)
 
-        mask = self.postprocess(output, original_size)
-
-        if return_proba:
-            proba = self.predict_proba(output, original_size)
-            return mask, proba
-
-        return mask
+        return self.postprocess(output, original_size)
 
     @torch.inference_mode()
     def predict_batch_arrays(
@@ -302,77 +279,6 @@ class UNetPPInference:
             masks.append(pred[i, :h, :w])
         return masks
 
-    @torch.inference_mode()
-    def predict_batch(
-        self,
-        image_paths: List[Path],
-        output_dir: Path,
-        save_proba: bool = False,
-        save_overlay: bool = True,
-        overlay_alpha: float = 0.5,
-    ) -> List[Path]:
-        """
-        批次影像推論
-
-        Args:
-            image_paths: 影像路徑列表
-            output_dir: 輸出目錄
-            save_proba: 是否儲存機率熱圖
-            save_overlay: 是否儲存疊加圖
-            overlay_alpha: 疊加透明度
-
-        Returns:
-            saved_paths: 儲存的 Mask 路徑列表
-        """
-        from tqdm import tqdm  # noqa: WPS433
-
-        output_dir.mkdir(parents=True, exist_ok=True)
-        saved_paths: List[Path] = []
-
-        for img_path in tqdm(image_paths, desc="推論中"):
-            if save_proba:
-                mask, proba = self.predict_single(img_path, return_proba=True)
-            else:
-                mask = self.predict_single(img_path)
-
-            mask_name = f"{img_path.stem}_pred.png"
-            mask_path = output_dir / mask_name
-            io.imsave(str(mask_path), (mask * 255).astype(np.uint8))
-            saved_paths.append(mask_path)
-
-            if save_proba:
-                proba_name = f"{img_path.stem}_proba.png"
-                proba_path = output_dir / proba_name
-                membrane_proba = (proba[:, :, 1] * 255).astype(np.uint8)
-                io.imsave(str(proba_path), membrane_proba)
-
-            if save_overlay:
-                original = io.imread(str(img_path))
-                if original.ndim == 2:
-                    original = np.stack([original] * 3, axis=-1)
-                elif original.shape[2] == 4:
-                    original = original[:, :, :3]
-                overlay = self._create_overlay(original, mask, overlay_alpha)
-                overlay_name = f"{img_path.stem}_overlay.png"
-                overlay_path = output_dir / overlay_name
-                io.imsave(str(overlay_path), overlay)
-
-        return saved_paths
-
-    @staticmethod
-    def _create_overlay(
-        image: np.ndarray,
-        mask: np.ndarray,
-        alpha: float = 0.5,
-    ) -> np.ndarray:
-        """建立膜區域紅色疊加視覺化圖。"""
-        overlay = image.copy()
-        membrane_mask = mask == 1
-        overlay[membrane_mask] = (
-            overlay[membrane_mask] * (1 - alpha)
-            + np.array([255, 0, 0]) * alpha
-        ).astype(np.uint8)
-        return overlay
 
 
 # =====================================================================

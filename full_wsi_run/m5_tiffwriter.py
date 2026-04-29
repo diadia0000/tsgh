@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from pathlib import Path
 
 import numpy as np
@@ -83,7 +82,6 @@ class BigTiffWriter:
         self._mm.flush()
         del self._mm
 
-        t0 = time.perf_counter()
         img = pyvips.Image.rawload(
             str(self._raw_path),
             self.width, self.height, 1,
@@ -106,6 +104,6 @@ class BigTiffWriter:
 
         size_mb = self.path.stat().st_size / (1024 ** 2)
         logger.info(
-            "%s written: %.1f MB in %.1fs (pyramidal=%s)",
-            self.path.name, size_mb, time.perf_counter() - t0, self._pyramidal,
+            "%s written: %.1f MB (pyramidal=%s)",
+            self.path.name, size_mb, self._pyramidal,
         )
