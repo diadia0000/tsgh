@@ -108,7 +108,8 @@ def generate_thumbnail(
         str(output_path),
         pyramid=True,
         bigtiff=True,
-        compression='lzw',
+        Q=95,
+        compression='jpeg',
     )
 
     print(f"已儲存: {output_path}")

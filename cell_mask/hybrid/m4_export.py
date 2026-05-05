@@ -106,6 +106,21 @@ def export_tile_csv(
 # 全 tile overlay 視覺化
 # ------------------------------------------------------------------
 
+def render_overlay_image(
+    overlay_image: np.ndarray,
+    cell_instance_mask: np.ndarray,
+    results: List[CellAnalysisResult],
+    all_dots: Optional[List[DetectedDot]] = None,
+) -> np.ndarray:
+    """細胞邊界 + 標籤 + 紅/黑點渲染成 RGB numpy array，不寫檔。"""
+    canvas = cv2.cvtColor(overlay_image.copy(), cv2.COLOR_RGB2BGR)
+    _draw_cell_boundaries(canvas, cell_instance_mask)
+    _draw_cell_labels(canvas, results)
+    if all_dots:
+        _draw_dots(canvas, all_dots)
+    return cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+
+
 def export_overlay_visualization(
     overlay_image: np.ndarray,
     cell_instance_mask: np.ndarray,

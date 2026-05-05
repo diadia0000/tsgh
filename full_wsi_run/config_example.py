@@ -60,14 +60,9 @@ class FullWSIConfig:
             "/home/sec312/project/tsgh/full_wsi_run/output"
         )
     )
-    # 是否為每個 window 保存完整 per-tile 產物（overlay、cells/ 等）。
-    # 對大張 WSI 會產生非常多檔案（~10k 以上），關掉可顯著加速。
-    save_per_window_artifacts: bool = False
-    # 是否產生 slide-level 的 stitched instance mask (uint32 BigTIFF)。
-    # 檔案會很大 (~H*W*4 bytes)。關閉可省磁碟與時間。
-    save_stitched_instance_mask: bool = False
-    # 是否產生 slide-level stitched core mask (uint8 BigTIFF)
-    save_stitched_core_mask: bool = True
+    # 主要輸出：slide-level stitched overlay RGB BigTIFF（醫師判讀用）。
+    # 包含細胞邊界 + HER2/CEP17 點標註，由 render_overlay_image 逐 window 拼接。
+    save_stitched_overlay: bool = True
 
     # ========== Sliding Window 參數 ==========
     # 每塊 window 大小 (pixels)。建議 1024 或 2048；過大 Cellpose 會 OOM。
@@ -91,16 +86,28 @@ class FullWSIConfig:
     # 0 = os.cpu_count()；1 = 關閉並行（serial，適合 debug / 重現）。
     dots_workers: int = 0
 
-    # ========== Stream Pipeline ==========
-    # 三段式 pipeline (I/O → GPU → Post) 的 queue 大小；1 = 強制 serial。
-    pipeline_queue_size: int = 8
+    # ========== I/O Prefetch (DataLoader) ==========
+    # DataLoader sub-process 數量；每個 worker 持有自己的 openslide handle。
+    # 0 = 同步讀（不 prefetch，僅供 debug）；2-4 一般夠用，HDD/慢存儲可調更高。
+    wsi_io_workers: int = 4
+    # DataLoader prefetch_factor：每個 worker 預先準備幾個 batch。
+    # 整體 buffered batch 上限 = num_workers * prefetch_factor。
+    wsi_io_prefetch_factor: int = 2
+
+    # ========== Batch Sizes ==========
+    # WSI window batch size (UNet++ + window-level processing)
+    wsi_batch_size: int = 4
+    # Cellpose predict_batch batch size
+    cellpose_batch_size: int = 4
+
+    # ========== BigTIFF 壓縮 (overlay) ==========
+    stitched_overlay_pyramidal: bool = True
+    stitched_overlay_jpeg_quality: int = 85
+    stitched_overlay_tile_size: int = 256
 
     # ========== BigTIFF 壓縮 (core_mask) ==========
-    # 把巨大的 stitched core_mask 改寫成 tiled + JPEG + pyramid，方便
-    # QuPath / ASAP / OpenSlide 導覽。uint8 only；其他 dtype 會自動關閉。
     stitched_core_pyramidal: bool = True
     stitched_core_jpeg_quality: int = 85
-    stitched_core_pyramid_levels: int = 4
     stitched_core_tile_size: int = 256
 
     # ========== UNet++ 參數 ==========

@@ -10,12 +10,13 @@ import csv
 import logging
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 import cv2
 import numpy as np
 
 from cell_mask.hybrid.m3_cells_generator import CellAnalysisResult
+from cell_mask.hybrid.m3_dot_detection import DetectedDot
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +26,29 @@ logger = logging.getLogger(__name__)
 _COLOR_BOUNDARY = (0, 255, 0)     # 綠色：細胞邊界
 _COLOR_POSITIVE = (0, 0, 255)     # 紅色：HER2 陽性
 _COLOR_NEGATIVE = (255, 0, 0)     # 藍色：HER2 陰性
+_COLOR_HER2 = (0, 0, 0)           # 黑色：HER2 黑點
+_COLOR_CEP17 = (0, 0, 220)        # 紅色：CEP17 紅點
+_COLOR_DOT_CROSS = (255, 255, 255) # 白色：dot 中心十字
 
 
 # ------------------------------------------------------------------
 # 全 tile overlay 視覺化
 # ------------------------------------------------------------------
+
+def render_overlay_image(
+    overlay_image: np.ndarray,
+    cell_instance_mask: np.ndarray,
+    results: List[CellAnalysisResult],
+    all_dots: Optional[List[DetectedDot]] = None,
+) -> np.ndarray:
+    """細胞邊界 + 標籤 + 紅/黑點渲染成 RGB numpy array，不寫檔。"""
+    canvas = cv2.cvtColor(overlay_image.copy(), cv2.COLOR_RGB2BGR)
+    _draw_cell_boundaries(canvas, cell_instance_mask)
+    _draw_cell_labels(canvas, results)
+    if all_dots:
+        _draw_dots(canvas, all_dots)
+    return cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+
 
 def export_overlay_visualization(
     overlay_image: np.ndarray,
@@ -91,6 +110,23 @@ def _draw_cell_labels(
             color,
             1,
             cv2.LINE_AA,
+        )
+
+
+def _draw_dots(
+    canvas: np.ndarray,
+    dots: Iterable[DetectedDot],
+) -> None:
+    """在 canvas 上繪製每個 dot：彩色圓 + 白色中心十字。"""
+    for d in dots:
+        color = _COLOR_HER2 if d.dot_type == "her2" else _COLOR_CEP17
+        r = max(3, int(round(d.radius + 1)))
+        cy, cx = int(round(d.y)), int(round(d.x))
+        cv2.circle(canvas, (cx, cy), r, color, 1, cv2.LINE_AA)
+        cv2.drawMarker(
+            canvas, (cx, cy), _COLOR_DOT_CROSS,
+            markerType=cv2.MARKER_CROSS,
+            markerSize=3, thickness=1, line_type=cv2.LINE_AA,
         )
 
 

@@ -1,31 +1,42 @@
-"""M6 — BigTIFF slide-level mask writer (pyvips backend)."""
+"""M5 — BigTIFF slide-level writer (pyvips backend).
+
+Supports uint8 (JPEG) and uint32 (LZW) buffers, single-band or 3-band.
+"""
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pyvips
 
 logger = logging.getLogger("full_wsi")
 
-_NUMPY_TO_VIPS = {
+_VIPS_FORMAT: dict[np.dtype, str] = {
     np.dtype("uint8"): "uchar",
     np.dtype("uint32"): "uint",
 }
 
 
 class BigTiffWriter:
-    """Slide-level mask writer backed by pyvips.
+    """Slide-level tiled BigTIFF writer.
 
-    Patches are accumulated in a raw numpy memmap; ``close()`` converts it to
-    a tiled (optionally JPEG-pyramid) BigTIFF via ``pyvips.rawload → tiffsave``,
-    which streams the data without loading the whole slide into RAM.
+    Tiles are accumulated in a numpy array. On close(), the buffer is
+    written via pyvips as a tiled (pyramidal) BigTIFF.
 
-    Both pyramidal and non-pyramidal outputs share the same code path —
-    the only difference is whether JPEG compression and ``pyramid=True`` are
-    passed to ``tiffsave``.
+    Args:
+        path:          Output path.
+        height:        Slide height in pixels.
+        width:         Slide width in pixels.
+        dtype:         Buffer dtype — np.uint8 (JPEG) or np.uint32 (LZW).
+        bands:         Number of channels. 1 for masks, 3 for RGB overlay.
+        pyramidal:     Write sub-IFD pyramid levels.
+        jpeg_quality:  JPEG Q (only used when dtype=uint8).
+        tile_size:     Tile size in pixels.
+
+    Peak RAM = height × width × bands × itemsize bytes.
     """
 
     def __init__(
@@ -33,75 +44,64 @@ class BigTiffWriter:
         path: Path,
         height: int,
         width: int,
-        dtype: np.dtype,
+        dtype: type = np.uint8,
         *,
-        pyramidal: bool = False,
+        bands: int = 1,
+        pyramidal: bool = True,
         jpeg_quality: int = 85,
         tile_size: int = 256,
     ) -> None:
-        dtype = np.dtype(dtype)
-        if dtype not in _NUMPY_TO_VIPS:
-            raise ValueError(
-                f"Unsupported dtype {dtype}; supported: {list(_NUMPY_TO_VIPS)}"
-            )
-        if pyramidal and dtype != np.dtype(np.uint8):
-            raise ValueError(
-                f"pyramidal JPEG requires uint8, got {dtype}; "
-                "pass pyramidal=False for non-uint8 masks"
-            )
-
         self.path = path
         self.height = height
         self.width = width
-        self.dtype = dtype
+        self._dtype = np.dtype(dtype)
+        self._bands = bands
         self._pyramidal = pyramidal
         self._jpeg_quality = jpeg_quality
         self._tile_size = tile_size
-        self._vips_fmt = _NUMPY_TO_VIPS[dtype]
 
-        needed_gib = height * width * dtype.itemsize / (1024 ** 3)
+        shape = (height, width, bands) if bands > 1 else (height, width)
+        needed_gib = height * width * bands * self._dtype.itemsize / (1024 ** 3)
         logger.info(
-            "BigTiffWriter %s: %.2f GiB raw buffer (dtype=%s, pyramidal=%s)",
-            path.name, needed_gib, dtype, pyramidal,
+            "BigTiffWriter %s: %.2f GiB buffer (%s x%d bands, pyramidal=%s)",
+            path.name, needed_gib, self._dtype, bands, pyramidal,
         )
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._raw_path = path.with_name(path.name + ".raw")
-        self._mm = np.memmap(
-            str(self._raw_path), dtype=self.dtype, mode="w+",
-            shape=(height, width),
-        )
+        self._buffer: Optional[np.ndarray] = np.zeros(shape, dtype=self._dtype)
 
     def write(self, y0: int, x0: int, patch: np.ndarray) -> None:
         h, w = patch.shape[:2]
         y1 = min(y0 + h, self.height)
         x1 = min(x0 + w, self.width)
-        self._mm[y0:y1, x0:x1] = patch[:y1 - y0, :x1 - x0].astype(self.dtype)
+        self._buffer[y0:y1, x0:x1] = patch[:y1 - y0, :x1 - x0]
 
     def close(self) -> None:
-        self._mm.flush()
-        del self._mm
+        buf = self._buffer
+        # pyvips new_from_memory requires explicit band dimension
+        if buf.ndim == 2:
+            buf = buf[:, :, np.newaxis]
+        h, w, b = buf.shape
 
-        img = pyvips.Image.rawload(
-            str(self._raw_path),
-            self.width, self.height, 1,
-            format=self._vips_fmt,
-        )
-        kwargs: dict = dict(
+        vips_fmt = _VIPS_FORMAT.get(self._dtype, "uchar")
+        # Pass a memoryview (zero-copy) instead of tobytes() to avoid doubling peak RAM.
+        img = pyvips.Image.new_from_memory(np.ascontiguousarray(buf).data, w, h, b, vips_fmt)
+
+        use_jpeg = self._dtype == np.dtype("uint8")
+        save_kwargs: dict = dict(
             tile=True,
             tile_width=self._tile_size,
             tile_height=self._tile_size,
             pyramid=self._pyramidal,
-            compression="jpeg" if self._pyramidal else "none",
-            bigtiff=True,
-            subifd=self._pyramidal,
+            compression="jpeg" if use_jpeg else "lzw",
+            bigtiff=True
         )
-        if self._pyramidal:
-            kwargs["Q"] = self._jpeg_quality
+        if use_jpeg:
+            save_kwargs["Q"] = self._jpeg_quality
 
-        img.tiffsave(str(self.path), **kwargs)
-        self._raw_path.unlink()
-
+        img.tiffsave(str(self.path), **save_kwargs)
+        del self._buffer
+        self._buffer = None
         size_mb = self.path.stat().st_size / (1024 ** 2)
         logger.info(
             "%s written: %.1f MB (pyramidal=%s)",

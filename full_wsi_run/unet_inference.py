@@ -269,7 +269,10 @@ class UNetPPInference:
             tensors.append(tensor)
             original_sizes.append(original_size)
 
-        batch = torch.cat(tensors, dim=0).to(self.device, non_blocking=True)
+        batch = torch.cat(tensors, dim=0)
+        if self.device.type == "cuda":
+            batch = batch.pin_memory()
+        batch = batch.to(self.device, non_blocking=True)
         with torch.autocast(device_type=self.device.type, dtype=torch.float16):
             output = self.model(batch)  # (B, C, H, W)
         pred = output.argmax(dim=1).cpu().numpy().astype(np.uint8)
