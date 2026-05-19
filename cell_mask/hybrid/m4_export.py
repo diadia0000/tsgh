@@ -16,6 +16,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import cv2
 import numpy as np
+from scipy.ndimage import center_of_mass, find_objects
 
 from cell_mask.hybrid.m3_cells_generator import CellAnalysisResult
 from cell_mask.hybrid.m3_dot_detection import CellDotResult, DetectedDot
@@ -32,6 +33,10 @@ _COLOR_AMP = (0, 255, 255)        # 黃色：擴增細胞標籤
 _COLOR_NON_AMP = (255, 200, 0)    # 淺藍：非擴增細胞標籤
 _COLOR_EXCLUDED = (0, 0, 180)     # 深紅：排除（多核）標記
 _COLOR_DOT_CROSS = (255, 255, 255)  # 白色：dot 中心十字
+_COLOR_DISH_BBOX = (0, 165, 255)    # 橘色：未被認領的 DISH 核輪廓
+_COLOR_DISH_MATCHED = (147, 20, 255)  # 深粉色：被 elastic matching 認領的 DISH 核
+_COLOR_DRIFT_ARROW = (139, 0, 0)    # 深藍：飄移箭頭 (IHC → 認領 DISH)
+_COLOR_CELL_ID = (0, 255, 255)      # 黃色：細胞 ID 編號
 
 
 # ------------------------------------------------------------------
@@ -111,13 +116,17 @@ def render_overlay_image(
     cell_instance_mask: np.ndarray,
     results: List[CellAnalysisResult],
     all_dots: Optional[List[DetectedDot]] = None,
+    dish_nucleus_mask: Optional[np.ndarray] = None,
+    per_cell_dots: Optional[Dict[int, CellDotResult]] = None,
 ) -> np.ndarray:
     """細胞邊界 + 標籤 + 紅/黑點渲染成 RGB numpy array，不寫檔。"""
     canvas = cv2.cvtColor(overlay_image.copy(), cv2.COLOR_RGB2BGR)
-    _draw_cell_boundaries(canvas, cell_instance_mask)
-    _draw_cell_labels(canvas, results)
-    if all_dots:
-        _draw_dots(canvas, all_dots)
+    _draw_overlay_layers(
+        canvas, cell_instance_mask, results,
+        all_dots=all_dots,
+        dish_nucleus_mask=dish_nucleus_mask,
+        per_cell_dots=per_cell_dots,
+    )
     return cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
 
 
@@ -127,6 +136,8 @@ def export_overlay_visualization(
     results: List[CellAnalysisResult],
     output_path: Path,
     all_dots: Optional[List[DetectedDot]] = None,
+    dish_nucleus_mask: Optional[np.ndarray] = None,
+    per_cell_dots: Optional[Dict[int, CellDotResult]] = None,
 ) -> Path:
     """匯出含有細胞邊界、AMP/排除標註與點位的疊加圖。
 
@@ -136,6 +147,11 @@ def export_overlay_visualization(
         results: 每個細胞的分析結果。
         output_path: 輸出 PNG 路徑。
         all_dots: 所有偵測到的 HER2/CEP17 點；提供時會畫到圖上。
+        dish_nucleus_mask: shape ``(H, W)`` DISH 細胞核 instance mask
+            （Cellpose DISH 輸出）；提供時會沿每個核形狀畫輪廓。
+        per_cell_dots: ``{cell_id: CellDotResult}``；與 ``dish_nucleus_mask``
+            同時提供時，會把被 elastic matching 認領的 DISH 核改畫深粉色，
+            並從每顆 IHC 細胞中心畫深藍箭頭到認領的 DISH 核中心。
 
     Returns:
         實際寫入的路徑。
@@ -143,14 +159,45 @@ def export_overlay_visualization(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     canvas = cv2.cvtColor(overlay_image.copy(), cv2.COLOR_RGB2BGR)
-    _draw_cell_boundaries(canvas, cell_instance_mask)
-    _draw_cell_labels(canvas, results)
-    if all_dots:
-        _draw_dots(canvas, all_dots)
+    _draw_overlay_layers(
+        canvas, cell_instance_mask, results,
+        all_dots=all_dots,
+        dish_nucleus_mask=dish_nucleus_mask,
+        per_cell_dots=per_cell_dots,
+    )
 
     cv2.imwrite(str(output_path), canvas)
     logger.info("Overlay 匯出完成: %s", output_path.name)
     return output_path
+
+
+def _draw_overlay_layers(
+    canvas: np.ndarray,
+    cell_instance_mask: np.ndarray,
+    results: List[CellAnalysisResult],
+    all_dots: Optional[List[DetectedDot]],
+    dish_nucleus_mask: Optional[np.ndarray],
+    per_cell_dots: Optional[Dict[int, CellDotResult]],
+) -> None:
+    """統一繪圖順序：dish 輪廓 → 細胞邊界 → 飄移箭頭 → 標籤 → dots。"""
+    matched_ids: Optional[set] = None
+    if dish_nucleus_mask is not None and per_cell_dots is not None:
+        matched_ids = set()
+        for cdr in per_cell_dots.values():
+            # 粉色覆蓋所有被 elastic matching 認領的 DISH 核 (含 excluded 細胞
+            # 的多核)；excluded 細胞只是在 _draw_drift_arrows 跳過畫箭頭。
+            matched_ids.update(
+                int(d) for d in getattr(cdr, "assigned_dish_ids", [])
+            )
+
+    if dish_nucleus_mask is not None:
+        _draw_dish_nucleus_contours(canvas, dish_nucleus_mask, matched_ids)
+    _draw_cell_boundaries(canvas, cell_instance_mask)
+    if dish_nucleus_mask is not None and per_cell_dots is not None:
+        _draw_drift_arrows(canvas, results, per_cell_dots, dish_nucleus_mask)
+    _draw_cell_labels(canvas, results)
+    if all_dots:
+        _draw_dots(canvas, all_dots)
 
 
 def export_dot_only_visualization(
@@ -181,17 +228,112 @@ def _draw_cell_boundaries(
         cv2.drawContours(canvas, contours, -1, _COLOR_BOUNDARY, 1)
 
 
+def _draw_dish_nucleus_contours(
+    canvas: np.ndarray,
+    dish_nucleus_mask: np.ndarray,
+    matched_ids: Optional[set] = None,
+) -> None:
+    """為每個 DISH cellpose 細胞核 instance 沿實際形狀畫輪廓。
+
+    使用 ``cv2.findContours`` 在每個 instance 的局部 bbox 內取外輪廓，
+    再以全圖座標 offset 還原後 drawContours。逐 instance 處理可避免
+    相鄰核合併成單一輪廓。
+
+    若提供 ``matched_ids``，該集合內的 DISH 核 ID 用深粉色（已被 elastic
+    matching 認領），其餘核維持橘色。
+    """
+    if dish_nucleus_mask.size == 0 or int(dish_nucleus_mask.max()) <= 0:
+        return
+    matched = matched_ids if matched_ids is not None else set()
+    mask_i32 = dish_nucleus_mask.astype(np.int32, copy=False)
+    slices = find_objects(mask_i32)
+    for label_id, sl in enumerate(slices, start=1):
+        if sl is None:
+            continue
+        y_sl, x_sl = sl
+        local = (mask_i32[y_sl, x_sl] == label_id).astype(np.uint8)
+        contours, _ = cv2.findContours(
+            local, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        if not contours:
+            continue
+        offset = (int(x_sl.start), int(y_sl.start))
+        color = _COLOR_DISH_MATCHED if label_id in matched else _COLOR_DISH_BBOX
+        cv2.drawContours(
+            canvas, contours, -1, color, 1, cv2.LINE_8,
+            offset=offset,
+        )
+
+
+def _draw_drift_arrows(
+    canvas: np.ndarray,
+    results: List[CellAnalysisResult],
+    per_cell_dots: Dict[int, "CellDotResult"],
+    dish_nucleus_mask: np.ndarray,
+) -> None:
+    """對每個非排除細胞畫飄移箭頭：IHC centroid → 認領的 DISH 核 centroid。
+
+    一顆 IHC 多核時，每顆認領 DISH 核都畫一支獨立箭頭（見招狀展開）。
+    被排除的細胞（excluded=True）跳過，只保留斜十字標記。
+    """
+    if dish_nucleus_mask is None or per_cell_dots is None:
+        return
+
+    matched_ids: set = set()
+    for cdr in per_cell_dots.values():
+        if getattr(cdr, "excluded", False):
+            continue
+        matched_ids.update(int(d) for d in getattr(cdr, "assigned_dish_ids", []))
+    if not matched_ids:
+        return
+
+    dish_centroids: Dict[int, Tuple[float, float]] = {}
+    for did in matched_ids:
+        region = (dish_nucleus_mask == did)
+        if region.any():
+            cy, cx = center_of_mass(region)
+            dish_centroids[did] = (float(cy), float(cx))
+
+    for cell in results:
+        cdr = per_cell_dots.get(cell.cell_id)
+        if cdr is None or getattr(cdr, "excluded", False):
+            continue
+        assigned = getattr(cdr, "assigned_dish_ids", [])
+        if not assigned:
+            continue
+        ihc_pt = (int(cell.centroid_x), int(cell.centroid_y))
+        for did in assigned:
+            ctr = dish_centroids.get(int(did))
+            if ctr is None:
+                continue
+            dish_pt = (int(ctr[1]), int(ctr[0]))
+            cv2.arrowedLine(
+                canvas, ihc_pt, dish_pt, _COLOR_DRIFT_ARROW,
+                1, cv2.LINE_8, tipLength=0.18,
+            )
+
+
 def _draw_cell_labels(
     canvas: np.ndarray,
     results: List[CellAnalysisResult],
 ) -> None:
-    """在每個細胞質心處繪製分類標籤。
+    """在每個細胞質心處繪製編號與分類標籤。
 
-    - 排除細胞（多核）：深紅斜十字
-    - 其他：``H/C`` 計數，AMP 用黃色、非 AMP 用淺藍
+    - 一律以黃色畫出 ``#cell_id`` 編號（中心點上方）
+    - 排除細胞（多核）：另外加深紅斜十字
+    - 有 dot 計數者：``H/C`` 顯示於中心點下方，AMP 用黃色、非 AMP 用淺藍
     """
     for cell in results:
-        position = (int(cell.centroid_x), int(cell.centroid_y))
+        cx = int(cell.centroid_x)
+        cy = int(cell.centroid_y)
+        position = (cx, cy)
+
+        cv2.putText(
+            canvas, f"#{cell.cell_id}", (cx - 6, cy - 4),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.35,
+            _COLOR_CELL_ID, 1, cv2.LINE_AA,
+        )
+
         if getattr(cell, "excluded", False):
             cv2.drawMarker(
                 canvas, position, _COLOR_EXCLUDED,
@@ -199,10 +341,14 @@ def _draw_cell_labels(
                 markerSize=10, thickness=2, line_type=cv2.LINE_AA,
             )
             continue
+
+        her2 = int(getattr(cell, "her2_dot_count", 0))
+        cep17 = int(getattr(cell, "cep17_dot_count", 0))
+        if her2 == 0 and cep17 == 0:
+            continue
         color = _COLOR_AMP if getattr(cell, "is_amplified", False) else _COLOR_NON_AMP
-        label = f"{getattr(cell, 'her2_dot_count', 0)}/{getattr(cell, 'cep17_dot_count', 0)}"
         cv2.putText(
-            canvas, label, position,
+            canvas, f"{her2}/{cep17}", (cx - 6, cy + 10),
             cv2.FONT_HERSHEY_SIMPLEX, 0.35,
             color, 1, cv2.LINE_AA,
         )
@@ -534,6 +680,7 @@ def export_cell_dot_annotations(
     crop_size: int = 64,
     all_dots: Optional[List[DetectedDot]] = None,
     per_cell_dots: Optional[Dict[int, CellDotResult]] = None,
+    dish_nucleus_mask: Optional[np.ndarray] = None,
 ) -> None:
     """統一匯出 CSV + overlay PNG + per-cell PNG + 統計摘要。
 
@@ -550,6 +697,8 @@ def export_cell_dot_annotations(
         crop_size: 單細胞裁切尺寸 (pixels)。
         all_dots: 所有偵測點；提供時 overlay PNG 會畫出點。
         per_cell_dots: ``{cell_id: CellDotResult}``；提供時 per-cell PNG 會畫點與 AMP 標籤。
+        dish_nucleus_mask: shape ``(H, W)`` DISH 細胞核 instance mask；
+            提供時主 overlay PNG 會沿每個核的形狀畫橘色輪廓。
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -578,6 +727,8 @@ def export_cell_dot_annotations(
         results,
         output_dir / f"{tile_id}_overlay.png",
         all_dots=all_dots,
+        dish_nucleus_mask=dish_nucleus_mask,
+        per_cell_dots=per_cell_dots,
     )
 
     export_per_cell_images(

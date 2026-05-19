@@ -101,7 +101,6 @@ class Config:
     cellpose_dish_diameter: Optional[float] = None
     cellpose_dish_flow_threshold: float = 0.4
     cellpose_dish_cellprob_threshold: float = 0.0
-    cellpose_dish_erode_radius: int = 3     # 核 mask 往內縮像素數，0=不縮
 
     # ========== DISH 訊號點偵測參數 (M3b) ==========
     # 方案: LAB + H-morphology + 多準則閘控（see docs/dish_dot_detection_spec.md v0.2）
@@ -147,9 +146,16 @@ class Config:
     dot_black_very_dark_l_max: float = 40.0
     dot_black_very_dark_min_contrast: float = 10.0
 
-    # --- 多核排除 ---
-    # 以 Cellpose DISH 模型輸出的細胞核 instance 與 IHC 細胞重疊計數判定多核。
-    dot_blue_exclude_threshold: int = 2   # DISH 核重疊數 ≥ 此值 → 排除（多核細胞）
+    # --- 多核排除（彈性匹配；見 docs/sdd-elastic-dish-matching.md）---
+    # 以 Cellpose DISH 模型輸出的細胞核 instance 與 IHC 細胞做彈性匹配，
+    # 匹配到的 DISH 核數量 ≥ dot_blue_exclude_threshold → 排除（多核細胞）。
+    dot_blue_exclude_threshold: int = 2
+
+    # 若一個 IHC 細胞匹配到 0 個 DISH 核，是否標記為 excluded。
+    # 預設 False：找不到對應 DISH 核時 blue_region_count=0，但不排除。
+    dish_elastic_exclude_zero: bool = False
+    # Centroid 配對最大允許歐氏距離（像素），純距離匹配的唯一閘值。
+    dish_elastic_max_dist_px: float = 50.0
 
     # --- 群聚合併 ---
     dot_merge_distance: float = 3.0

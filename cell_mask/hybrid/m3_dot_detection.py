@@ -3,8 +3,10 @@
 演算法核心：
     紅點 / 黑點：LAB 色彩空間 + H-形態重建 + 多準則閘控 (per-cell ROI)
     多核排除：Cellpose DISH 模型對純 DISH 圖偵測細胞核 instance，
-              計算每個 IHC 細胞與 DISH 核 instance 的重疊數量；
-              重疊數 ≥ dot_blue_exclude_threshold → 排除（多核細胞）。
+              對每個 IHC 細胞做彈性匹配（region 等向膨脹 + centroid greedy
+              exclusive 分配），匹配到的 DISH 核數 ≥
+              dot_blue_exclude_threshold → 排除（多核細胞）。
+              詳見 docs/sdd-elastic-dish-matching.md。
 """
 
 from __future__ import annotations
@@ -15,13 +17,15 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import (
+    center_of_mass,
+    distance_transform_edt,
+)
 from scipy.spatial import cKDTree
 from skimage.color import rgb2lab
 from skimage.measure import label, regionprops
 from skimage.morphology import (
     binary_dilation,
-    binary_erosion,
     disk,
     h_maxima,
     h_minima,
@@ -30,6 +34,12 @@ from skimage.morphology import (
 from cell_mask.hybrid.m3_cells_generator import CellAnalysisResult
 
 logger = logging.getLogger(__name__)
+
+
+# === TEMP: 紅/黑點偵測屏蔽開關 ===
+# 紅/黑點 algorithm 重構期間先停用偵測流程，僅保留 dish 核彈性匹配（多核排除）。
+# 完成新版偵測 algo 後，將下方 DOT_DETECTION_DISABLED 改回 False 即可恢復。
+DOT_DETECTION_DISABLED: bool = True
 
 
 # ------------------------------------------------------------------
@@ -65,6 +75,8 @@ class CellDotResult:
     excluded: bool = False               # 多核（藍色區塊 ≥ threshold）→ 排除
     her2_dots: List[DetectedDot] = field(default_factory=list)
     cep17_dots: List[DetectedDot] = field(default_factory=list)
+    # elastic matching 認領到的 DISH 核 ID（用於視覺化飄移箭頭與粉色輪廓）
+    assigned_dish_ids: List[int] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------
@@ -97,6 +109,21 @@ def detect_all_dots(
         )
 
     instance_mask_i32 = instance_mask.astype(np.int32, copy=False)
+
+    if DOT_DETECTION_DISABLED:
+        logger.warning(
+            "紅/黑點偵測屏蔽中（DOT_DETECTION_DISABLED=True）— "
+            "略過 dot 偵測，僅執行 dish 核彈性匹配（多核排除）。"
+        )
+        dish_ids_by_cell = _elastic_dish_nucleus_matching(
+            dish_nucleus_mask=dish_nucleus_mask.astype(np.int32, copy=False),
+            strict_instance_mask=instance_mask_i32,
+            cfg=config,
+        )
+        per_cell = _group_dots_by_cell(
+            [], instance_mask_i32, dish_ids_by_cell, config
+        )
+        return [], per_cell
 
     L, a, b = _rgb_to_lab(dish_image)
     bg_mask, cell_roi = _build_masks(L, instance_mask_i32, config)
@@ -146,8 +173,8 @@ def detect_all_dots(
     red_dots = _merge_close_dots(red_dots, red_merge_distance)
     black_dots = _merge_close_dots(black_dots, black_merge_distance)
 
-    # 多核排除計數：以 Cellpose DISH 核 instance 與 IHC 細胞重疊為依據
-    blue_count_by_cell = _count_dish_nucleus_overlaps(
+    # 多核排除計數：以 Cellpose DISH 核 instance 與 IHC 細胞做彈性匹配
+    dish_ids_by_cell = _elastic_dish_nucleus_matching(
         dish_nucleus_mask=dish_nucleus_mask.astype(np.int32, copy=False),
         strict_instance_mask=instance_mask_i32,
         cfg=config,
@@ -155,7 +182,7 @@ def detect_all_dots(
 
     all_dots = red_dots + black_dots
     per_cell = _group_dots_by_cell(
-        all_dots, instance_mask_i32, blue_count_by_cell, config
+        all_dots, instance_mask_i32, dish_ids_by_cell, config
     )
 
     logger.info(
@@ -453,52 +480,84 @@ def _detect_black_dots(
 
 
 # ------------------------------------------------------------------
-# DISH 細胞核 Cellpose 重疊計數 — 用於排除多核細胞（主要方法）
+# DISH 細胞核 彈性匹配 — 用於排除多核細胞（主要方法）
+# 詳見 docs/sdd-elastic-dish-matching.md
 # ------------------------------------------------------------------
 
-def _count_dish_nucleus_overlaps(
+def _elastic_dish_nucleus_matching(
     dish_nucleus_mask: np.ndarray,
     strict_instance_mask: np.ndarray,
     cfg: object,
-) -> Dict[int, int]:
-    """計算每個 IHC 細胞與 DISH 細胞核 instance 的重疊數量。
+) -> Dict[int, List[int]]:
+    """純距離彈性匹配：以 centroid 歐氏距離 + greedy 分配 DISH 核給 IHC 細胞。
+
+    流程：
+        1. 計算所有 IHC / DISH centroid。
+        2. 對每對 (IHC, DISH) 算 Euclidean 距離；> ``max_dist_px`` 直接捨棄。
+        3. 依距離由近到遠排序，greedy 分配——每個 DISH 核最多被一個 IHC
+           細胞認領，IHC 可認領多顆（多核情況）。
+
+    Note:
+        舊版（v1）使用 IHC region 膨脹 + 像素重疊作 candidate gate，
+        但小細胞 dilation 半徑只有 2–4 px，飄移略大就漏掉。本版直接以
+        centroid 距離為唯一條件，``dish_elastic_max_dist_px`` 成為單一閘值。
 
     Args:
-        dish_nucleus_mask: (H, W) int32，0=背景，1..M=DISH 細胞核 ID（Cellpose 輸出）。
-        strict_instance_mask: (H, W) int32，0=背景，1..N=IHC 細胞 ID（M2 Cellpose 輸出）。
-        cfg: 配置物件（保留以維持介面一致性）。
+        dish_nucleus_mask: (H, W) int32，0=背景，1..M=DISH 細胞核 ID。
+        strict_instance_mask: (H, W) int32，0=背景，1..N=IHC 細胞 ID。
+        cfg: 須提供 ``dish_elastic_max_dist_px`` (float, 預設 50.0)。
 
     Returns:
-        ``{ihc_cell_id: n_overlapping_dish_nuclei}``，僅包含有重疊的細胞。
+        ``{ihc_cell_id: [assigned_dish_id, ...]}``。
     """
-    erode_radius = int(getattr(cfg, "cellpose_dish_erode_radius", 0))
-    if erode_radius > 0:
-        selem = disk(erode_radius)
-        eroded = np.zeros_like(dish_nucleus_mask)
-        for nid in np.unique(dish_nucleus_mask):
-            if nid == 0:
-                continue
-            eroded_binary = binary_erosion(dish_nucleus_mask == nid, selem)
-            eroded[eroded_binary] = nid
-        dish_nucleus_mask = eroded
+    max_dist_px = float(getattr(cfg, "dish_elastic_max_dist_px", 50.0))
 
-    counts: Dict[int, int] = {}
-    cell_ids = sorted(set(np.unique(strict_instance_mask)) - {0})
+    ihc_ids: List[int] = [
+        int(v) for v in np.unique(strict_instance_mask) if v != 0
+    ]
+    dish_ids: List[int] = [
+        int(v) for v in np.unique(dish_nucleus_mask) if v != 0
+    ]
+    result: Dict[int, List[int]] = {cid: [] for cid in ihc_ids}
 
-    for cid in cell_ids:
-        ihc_pixels = (strict_instance_mask == cid)
-        dish_ids_in_cell = dish_nucleus_mask[ihc_pixels]
-        dish_ids_in_cell = dish_ids_in_cell[dish_ids_in_cell > 0]
-        n_dish = int(np.unique(dish_ids_in_cell).size)
-        if n_dish > 0:
-            counts[int(cid)] = n_dish
+    if not ihc_ids or not dish_ids:
+        return result
 
+    ihc_centroids: Dict[int, Tuple[float, float]] = {}
+    for cid in ihc_ids:
+        cy, cx = center_of_mass(strict_instance_mask == cid)
+        ihc_centroids[cid] = (float(cy), float(cx))
+
+    dish_centroids: Dict[int, Tuple[float, float]] = {}
+    for did in dish_ids:
+        cy, cx = center_of_mass(dish_nucleus_mask == did)
+        dish_centroids[did] = (float(cy), float(cx))
+
+    pairs: List[Tuple[float, int, int]] = []
+    for cid, (iy, ix) in ihc_centroids.items():
+        for did, (dy, dx) in dish_centroids.items():
+            dist = math.hypot(iy - dy, ix - dx)
+            if dist <= max_dist_px:
+                pairs.append((dist, cid, did))
+    pairs.sort(key=lambda x: x[0])
+
+    assigned_dish_ids: set = set()
+    for _dist, cid, did in pairs:
+        if did in assigned_dish_ids:
+            continue
+        result[cid].append(did)
+        assigned_dish_ids.add(did)
+
+    exclude_thr = int(getattr(cfg, "dot_blue_exclude_threshold", 2))
+    n_matched_any = sum(1 for v in result.values() if len(v) > 0)
+    n_multi = sum(1 for v in result.values() if len(v) >= exclude_thr)
     logger.info(
-        "_count_dish_nucleus_overlaps: %d 顆 IHC 細胞有 DISH 核重疊 (多核候選: %d)",
-        len(counts),
-        sum(1 for v in counts.values() if v >= int(getattr(cfg, "dot_blue_exclude_threshold", 2))),
+        "_elastic_dish_nucleus_matching: IHC=%d, DISH=%d, 有匹配=%d, "
+        "多核候選(>=%d)=%d, max_dist=%.1fpx",
+        len(ihc_ids), len(dish_ids), n_matched_any, exclude_thr, n_multi,
+        max_dist_px,
     )
-    return counts
+    return result
 
 
 # ------------------------------------------------------------------
@@ -707,13 +766,18 @@ def _merge_close_dots(
 def _group_dots_by_cell(
     all_dots: List[DetectedDot],
     instance_mask: np.ndarray,
-    blue_count_by_cell: Dict[int, int],
+    dish_ids_by_cell: Dict[int, List[int]],
     cfg: object,
 ) -> Dict[int, CellDotResult]:
-    """依 cell_id 分組，計算計數與擴增判定，並標記多核排除細胞。"""
+    """依 cell_id 分組，計算計數與擴增判定，並標記多核排除細胞。
+
+    ``dish_ids_by_cell`` 來自 :func:`_elastic_dish_nucleus_matching`：
+    ``{ihc_cell_id: [assigned_dish_nucleus_id, ...]}``。
+    """
     amp_ratio = float(getattr(cfg, "dot_amplification_ratio", 2.0))
     amp_count = int(getattr(cfg, "dot_her2_count_threshold", 6))
     exclude_thr = int(getattr(cfg, "dot_blue_exclude_threshold", 2))
+    exclude_zero = bool(getattr(cfg, "dish_elastic_exclude_zero", False))
 
     per_cell: Dict[int, CellDotResult] = {}
     cell_ids = sorted(set(np.unique(instance_mask)) - {0})
@@ -739,8 +803,15 @@ def _group_dots_by_cell(
             cdr.her2_cep17_ratio = cdr.her2_dot_count / cdr.cep17_dot_count
         else:
             cdr.her2_cep17_ratio = float("inf") if cdr.her2_dot_count > 0 else 0.0
-        cdr.blue_region_count = int(blue_count_by_cell.get(cdr.cell_id, 0))
-        cdr.excluded = cdr.blue_region_count >= exclude_thr
+        assigned_ids = dish_ids_by_cell.get(cdr.cell_id, [])
+        cdr.assigned_dish_ids = list(assigned_ids)
+        cdr.blue_region_count = len(cdr.assigned_dish_ids)
+        if cdr.blue_region_count >= exclude_thr:
+            cdr.excluded = True
+        elif cdr.blue_region_count == 0 and exclude_zero:
+            cdr.excluded = True
+        else:
+            cdr.excluded = False
         if cdr.excluded:
             cdr.is_amplified = False
         else:

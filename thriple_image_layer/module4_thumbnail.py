@@ -74,7 +74,7 @@ def generate_thumbnail(
         her2_obj.warp_and_save_slide(
             str(her2_temp),
             level=level,
-            non_rigid=True,
+            non_rigid=False,
             crop="overlap",
             compression='lzw',
             pyramid=True,

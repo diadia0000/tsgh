@@ -254,6 +254,11 @@ def process_single_tile(
 
         # M3b: DISH 細胞核偵測（用純 DISH 圖） + 紅/黑點偵測 + 多核排除
         dish_nucleus_mask = dish_cellpose_segmenter.predict(dish_image)
+        # 用 IHC core_mask 過濾掉主要落在白色背景區的 DISH 核 instance，
+        # 避免橘色輪廓 / 多核計數誤觸 mask 之外的細胞。
+        dish_nucleus_mask = _filter_dish_nucleus_by_core_mask(
+            dish_nucleus_mask, core_mask
+        )
         all_dots, per_cell_dots = detect_all_dots(
             dish_mask_overlay,
             instance_mask,
@@ -276,6 +281,7 @@ def process_single_tile(
             crop_size=config.cell_crop_size,
             all_dots=all_dots,
             per_cell_dots=per_cell_dots,
+            dish_nucleus_mask=dish_nucleus_mask,
         )
 
         # 醫師檢視圖: IHC-DISH 疊合底圖 + 細胞邊界/AMP 標記 + 點位
@@ -334,6 +340,46 @@ def _find_merge_tile(merge_dir: Optional[Path], tile_id: str) -> Optional[Path]:
         if candidate.exists():
             return candidate
     return None
+
+
+def _filter_dish_nucleus_by_core_mask(
+    dish_nucleus_mask: np.ndarray,
+    core_mask: np.ndarray,
+    keep_threshold: float = 0.5,
+) -> np.ndarray:
+    """移除主要落在 IHC core_mask 之外的 DISH 核 instance。
+
+    對每個 nucleus label 計算「在 core_mask 內的像素比例」，
+    比例 < ``keep_threshold`` 的整個 instance 設為 0（移出 mask）。
+    其餘 instance 像素保持不變、label 不重編。
+
+    Why: dish_cellpose 在原始 DISH 圖推論，會在 IHC core_mask 之外的
+    白色背景區也偵測出細胞核，導致橘色輪廓出現在 mask 外的白底區，
+    也讓多核排除誤把背景核算進來。
+    """
+    if dish_nucleus_mask.size == 0:
+        return dish_nucleus_mask
+    mask_i32 = dish_nucleus_mask.astype(np.int32, copy=False)
+    max_id = int(mask_i32.max())
+    if max_id <= 0:
+        return mask_i32
+    core_bool = core_mask.astype(bool, copy=False)
+    flat = mask_i32.ravel()
+    total = np.bincount(flat, minlength=max_id + 1)
+    inside = np.bincount(
+        flat,
+        weights=core_bool.ravel().astype(np.float32),
+        minlength=max_id + 1,
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.where(total > 0, inside / total, 0.0)
+    drop = ratio < keep_threshold
+    drop[0] = False
+    if drop.any():
+        remap = np.arange(max_id + 1, dtype=np.int32)
+        remap[drop] = 0
+        mask_i32 = remap[mask_i32]
+    return mask_i32
 
 
 def _read_rgb(path: Path) -> np.ndarray:
