@@ -39,6 +39,10 @@ import openslide
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+# Cellpose 在 get_masks_torch 內呼叫 torch.sparse_coo_tensor；PyTorch 要求顯式表態
+# sparse invariant 檢查的開關，否則會持續發出 UserWarning。維持預設 (關閉檢查) 以保留效能。
+torch.sparse.check_sparse_tensor_invariants.disable()
+
 # ---- path wiring so we can reuse cell_mask.hybrid modules -----------------
 _THIS_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = Path("/data/tsgh")

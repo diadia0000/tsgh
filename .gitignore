@@ -22,3 +22,4 @@ tile/*
 .agent/
 uv.lock
 skills-lock.json
+.codegraph/

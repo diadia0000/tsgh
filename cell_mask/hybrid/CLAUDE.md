@@ -78,7 +78,6 @@ Each tile writes to `output/{tile_id}/`:
 {tile_id}_dish_mask_overlay.png      # DISH masked to ROI
 {tile_id}_ihc_dish_overlay_raw.png   # 50/50 blend (M2 input)
 {tile_id}_m2_input_overlay.png       # same as above (explicit M2 input copy)
-{tile_id}_m2_cell_instance_mask.tiff # uint16 instance mask
 {tile_id}_m2_cell_instance_binary.png
 {tile_id}_report.csv
 {tile_id}_overlay.png                # dish_mask_overlay + cell annotations

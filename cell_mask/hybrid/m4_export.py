@@ -159,6 +159,7 @@ def export_overlay_visualization(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     canvas = cv2.cvtColor(overlay_image.copy(), cv2.COLOR_RGB2BGR)
+    # canvas[cell_instance_mask == 0] = 255
     _draw_overlay_layers(
         canvas, cell_instance_mask, results,
         all_dots=all_dots,
