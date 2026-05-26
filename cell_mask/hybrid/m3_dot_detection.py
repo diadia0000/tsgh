@@ -3,8 +3,9 @@
 演算法核心：
     紅點 / 黑點：LAB 色彩空間 + H-形態重建 + 多準則閘控 (per-cell ROI)
     多核排除：Cellpose DISH 模型對純 DISH 圖偵測細胞核 instance，
-              對每個 IHC 細胞做彈性匹配（region 等向膨脹 + centroid greedy
-              exclusive 分配），匹配到的 DISH 核數 ≥
+              對每個 IHC 細胞先等向膨脹 region（容忍切片對齊誤差），
+              再以重疊收集 candidate DISH 核，最後依 centroid 距離 greedy
+              exclusive 分配；匹配到的 DISH 核數 ≥
               dot_blue_exclude_threshold → 排除（多核細胞）。
               詳見 docs/sdd-elastic-dish-matching.md。
 """
@@ -489,53 +490,68 @@ def _elastic_dish_nucleus_matching(
     strict_instance_mask: np.ndarray,
     cfg: object,
 ) -> Dict[int, List[int]]:
-    """純距離彈性匹配：以 centroid 歐氏距離 + greedy 分配 DISH 核給 IHC 細胞。
+    """彈性匹配：IHC region 等向膨脹 → 候選收集 → centroid greedy 分配。
 
-    流程：
-        1. 計算所有 IHC / DISH centroid。
-        2. 對每對 (IHC, DISH) 算 Euclidean 距離；> ``max_dist_px`` 直接捨棄。
-        3. 依距離由近到遠排序，greedy 分配——每個 DISH 核最多被一個 IHC
-           細胞認領，IHC 可認領多顆（多核情況）。
-
-    Note:
-        舊版（v1）使用 IHC region 膨脹 + 像素重疊作 candidate gate，
-        但小細胞 dilation 半徑只有 2–4 px，飄移略大就漏掉。本版直接以
-        centroid 距離為唯一條件，``dish_elastic_max_dist_px`` 成為單一閘值。
+    三步驟流程（詳見 docs/sdd-elastic-dish-matching.md）：
+        Step 1: 對每個 IHC 細胞 region 計算等向 dilation radius，使面積放大至
+                ``dish_elastic_expand_factor`` 倍（近似圓形推導：
+                r = (sqrt(A*f) - sqrt(A)) / sqrt(π)）。
+        Step 2: 找出膨脹後 region 與 DISH 核的重疊 pixel，收集 candidate DISH ID。
+        Step 3: 對 candidate pair 依 centroid 歐氏距離排序，greedy exclusive 分配
+                ——每個 DISH 核最多被一個 IHC 細胞認領，IHC 可認領多顆（多核）。
+                超過 ``dish_elastic_max_dist_px`` 的 pair 直接排除。
 
     Args:
         dish_nucleus_mask: (H, W) int32，0=背景，1..M=DISH 細胞核 ID。
         strict_instance_mask: (H, W) int32，0=背景，1..N=IHC 細胞 ID。
-        cfg: 須提供 ``dish_elastic_max_dist_px`` (float, 預設 50.0)。
+        cfg: 須提供：
+            ``dish_elastic_expand_factor`` (float, 預設 1.5) — 面積膨脹倍數
+            ``dish_elastic_max_dist_px`` (float, 預設 50.0) — centroid 最大距離閾值
 
     Returns:
         ``{ihc_cell_id: [assigned_dish_id, ...]}``。
     """
+    expand_factor = float(getattr(cfg, "dish_elastic_expand_factor", 1.5))
     max_dist_px = float(getattr(cfg, "dish_elastic_max_dist_px", 50.0))
 
-    ihc_ids: List[int] = [
-        int(v) for v in np.unique(strict_instance_mask) if v != 0
-    ]
-    dish_ids: List[int] = [
-        int(v) for v in np.unique(dish_nucleus_mask) if v != 0
-    ]
+    ihc_ids: List[int] = [int(v) for v in np.unique(strict_instance_mask) if v != 0]
+    dish_ids: List[int] = [int(v) for v in np.unique(dish_nucleus_mask) if v != 0]
     result: Dict[int, List[int]] = {cid: [] for cid in ihc_ids}
 
     if not ihc_ids or not dish_ids:
         return result
 
+    # Step 1 & 2: 逐顆 IHC 細胞膨脹，收集與之重疊的 DISH 核 candidate
     ihc_centroids: Dict[int, Tuple[float, float]] = {}
+    cell_candidates: Dict[int, List[int]] = {cid: [] for cid in ihc_ids}
+
     for cid in ihc_ids:
-        cy, cx = center_of_mass(strict_instance_mask == cid)
+        cell_mask = (strict_instance_mask == cid)
+        cy, cx = center_of_mass(cell_mask)
         ihc_centroids[cid] = (float(cy), float(cx))
 
+        area = int(cell_mask.sum())
+        if area == 0:
+            continue
+        r = max(1, round(
+            (math.sqrt(area * expand_factor) - math.sqrt(area)) / math.sqrt(math.pi)
+        ))
+        expanded = binary_dilation(cell_mask, disk(r))
+        overlap_vals = dish_nucleus_mask[expanded]
+        cell_candidates[cid] = [int(v) for v in np.unique(overlap_vals) if v != 0]
+
+    # 預先計算所有 DISH 核 centroid
     dish_centroids: Dict[int, Tuple[float, float]] = {}
     for did in dish_ids:
         cy, cx = center_of_mass(dish_nucleus_mask == did)
         dish_centroids[did] = (float(cy), float(cx))
 
+    # Step 3: 依 centroid 距離排序，greedy exclusive 分配
     pairs: List[Tuple[float, int, int]] = []
-    for cid, (iy, ix) in ihc_centroids.items():
-        for did, (dy, dx) in dish_centroids.items():
+    for cid, candidates in cell_candidates.items():
+        iy, ix = ihc_centroids[cid]
+        for did in candidates:
+            dy, dx = dish_centroids[did]
             dist = math.hypot(iy - dy, ix - dx)
             if dist <= max_dist_px:
                 pairs.append((dist, cid, did))
@@ -553,9 +569,9 @@ def _elastic_dish_nucleus_matching(
     n_multi = sum(1 for v in result.values() if len(v) >= exclude_thr)
     logger.info(
         "_elastic_dish_nucleus_matching: IHC=%d, DISH=%d, 有匹配=%d, "
-        "多核候選(>=%d)=%d, max_dist=%.1fpx",
+        "多核候選(>=%d)=%d, expand_factor=%.1f, max_dist=%.1fpx",
         len(ihc_ids), len(dish_ids), n_matched_any, exclude_thr, n_multi,
-        max_dist_px,
+        expand_factor, max_dist_px,
     )
     return result
 

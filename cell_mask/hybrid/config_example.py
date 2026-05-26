@@ -151,10 +151,13 @@ class Config:
     # 匹配到的 DISH 核數量 ≥ dot_blue_exclude_threshold → 排除（多核細胞）。
     dot_blue_exclude_threshold: int = 2
 
+    # IHC 細胞 region 等向膨脹面積倍數（Step 1）。1.0 = 不膨脹；1.5 = 面積放大 1.5 倍。
+    # r = (sqrt(A*f) - sqrt(A)) / sqrt(π)，用於容忍 IHC/DISH 切片對齊誤差。
+    dish_elastic_expand_factor: float = 1.5
     # 若一個 IHC 細胞匹配到 0 個 DISH 核，是否標記為 excluded。
     # 預設 False：找不到對應 DISH 核時 blue_region_count=0，但不排除。
     dish_elastic_exclude_zero: bool = False
-    # Centroid 配對最大允許歐氏距離（像素），純距離匹配的唯一閘值。
+    # Centroid 配對最大允許歐氏距離（像素），超過此距離的候選 pair 直接排除。
     dish_elastic_max_dist_px: float = 50.0
 
     # --- 群聚合併 ---

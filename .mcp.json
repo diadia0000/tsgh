@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "codegraph": {
+      "type": "stdio",
+      "command": "/home/sec312/.nvm/versions/node/v20.20.2/bin/node",
+      "args": [
+        "/home/sec312/.nvm/versions/node/v20.20.2/lib/node_modules/@colbymchenry/codegraph/dist/bin/codegraph.js",
+        "serve",
+        "--mcp"
+      ]
+    }
+  }
+}
