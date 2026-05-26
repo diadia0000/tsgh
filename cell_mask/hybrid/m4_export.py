@@ -383,12 +383,13 @@ def export_per_cell_images(
     output_dir: Path,
     crop_size: int = 64,
     per_cell_dots: Optional[Dict[int, CellDotResult]] = None,
+    dish_nucleus_mask: Optional[np.ndarray] = None,
 ) -> List[Path]:
-    """以 Cellpose instance mask 形狀輸出每個細胞的固定尺寸影像。
+    """輸出每個細胞的固定尺寸影像。
 
-    每顆細胞先以 instance mask 萃取原始形狀，細胞外背景填 255。
-    之後放入固定 ``crop_size x crop_size`` 白底畫布；若原始細胞塊超過尺寸
-    則以中心裁切保留中間區域。
+    region_mask 優先使用該細胞匹配到的 DISH 核（聯集），若無匹配則
+    fallback 回 IHC cell_instance_mask。細胞外背景填 255，之後放入固定
+    ``crop_size x crop_size`` 白底畫布。
 
     若提供 ``per_cell_dots``，會在每張 crop 上：
       - 畫出該細胞範圍內的 HER2 黑點 / CEP17 紅點
@@ -397,11 +398,13 @@ def export_per_cell_images(
 
     Args:
         source_image: shape ``(H, W, 3)`` RGB。
-        cell_instance_mask: shape ``(H, W)`` 實例遮罩。
+        cell_instance_mask: shape ``(H, W)`` IHC 實例遮罩（fallback 用）。
         results: 細胞分析結果。
         output_dir: 輸出資料夾 (``cells/`` 子目錄)。
         crop_size: 裁切尺寸 (正方形邊長, pixels)。
         per_cell_dots: ``{cell_id: CellDotResult}``；提供則畫點與標註。
+        dish_nucleus_mask: shape ``(H, W)`` DISH 細胞核 instance mask；
+            提供時優先以匹配的 DISH 核 region 做 crop。
 
     Returns:
         儲存成功的檔案路徑列表。
@@ -412,7 +415,22 @@ def export_per_cell_images(
     saved_paths: List[Path] = []
 
     for cell in results:
-        region_mask = (cell_instance_mask == cell.cell_id)
+        cdr = per_cell_dots.get(cell.cell_id) if per_cell_dots is not None else None
+        assigned_ids = (
+            cdr.assigned_dish_ids
+            if (cdr is not None and dish_nucleus_mask is not None)
+            else []
+        )
+
+        if assigned_ids:
+            region_mask = np.zeros(dish_nucleus_mask.shape, dtype=bool)
+            for did in assigned_ids:
+                region_mask |= (dish_nucleus_mask == did)
+            if not np.any(region_mask):
+                region_mask = (cell_instance_mask == cell.cell_id)
+        else:
+            region_mask = (cell_instance_mask == cell.cell_id)
+
         if not np.any(region_mask):
             continue
 
@@ -739,4 +757,5 @@ def export_cell_dot_annotations(
         output_dir,
         crop_size=crop_size,
         per_cell_dots=per_cell_dots,
+        dish_nucleus_mask=dish_nucleus_mask,
     )
