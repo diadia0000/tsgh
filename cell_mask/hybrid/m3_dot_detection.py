@@ -37,12 +37,6 @@ from cell_mask.hybrid.m3_cells_generator import CellAnalysisResult
 logger = logging.getLogger(__name__)
 
 
-# === TEMP: 紅/黑點偵測屏蔽開關 ===
-# 紅/黑點 algorithm 重構期間先停用偵測流程，僅保留 dish 核彈性匹配（多核排除）。
-# 完成新版偵測 algo 後，將下方 DOT_DETECTION_DISABLED 改回 False 即可恢復。
-DOT_DETECTION_DISABLED: bool = True
-
-
 # ------------------------------------------------------------------
 # 資料結構
 # ------------------------------------------------------------------
@@ -110,21 +104,6 @@ def detect_all_dots(
         )
 
     instance_mask_i32 = instance_mask.astype(np.int32, copy=False)
-
-    if DOT_DETECTION_DISABLED:
-        logger.warning(
-            "紅/黑點偵測屏蔽中（DOT_DETECTION_DISABLED=True）— "
-            "略過 dot 偵測，僅執行 dish 核彈性匹配（多核排除）。"
-        )
-        dish_ids_by_cell = _elastic_dish_nucleus_matching(
-            dish_nucleus_mask=dish_nucleus_mask.astype(np.int32, copy=False),
-            strict_instance_mask=instance_mask_i32,
-            cfg=config,
-        )
-        per_cell = _group_dots_by_cell(
-            [], instance_mask_i32, dish_ids_by_cell, config
-        )
-        return [], per_cell
 
     L, a, b = _rgb_to_lab(dish_image)
     bg_mask, cell_roi = _build_masks(L, instance_mask_i32, config)
