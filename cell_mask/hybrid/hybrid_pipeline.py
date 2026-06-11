@@ -23,11 +23,12 @@ Usage:
 
 import argparse
 import logging
+import re
 import sys
 import time
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -115,14 +116,15 @@ def _init_dish_cellpose_segmenter() -> CellposeSegmenter:
 # ------------------------------------------------------------------
 
 def process_single_tile(
-    ihc_tile_path: Path,
-    dish_tile_path: Path,
+    ihc_tile_path: Union[Path, np.ndarray],
+    dish_tile_path: Union[Path, np.ndarray],
     unet_inferencer: object,
     cellpose_segmenter: CellposeSegmenter,
     dish_cellpose_segmenter: CellposeSegmenter,
     output_dir: Path,
     cfg_hash: str,
     merge_dir: Optional[Path] = None,
+    tile_id: Optional[str] = None,
 ) -> Optional[List[CellAnalysisResult]]:
     """處理單一配對 tile 的完整流水線。
 
@@ -135,11 +137,14 @@ def process_single_tile(
         output_dir: 輸出目錄。
         cfg_hash: 配置雜湊。
         merge_dir: 合併影像目錄 (可選)。
+        tile_id: 輸出子目錄/檔名前綴。None 時取 ``dish_tile_path.stem``；
+            ROI 記憶體組裝模式（傳 ndarray）必須指定。
 
     Returns:
         分類結果列表，失敗時回傳 None。
     """
-    tile_id = dish_tile_path.stem
+    if tile_id is None:
+        tile_id = dish_tile_path.stem
     tile_output = output_dir / tile_id
     start_time = time.perf_counter()
 
@@ -382,14 +387,59 @@ def _filter_dish_nucleus_by_core_mask(
     return mask_i32
 
 
-def _read_rgb(path: Path) -> np.ndarray:
-    """讀取影像並確保為 RGB uint8。"""
-    image = io.imread(str(path))
+def _read_rgb(src: Union[Path, np.ndarray]) -> np.ndarray:
+    """讀取影像並確保為 RGB uint8；傳入 ndarray 則原樣回傳（已組裝的記憶體大圖）。"""
+    if isinstance(src, np.ndarray):
+        return src.astype(np.uint8, copy=False)
+    image = io.imread(str(src))
     if image.ndim == 2:
         image = np.stack([image] * 3, axis=-1)
     elif image.shape[2] == 4:
         image = image[:, :, :3]
     return image.astype(np.uint8)
+
+
+_TILE_COORD_RE = re.compile(r"tile_x(\d+)_y(\d+)")
+
+
+def _assemble_tiles(
+    tile_dir: Path,
+    tile_size: int,
+) -> Tuple[np.ndarray, int, int]:
+    """把目錄內座標連續的 ``tile_x{int}_y{int}`` 影像在記憶體拼成單張大圖。
+
+    用於 ROI 模式：醫師選定的 ROI 已切成 1k tile，這裡不落地巨型 TIFF，
+    直接在記憶體組裝後整塊餵進 pipeline，讓分割自然跨越原 tile 邊界。
+    缺格以背景值 255（白）填充。
+
+    Args:
+        tile_dir: 含 ``tile_x{int}_y{int}`` 影像的目錄。
+        tile_size: 單 tile 邊長（pixels）。
+
+    Returns:
+        ``(canvas, x0, y0)``：大圖 ``(H, W, 3)`` uint8，及左上角 tile 全域座標。
+    """
+    coords = {}
+    for p in tile_dir.iterdir():
+        m = _TILE_COORD_RE.search(p.name)
+        if m and p.suffix.lower() in config.supported_extensions:
+            coords[(int(m.group(1)), int(m.group(2)))] = p
+    if not coords:
+        raise FileNotFoundError(f"目錄內找不到 tile_x_y 影像: {tile_dir}")
+
+    xs = sorted({x for x, _ in coords})
+    ys = sorted({y for _, y in coords})
+    x0, y0 = xs[0], ys[0]
+    cols = (xs[-1] - x0) // tile_size + 1
+    rows = (ys[-1] - y0) // tile_size + 1
+
+    canvas = np.full((rows * tile_size, cols * tile_size, 3), 255, dtype=np.uint8)
+    for (x, y), p in coords.items():
+        r = (y - y0) // tile_size
+        c = (x - x0) // tile_size
+        canvas[r * tile_size:(r + 1) * tile_size,
+               c * tile_size:(c + 1) * tile_size] = _read_rgb(p)
+    return canvas, x0, y0
 
 
 # ------------------------------------------------------------------
@@ -507,6 +557,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="單 tile 模式: DISH tile 檔名或路徑",
     )
     parser.add_argument(
+        "--roi",
+        action="store_true",
+        help="ROI 模式: --ihc/--dish 視為 tile 目錄，記憶體組裝成單張大圖後整塊分析 "
+             "(解決跨 tile 邊緣細胞遺失)",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         default=None,
@@ -527,6 +583,8 @@ def main() -> None:
         dish_dir = config.dish_test_dir if args.test else config.dish_tile_dir
         merge_dir = config.merge_test_dir if args.test else config.merge_tile_dir
         run_batch(ihc_dir, dish_dir, output_dir, merge_dir=merge_dir)
+    elif args.roi and args.ihc and args.dish:
+        _run_roi_cli(args.ihc, args.dish, output_dir)
     elif args.ihc and args.dish:
         _run_single_tile_cli(args.ihc, args.dish, output_dir)
     else:
@@ -550,6 +608,41 @@ def _run_single_tile_cli(
     process_single_tile(
         ihc_path, dish_path, unet, cellpose, dish_cellpose, output_dir, cfg_hash,
         merge_dir=config.merge_tile_dir,
+    )
+
+
+def _run_roi_cli(
+    ihc_dir_arg: str,
+    dish_dir_arg: str,
+    output_dir: Path,
+) -> None:
+    """CLI ROI 模式: 將 IHC/DISH tile 目錄記憶體組裝成單張大圖後整塊分析。
+
+    不落地巨型 TIFF；組裝後直接以 ndarray 餵 ``process_single_tile``，
+    分割自然跨越原 tile 邊界，避免每片 ``clear_border`` 砍掉接縫細胞。
+    """
+    ihc_dir = Path(ihc_dir_arg)
+    dish_dir = Path(dish_dir_arg)
+
+    ihc_image, x0, y0 = _assemble_tiles(ihc_dir, config.default_tile_size)
+    dish_image, dx0, dy0 = _assemble_tiles(dish_dir, config.default_tile_size)
+    if ihc_image.shape != dish_image.shape or (x0, y0) != (dx0, dy0):
+        raise ValueError(
+            f"IHC/DISH ROI 不一致: ihc={ihc_image.shape}@({x0},{y0}) "
+            f"dish={dish_image.shape}@({dx0},{dy0})"
+        )
+
+    tile_id = f"tile_x{x0}_y{y0}"
+    logger.info("ROI 記憶體組裝完成: %s 尺寸=%s", tile_id, ihc_image.shape)
+
+    cfg_hash = compute_config_hash(config)
+    unet = _init_unet_inferencer()
+    cellpose = _init_cellpose_segmenter()
+    dish_cellpose = _init_dish_cellpose_segmenter()
+
+    process_single_tile(
+        ihc_image, dish_image, unet, cellpose, dish_cellpose,
+        output_dir, cfg_hash, merge_dir=None, tile_id=tile_id,
     )
 
 

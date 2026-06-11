@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Elastic DISH Nucleus Matching — 三步驟圖解</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', 'PingFang TC', sans-serif;
+    background: #F1F5F9;
+    color: #1E293B;
+    padding: 52px 24px 80px;
+  }
+
+  /* ── Header ── */
+  .page-header {
+    text-align: center;
+    margin-bottom: 56px;
+  }
+  .page-header .tag {
+    display: inline-block;
+    background: #DBEAFE;
+    color: #1D4ED8;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 4px 14px;
+    border-radius: 20px;
+    margin-bottom: 18px;
+  }
+  .page-header h1 {
+    font-size: 2.4rem;
+    font-weight: 800;
+    color: #0F172A;
+    margin-bottom: 14px;
+    letter-spacing: -0.025em;
+  }
+  .page-header p {
+    font-size: 1.05rem;
+    color: #64748B;
+    max-width: 620px;
+    margin: 0 auto;
+    line-height: 1.7;
+  }
+
+  /* ── Problem statement banner ── */
+  .problem-banner {
+    max-width: 1100px;
+    margin: 0 auto 32px;
+    background: #FFF7ED;
+    border: 1.5px solid #FDE68A;
+    border-radius: 14px;
+    padding: 20px 28px;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    font-size: 0.93rem;
+    color: #78350F;
+    line-height: 1.65;
+  }
+  .problem-icon {
+    font-size: 2rem;
+    flex-shrink: 0;
+  }
+
+  /* ── Step cards ── */
+  .steps-wrapper {
+    max-width: 1100px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 26px;
+  }
+
+  .step-card {
+    background: #FFFFFF;
+    border-radius: 20px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06), 0 8px 28px rgba(0,0,0,0.06);
+    display: grid;
+    grid-template-columns: 380px 1fr;
+    overflow: hidden;
+    min-height: 300px;
+  }
+
+  .step-left {
+    padding: 40px 36px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    border-right: 1px solid #F1F5F9;
+  }
+
+  .step-badge {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 18px;
+  }
+  .step-num {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: 1rem;
+    flex-shrink: 0;
+  }
+  .step-label {
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+  }
+
+  .s1 .step-num  { background: #DBEAFE; color: #1D4ED8; }
+  .s1 .step-label { color: #3B82F6; }
+  .s2 .step-num  { background: #FEF3C7; color: #D97706; }
+  .s2 .step-label { color: #F59E0B; }
+  .s3 .step-num  { background: #D1FAE5; color: #059669; }
+  .s3 .step-label { color: #10B981; }
+
+  .step-title {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: #0F172A;
+    margin-bottom: 14px;
+    line-height: 1.35;
+  }
+  .step-title small {
+    display: block;
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: #64748B;
+    margin-top: 4px;
+  }
+
+  .step-desc {
+    font-size: 0.9rem;
+    color: #475569;
+    line-height: 1.8;
+    margin-bottom: 18px;
+  }
+  .step-desc strong { color: #1E293B; }
+
+  .code-box {
+    background: #F8FAFC;
+    border-left: 4px solid #3B82F6;
+    padding: 13px 15px;
+    border-radius: 0 8px 8px 0;
+    font-family: 'SF Mono', 'Fira Mono', 'Courier New', monospace;
+    font-size: 0.78rem;
+    color: #1E3A8A;
+    line-height: 1.8;
+    white-space: pre;
+  }
+  .code-box.amber {
+    border-color: #F59E0B;
+    color: #78350F;
+  }
+  .code-box.green {
+    border-color: #22C55E;
+    color: #14532D;
+  }
+
+  .step-diagram {
+    background: #F8FAFC;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 28px;
+  }
+  .step-diagram svg { max-width: 100%; height: auto; }
+
+  /* ── Config table ── */
+  .summary-card {
+    background: #FFFFFF;
+    border-radius: 20px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06), 0 8px 28px rgba(0,0,0,0.06);
+    padding: 40px;
+    max-width: 1100px;
+    margin: 26px auto 0;
+  }
+  .summary-card h2 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #0F172A;
+    margin-bottom: 28px;
+    text-align: center;
+  }
+  .params-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin-bottom: 28px;
+  }
+  .param-item {
+    background: #F8FAFC;
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .param-name {
+    font-family: 'SF Mono', 'Fira Mono', 'Courier New', monospace;
+    font-size: 0.78rem;
+    color: #1D4ED8;
+    font-weight: 600;
+    margin-bottom: 5px;
+  }
+  .param-value {
+    font-size: 1rem;
+    color: #0F172A;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .param-desc {
+    font-size: 0.8rem;
+    color: #64748B;
+    line-height: 1.5;
+  }
+  .return-box {
+    text-align: center;
+    padding: 14px 20px;
+    background: #F0FDF4;
+    border-radius: 10px;
+    font-size: 0.875rem;
+    color: #065F46;
+    line-height: 1.7;
+  }
+  .return-box code {
+    background: #D1FAE5;
+    color: #065F46;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-family: 'SF Mono', 'Fira Mono', 'Courier New', monospace;
+    font-size: 0.78rem;
+    font-weight: 600;
+  }
+
+  @media (max-width: 820px) {
+    .step-card { grid-template-columns: 1fr; }
+    .step-left { border-right: none; border-bottom: 1px solid #F1F5F9; }
+    .params-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header class="page-header">
+  <div class="tag">M3 · Dot Detection</div>
+  <h1>Elastic DISH Nucleus Matching</h1>
+  <p>
+    解決 IHC 與 DISH 兩張切片因物理飄移無法直接像素對齊的問題。<br>
+    以三步驟在不做影像配準的情況下，完成細胞核彈性分配。
+  </p>
+</header>
+
+<div class="problem-banner">
+  <div class="problem-icon">⚠️</div>
+  <div>
+    <strong>問題背景：</strong>IHC 染色（Cellpose 分割出 instance_mask）與 DISH 染色（nucleus_mask）是同一組織但獨立製作的切片。
+    物理上的組織飄移導致同一顆細胞核在兩張影像上的位置不會完全重疊，
+    因此無法直接用 pixel overlap 判斷「IHC 細胞 ↔ DISH 核」的對應關係。
+    <br><strong>解法：</strong>以面積驅動的等向膨脹作為容忍圈 + centroid greedy 排距分配。
+  </div>
+</div>
+
+<div class="steps-wrapper">
+
+  <!-- ════════════════ STEP 1 ════════════════ -->
+  <div class="step-card s1">
+    <div class="step-left">
+      <div class="step-badge">
+        <div class="step-num">1</div>
+        <span class="step-label">Step 1</span>
+      </div>
+      <h2 class="step-title">
+        等向膨脹
+        <small>Isotropic Dilation</small>
+      </h2>
+      <p class="step-desc">
+        對每一顆 IHC 細胞 region，計算使面積放大至 <strong>f 倍</strong>所需的 dilation radius <em>r</em>。
+        膨脹後的 region 作為「容忍圈」，涵蓋 DISH 核可能因飄移落入的範圍。
+        <br><br>
+        預設 <strong>f = 1.5</strong>（面積擴大 50%），對應約 <strong>15–20 px</strong> 的飄移容忍。
+      </p>
+      <div class="code-box">r = (√(A · f) − √A) / √π
+
+A  =  IHC 細胞面積 (pixels)
+f  =  dish_elastic_expand_factor
+         （預設 1.5）</div>
+    </div>
+    <div class="step-diagram">
+      <svg viewBox="0 0 540 270" xmlns="http://www.w3.org/2000/svg" width="540" height="270">
+        <!-- Before panel -->
+        <rect x="10" y="10" width="215" height="250" rx="12" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1.5"/>
+        <text x="117" y="32" text-anchor="middle" font-size="12" fill="#3B82F6" font-weight="700" font-family="sans-serif">Before</text>
+
+        <!-- IHC cell (irregular blob centered ~117, 135) -->
+        <path d="M117,88 C134,77 155,83 163,100 C171,117 167,143 154,156 C141,169 118,174 101,169 C84,164 65,150 62,133 C59,116 67,97 83,91 C95,87 104,96 117,88Z"
+              fill="#3B82F6" fill-opacity="0.75" stroke="#1D4ED8" stroke-width="1.8"/>
+        <circle cx="113" cy="132" r="3.5" fill="#1D4ED8"/>
+
+        <text x="117" y="205" text-anchor="middle" font-size="13" fill="#1E40AF" font-weight="600" font-family="sans-serif">IHC 細胞</text>
+        <text x="117" y="222" text-anchor="middle" font-size="11" fill="#64748B" font-family="sans-serif">面積 = A</text>
+        <text x="117" y="239" text-anchor="middle" font-size="11" fill="#64748B" font-family="sans-serif">centroid (cx, cy)</text>
+
+        <!-- Arrow -->
+        <line x1="238" y1="130" x2="296" y2="130" stroke="#94A3B8" stroke-width="2.5"/>
+        <polygon points="296,123 314,130 296,137" fill="#94A3B8"/>
+        <text x="276" y="118" text-anchor="middle" font-size="11" fill="#64748B" font-family="sans-serif">等向膨脹</text>
+        <text x="276" y="103" text-anchor="middle" font-size="12" fill="#3B82F6" font-weight="700" font-family="sans-serif">× f</text>
+
+        <!-- After panel -->
+        <rect x="316" y="10" width="215" height="250" rx="12" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1.5"/>
+        <text x="423" y="32" text-anchor="middle" font-size="12" fill="#3B82F6" font-weight="700" font-family="sans-serif">After</text>
+
+        <!-- Dilation zone (dashed circle) -->
+        <circle cx="419" cy="132" r="78" fill="#BFDBFE" fill-opacity="0.45" stroke="#60A5FA" stroke-width="2" stroke-dasharray="8,4"/>
+
+        <!-- Same IHC cell, centered at 419,132 -->
+        <path d="M419,88 C436,77 457,83 465,100 C473,117 469,143 456,156 C443,169 420,174 403,169 C386,164 367,150 364,133 C361,116 369,97 385,91 C397,87 406,96 419,88Z"
+              fill="#3B82F6" fill-opacity="0.75" stroke="#1D4ED8" stroke-width="1.8"/>
+        <circle cx="415" cy="132" r="3.5" fill="#1D4ED8"/>
+
+        <!-- Radius annotation -->
+        <line x1="415" y1="132" x2="480" y2="90" stroke="#DC2626" stroke-width="1.8" stroke-dasharray="4,2"/>
+        <circle cx="480" cy="90" r="3.5" fill="#DC2626"/>
+        <text x="460" y="103" font-size="12" fill="#DC2626" font-weight="700" font-family="sans-serif">r</text>
+
+        <!-- Labels -->
+        <text x="423" y="222" text-anchor="middle" font-size="13" fill="#1E40AF" font-weight="600" font-family="sans-serif">膨脹後 Region</text>
+        <text x="423" y="239" text-anchor="middle" font-size="11" fill="#64748B" font-family="sans-serif">涵蓋面積 ≈ A × f（容忍圈）</text>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ════════════════ STEP 2 ════════════════ -->
+  <div class="step-card s2">
+    <div class="step-left">
+      <div class="step-badge">
+        <div class="step-num">2</div>
+        <span class="step-label">Step 2</span>
+      </div>
+      <h2 class="step-title">
+        候選收集
+        <small>Candidate Collection</small>
+      </h2>
+      <p class="step-desc">
+        以 Step 1 的膨脹 region 為範圍，找出所有與其有 <strong>像素重疊</strong>的 DISH 細胞核，
+        收集為 candidate list。
+        <br><br>
+        不在容忍圈內的 DISH 核直接排除，不進入後續分配，大幅降低比對複雜度。
+      </p>
+      <div class="code-box amber">candidates = [
+  d_id
+  for d_id in dish_ids
+  if np.any(
+    dilated_region &amp; (dish_mask == d_id)
+  )
+]</div>
+    </div>
+    <div class="step-diagram">
+      <svg viewBox="0 0 530 310" xmlns="http://www.w3.org/2000/svg" width="530" height="310">
+        <rect x="8" y="8" width="514" height="294" rx="12" fill="#FFFBEB" stroke="#FDE68A" stroke-width="1.5"/>
+
+        <!-- Dilation zone -->
+        <circle cx="265" cy="155" r="112" fill="#BFDBFE" fill-opacity="0.38" stroke="#60A5FA" stroke-width="2.5" stroke-dasharray="9,4"/>
+
+        <!-- IHC cell at center -->
+        <path d="M265,113 C282,102 303,108 311,125 C319,142 314,168 300,180 C286,192 263,196 246,190 C229,184 210,170 207,153 C204,136 213,116 229,110 C241,106 252,118 265,113Z"
+              fill="#3B82F6" fill-opacity="0.78" stroke="#1D4ED8" stroke-width="1.8"/>
+        <circle cx="259" cy="153" r="4" fill="white"/>
+        <circle cx="259" cy="153" r="2.5" fill="#1D4ED8"/>
+        <text x="259" y="149" text-anchor="middle" font-size="11" fill="white" font-weight="700" font-family="sans-serif">IHC</text>
+
+        <!-- DISH D1 – inside zone, top-right: candidate -->
+        <circle cx="352" cy="95" r="24" fill="#FEF3C7" stroke="#F59E0B" stroke-width="2.5"/>
+        <circle cx="352" cy="95" r="4" fill="#D97706"/>
+        <text x="352" y="100" text-anchor="middle" font-size="11" fill="#78350F" font-weight="700" font-family="sans-serif">D₁</text>
+        <rect x="330" y="62" width="48" height="19" rx="5" fill="#F59E0B"/>
+        <text x="354" y="75" text-anchor="middle" font-size="10" fill="white" font-weight="700" font-family="sans-serif">候選 ✓</text>
+
+        <!-- DISH D2 – inside zone, bottom-left: candidate -->
+        <circle cx="178" cy="208" r="24" fill="#FEF3C7" stroke="#F59E0B" stroke-width="2.5"/>
+        <circle cx="178" cy="208" r="4" fill="#D97706"/>
+        <text x="178" y="213" text-anchor="middle" font-size="11" fill="#78350F" font-weight="700" font-family="sans-serif">D₂</text>
+        <rect x="156" y="175" width="48" height="19" rx="5" fill="#F59E0B"/>
+        <text x="180" y="188" text-anchor="middle" font-size="10" fill="white" font-weight="700" font-family="sans-serif">候選 ✓</text>
+
+        <!-- DISH D3 – outside zone, top-left: NOT candidate -->
+        <circle cx="82" cy="74" r="24" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="2"/>
+        <circle cx="82" cy="74" r="4" fill="#94A3B8"/>
+        <text x="82" y="79" text-anchor="middle" font-size="11" fill="#94A3B8" font-weight="700" font-family="sans-serif">D₃</text>
+        <text x="82" y="110" text-anchor="middle" font-size="11" fill="#CBD5E1" font-family="sans-serif">圈外 ✗</text>
+
+        <!-- DISH D4 – outside zone, bottom-right: NOT candidate -->
+        <circle cx="455" cy="240" r="24" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="2"/>
+        <circle cx="455" cy="240" r="4" fill="#94A3B8"/>
+        <text x="455" y="245" text-anchor="middle" font-size="11" fill="#94A3B8" font-weight="700" font-family="sans-serif">D₄</text>
+        <text x="455" y="276" text-anchor="middle" font-size="11" fill="#CBD5E1" font-family="sans-serif">圈外 ✗</text>
+
+        <!-- Legend -->
+        <rect x="12" y="274" width="260" height="22" rx="6" fill="white" fill-opacity="0.85"/>
+        <circle cx="28" cy="285" r="8" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1.5"/>
+        <text x="40" y="289" font-size="10" fill="#78350F" font-family="sans-serif">候選 DISH 核（與容忍圈有像素重疊）</text>
+        <circle cx="160" cy="285" r="8" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="1.5"/>
+        <text x="172" y="289" font-size="10" fill="#94A3B8" font-family="sans-serif">排除（不在容忍圈內）</text>
+
+        <!-- Dilation ring label -->
+        <line x1="365" y1="260" x2="350" y2="245" stroke="#93C5FD" stroke-width="1.5"/>
+        <text x="380" y="265" font-size="10" fill="#3B82F6" font-family="sans-serif">容忍圈</text>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ════════════════ STEP 3 ════════════════ -->
+  <div class="step-card s3">
+    <div class="step-left">
+      <div class="step-badge">
+        <div class="step-num">3</div>
+        <span class="step-label">Step 3</span>
+      </div>
+      <h2 class="step-title">
+        Greedy 距離分配
+        <small>Greedy Centroid Assignment</small>
+      </h2>
+      <p class="step-desc">
+        對所有 (IHC, DISH) candidate pair，按 <strong>centroid 歐氏距離</strong>由近到遠排序，依序 greedy 認領：
+        <br><br>
+        &bull; 每顆 <strong>DISH 核最多被一顆 IHC</strong> 認領（exclusive）<br>
+        &bull; 一顆 <strong>IHC 可認領多顆 DISH</strong>（多核細胞）<br>
+        &bull; 距離 &gt; <strong>max_dist_px（預設 50 px）</strong>直接拒絕
+      </p>
+      <div class="code-box green">pairs.sort(key=lambda p: p.dist)
+
+for (ihc, dish, dist) in pairs:
+    if dist > max_dist_px: break
+    if dish in assigned: continue  # 已被搶走
+    result[ihc].append(dish)
+    assigned.add(dish)
+
+# 一顆 IHC → 多顆 DISH OK（多核）
+# 一顆 DISH → 只屬一顆 IHC</div>
+    </div>
+    <div class="step-diagram">
+      <svg viewBox="0 0 570 340" xmlns="http://www.w3.org/2000/svg" width="570" height="340">
+        <defs>
+          <marker id="arrowGreen" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0,10 3.5,0 7" fill="#16A34A"/>
+          </marker>
+          <marker id="arrowGray" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0,8 3,0 6" fill="#CBD5E1"/>
+          </marker>
+        </defs>
+
+        <rect x="8" y="8" width="554" height="324" rx="12" fill="#F0FDF4" stroke="#BBF7D0" stroke-width="1.5"/>
+
+        <!-- ── Sorted pair table ── -->
+        <text x="285" y="34" text-anchor="middle" font-size="12" fill="#059669" font-weight="700" font-family="sans-serif">排序後 pair list（由近到遠）→ Greedy 認領</text>
+
+        <!-- Table header -->
+        <rect x="150" y="42" width="270" height="22" rx="5" fill="#D1FAE5"/>
+        <text x="215" y="57" text-anchor="middle" font-size="10.5" fill="#065F46" font-weight="700" font-family="sans-serif">IHC</text>
+        <text x="275" y="57" text-anchor="middle" font-size="10.5" fill="#065F46" font-weight="700" font-family="sans-serif">DISH</text>
+        <text x="335" y="57" text-anchor="middle" font-size="10.5" fill="#065F46" font-weight="700" font-family="sans-serif">距離</text>
+
+        <!-- Row 1: IHC₁, D₁, 28px → ASSIGNED -->
+        <rect x="150" y="64" width="270" height="22" rx="3" fill="#ECFDF5"/>
+        <text x="215" y="78" text-anchor="middle" font-size="11" fill="#1E293B" font-family="sans-serif">IHC₁</text>
+        <text x="275" y="78" text-anchor="middle" font-size="11" fill="#1E293B" font-family="sans-serif">D₁</text>
+        <text x="335" y="78" text-anchor="middle" font-size="11" fill="#1E293B" font-family="sans-serif">28 px</text>
+        <rect x="432" y="66" width="54" height="18" rx="5" fill="#22C55E"/>
+        <text x="459" y="78" text-anchor="middle" font-size="10" fill="white" font-weight="700" font-family="sans-serif">分配 ✓</text>
+
+        <!-- Row 2: IHC₂, D₂, 35px → ASSIGNED -->
+        <rect x="150" y="86" width="270" height="22" rx="3" fill="#ECFDF5"/>
+        <text x="215" y="100" text-anchor="middle" font-size="11" fill="#1E293B" font-family="sans-serif">IHC₂</text>
+        <text x="275" y="100" text-anchor="middle" font-size="11" fill="#1E293B" font-family="sans-serif">D₂</text>
+        <text x="335" y="100" text-anchor="middle" font-size="11" fill="#1E293B" font-family="sans-serif">35 px</text>
+        <rect x="432" y="88" width="54" height="18" rx="5" fill="#22C55E"/>
+        <text x="459" y="100" text-anchor="middle" font-size="10" fill="white" font-weight="700" font-family="sans-serif">分配 ✓</text>
+
+        <!-- Row 3: IHC₁, D₂, 44px → SKIP (already taken) -->
+        <rect x="150" y="108" width="270" height="22" rx="3" fill="#F9FAFB"/>
+        <text x="215" y="122" text-anchor="middle" font-size="11" fill="#94A3B8" font-family="sans-serif">IHC₁</text>
+        <text x="275" y="122" text-anchor="middle" font-size="11" fill="#94A3B8" font-family="sans-serif">D₂</text>
+        <text x="335" y="122" text-anchor="middle" font-size="11" fill="#94A3B8" font-family="sans-serif">44 px</text>
+        <rect x="432" y="110" width="54" height="18" rx="5" fill="#E2E8F0"/>
+        <text x="459" y="122" text-anchor="middle" font-size="10" fill="#94A3B8" font-weight="700" font-family="sans-serif">已佔用</text>
+
+        <!-- Row 4: IHC₂, D₃, 57px → REJECTED > max_dist -->
+        <rect x="150" y="130" width="270" height="22" rx="3" fill="#FFF1F2"/>
+        <text x="215" y="144" text-anchor="middle" font-size="11" fill="#94A3B8" font-family="sans-serif">IHC₂</text>
+        <text x="275" y="144" text-anchor="middle" font-size="11" fill="#94A3B8" font-family="sans-serif">D₃</text>
+        <text x="335" y="144" text-anchor="middle" font-size="11" fill="#EF4444" font-family="sans-serif">57 px</text>
+        <rect x="432" y="132" width="54" height="18" rx="5" fill="#FEE2E2"/>
+        <text x="459" y="144" text-anchor="middle" font-size="10" fill="#DC2626" font-weight="700" font-family="sans-serif">&gt;50px ✗</text>
+
+        <!-- Brace for max_dist -->
+        <line x1="505" y1="120" x2="514" y2="120" stroke="#94A3B8" stroke-width="1"/>
+        <line x1="514" y1="120" x2="514" y2="148" stroke="#94A3B8" stroke-width="1"/>
+        <line x1="505" y1="148" x2="514" y2="148" stroke="#94A3B8" stroke-width="1"/>
+        <text x="518" y="132" font-size="9" fill="#94A3B8" font-family="sans-serif">max_dist</text>
+        <text x="518" y="143" font-size="9" fill="#94A3B8" font-family="sans-serif">= 50 px</text>
+
+        <!-- ── Visual result diagram ── -->
+
+        <!-- IHC₁ cell (top-left, center 80,215) -->
+        <path d="M80,185 C95,175 116,180 122,197 C128,213 123,238 109,248 C95,258 72,260 57,250 C42,240 38,218 46,203 C54,190 67,193 80,185Z"
+              fill="#3B82F6" fill-opacity="0.75" stroke="#1D4ED8" stroke-width="1.8"/>
+        <circle cx="80" cy="221" r="3.5" fill="#1D4ED8"/>
+        <text x="80" y="270" text-anchor="middle" font-size="11" fill="#1E40AF" font-weight="700" font-family="sans-serif">IHC₁</text>
+
+        <!-- IHC₂ cell (bottom-left, center 80,300) -->
+        <path d="M80,272 C94,263 112,268 118,283 C124,298 119,320 106,329 C93,338 70,339 55,329 C40,319 37,300 45,286 C52,274 67,278 80,272Z"
+              fill="#3B82F6" fill-opacity="0.75" stroke="#1D4ED8" stroke-width="1.8"/>
+        <circle cx="80" cy="303" r="3.5" fill="#1D4ED8"/>
+        <text x="80" y="217" text-anchor="middle" font-size="11" fill="#1E40AF" font-weight="700" font-family="sans-serif"></text>
+        <text x="80" y="348" text-anchor="middle" font-size="11" fill="#1E40AF" font-weight="700" font-family="sans-serif">IHC₂</text>
+
+        <!-- D₁ (matched to IHC₁, center 400,215) — purple border -->
+        <circle cx="400" cy="215" r="25" fill="#EDE9FE" stroke="#9333EA" stroke-width="2.5"/>
+        <circle cx="400" cy="215" r="4" fill="#7C3AED"/>
+        <text x="400" y="220" text-anchor="middle" font-size="11" fill="#6B21A8" font-weight="700" font-family="sans-serif">D₁</text>
+        <text x="400" y="250" text-anchor="middle" font-size="10" fill="#9333EA" font-weight="600" font-family="sans-serif">認領 ✓</text>
+
+        <!-- D₂ (matched to IHC₂, center 400,300) — purple border -->
+        <circle cx="400" cy="300" r="25" fill="#EDE9FE" stroke="#9333EA" stroke-width="2.5"/>
+        <circle cx="400" cy="300" r="4" fill="#7C3AED"/>
+        <text x="400" y="305" text-anchor="middle" font-size="11" fill="#6B21A8" font-weight="700" font-family="sans-serif">D₂</text>
+        <text x="400" y="335" text-anchor="middle" font-size="10" fill="#9333EA" font-weight="600" font-family="sans-serif">認領 ✓</text>
+
+        <!-- D₃ (rejected, too far, center 478,258) -->
+        <circle cx="478" cy="258" r="25" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="2"/>
+        <circle cx="478" cy="258" r="4" fill="#94A3B8"/>
+        <text x="478" y="263" text-anchor="middle" font-size="11" fill="#94A3B8" font-weight="700" font-family="sans-serif">D₃</text>
+        <text x="478" y="294" text-anchor="middle" font-size="10" fill="#DC2626" font-family="sans-serif">&gt;50px ✗</text>
+
+        <!-- Arrow IHC₁ → D₁ (d=28px, green) -->
+        <line x1="123" y1="218" x2="375" y2="215" stroke="#22C55E" stroke-width="2.2" marker-end="url(#arrowGreen)"/>
+        <text x="249" y="210" text-anchor="middle" font-size="10" fill="#16A34A" font-weight="600" font-family="sans-serif">d = 28 px ✓</text>
+
+        <!-- Arrow IHC₂ → D₂ (d=35px, green) -->
+        <line x1="123" y1="300" x2="375" y2="300" stroke="#22C55E" stroke-width="2.2" marker-end="url(#arrowGreen)"/>
+        <text x="249" y="294" text-anchor="middle" font-size="10" fill="#16A34A" font-weight="600" font-family="sans-serif">d = 35 px ✓</text>
+
+        <!-- Dashed line IHC₂ → D₃ (rejected, red dashed) -->
+        <line x1="123" y1="306" x2="453" y2="262" stroke="#FCA5A5" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrowGray)"/>
+        <text x="310" y="297" text-anchor="middle" font-size="9.5" fill="#DC2626" font-family="sans-serif">d = 57 px &gt; max_dist，拒絕</text>
+
+      </svg>
+    </div>
+  </div>
+
+</div>
+
+<!-- ════════════════ Config Params ════════════════ -->
+<div class="summary-card">
+  <h2>相關 Config 參數 &amp; 回傳值</h2>
+  <div class="params-grid">
+    <div class="param-item">
+      <div class="param-name">dish_elastic_expand_factor</div>
+      <div class="param-value">預設 1.5</div>
+      <div class="param-desc">Step 1 膨脹倍數。1.5 = 面積擴大 50%，容忍約 15–20 px 的飄移。</div>
+    </div>
+    <div class="param-item">
+      <div class="param-name">dish_elastic_max_dist_px</div>
+      <div class="param-value">預設 50 px</div>
+      <div class="param-desc">Step 3 centroid 距離上限。超過此距離的 (IHC, DISH) pair 直接拒絕，不分配。</div>
+    </div>
+  </div>
+  <div class="return-box">
+    <strong>回傳值：</strong>
+    <code>{ ihc_cell_id: [assigned_dish_id, ...] }</code>
+    <br>
+    一顆 IHC 可對應多顆 DISH（多核細胞）；一顆 DISH 只屬於一顆 IHC（exclusive）。
+    <br>
+    未被任何 IHC 認領的 DISH 核 → 不出現在結果中，視覺化上顯示為白色輪廓。
+    <br>
+    被認領的 DISH 核 → 視覺化上顯示為<strong style="color:#9333EA;">深粉色輪廓</strong>，並畫飄移箭頭。
+  </div>
+</div>
+
+</body>
+</html>

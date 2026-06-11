@@ -108,7 +108,7 @@ def generate_thumbnail(
         str(output_path),
         pyramid=True,
         bigtiff=True,
-        Q=95,
+        Q=100,
         compression='jpeg',
     )
 

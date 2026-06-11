@@ -387,9 +387,14 @@ def export_per_cell_images(
 ) -> List[Path]:
     """輸出每個細胞的固定尺寸影像。
 
-    region_mask 優先使用該細胞匹配到的 DISH 核（聯集），若無匹配則
-    fallback 回 IHC cell_instance_mask。細胞外背景填 255，之後放入固定
-    ``crop_size x crop_size`` 白底畫布。
+    被配對的細胞：region_mask = 匹配到的 DISH 核（粉色輪廓形狀），crop
+    緊貼粉色邊緣，不與 IHC 本體聯集（drift 會讓聯集 bbox 暴增成「亂切」）。
+    未配對的細胞：退回 IHC cell_instance_mask 形狀。細胞外背景填 255，
+    之後放入固定 ``crop_size x crop_size`` 白底畫布。
+
+    註：m3 偵測 ROI 是 effective_mask（IHC strict ∪ DISH fill），比粉色核
+    略寬；少數落在核外 IHC 本體的點不會顯示在此 crop（已由座標越界守衛擋下），
+    但仍計入 CSV count。若要兩者完全一致需改 m3 偵測 ROI（會動到 count）。
 
     若提供 ``per_cell_dots``，會在每張 crop 上：
       - 畫出該細胞範圍內的 HER2 黑點 / CEP17 紅點
@@ -422,13 +427,16 @@ def export_per_cell_images(
             else []
         )
 
+        # 被配對的細胞：crop 只跟著粉色 DISH 核形狀走（與 overlay 粉色輪廓
+        # 一致）。不與 IHC 本體聯集——drift 會讓兩塊分離、bbox 暴增成「亂切」。
+        region_mask: Optional[np.ndarray] = None
         if assigned_ids:
-            region_mask = np.zeros(dish_nucleus_mask.shape, dtype=bool)
+            region_mask = np.zeros_like(cell_instance_mask, dtype=bool)
             for did in assigned_ids:
                 region_mask |= (dish_nucleus_mask == did)
-            if not np.any(region_mask):
-                region_mask = (cell_instance_mask == cell.cell_id)
-        else:
+
+        # 未配對（無粉色）或粉色核遺失 → 退回 IHC 細胞實例形狀。
+        if region_mask is None or not region_mask.any():
             region_mask = (cell_instance_mask == cell.cell_id)
 
         if not np.any(region_mask):
@@ -438,7 +446,7 @@ def export_per_cell_images(
             source_image,
             region_mask,
         )
-        fixed_crop, (offset_y, offset_x) = _fit_to_fixed_canvas(
+        fixed_crop, (offset_y, offset_x), scale = _fit_to_fixed_canvas(
             cell_crop,
             crop_size=crop_size,
             fill_value=255,
@@ -455,6 +463,7 @@ def export_per_cell_images(
                 bbox_x0=x0,
                 canvas_offset_y=offset_y,
                 canvas_offset_x=offset_x,
+                canvas_scale=scale,
                 crop_size=crop_size,
             )
 
@@ -474,24 +483,25 @@ def _annotate_cell_crop(
     bbox_x0: int,
     canvas_offset_y: int,
     canvas_offset_x: int,
+    canvas_scale: float,
     crop_size: int,
 ) -> None:
     """在單張細胞 crop 上畫 dot / AMP 標籤 / excluded X。
 
-    座標換算: 全 tile 座標 → 細胞 bbox 座標 → 固定畫布座標
-      ``canvas_y = full_y - bbox_y0 + canvas_offset_y``
+    座標換算: 全 tile 座標 → 細胞 bbox 座標 → (縮放) → 固定畫布座標
+      ``canvas_y = (full_y - bbox_y0) * canvas_scale + canvas_offset_y``
     """
     excluded = bool(getattr(cell, "excluded", False))
 
     if not excluded and cell_dot_result is not None:
         dots = cell_dot_result.her2_dots + cell_dot_result.cep17_dots
         for d in dots:
-            local_y = d.y - bbox_y0 + canvas_offset_y
-            local_x = d.x - bbox_x0 + canvas_offset_x
+            local_y = (d.y - bbox_y0) * canvas_scale + canvas_offset_y
+            local_x = (d.x - bbox_x0) * canvas_scale + canvas_offset_x
             if not (0 <= local_y < crop_size and 0 <= local_x < crop_size):
                 continue
             color = _COLOR_HER2 if d.dot_type == "her2" else _COLOR_CEP17
-            r = max(3, int(round(d.radius + 1)))
+            r = max(3, int(round(d.radius * canvas_scale + 1)))
             cv2.circle(
                 crop_bgr, (int(local_x), int(local_y)), r,
                 color, 1, cv2.LINE_AA,
@@ -556,28 +566,30 @@ def _fit_to_fixed_canvas(
     patch: np.ndarray,
     crop_size: int,
     fill_value: int = 255,
-) -> Tuple[np.ndarray, Tuple[int, int]]:
+) -> Tuple[np.ndarray, Tuple[int, int], float]:
     """將任意尺寸 patch 放入固定尺寸白底畫布。
 
+    若 patch 任一邊超過 ``crop_size``，等比例縮小以完整保留細胞（不裁切），
+    縮放係數一併回傳供點座標換算。
+
     Returns:
-        ``(canvas, (offset_y, offset_x))``；offset 用於將 patch 內座標
-        轉換到 canvas 座標：``canvas_coord = patch_coord + offset``。
+        ``(canvas, (offset_y, offset_x), scale)``；座標換算為
+        ``canvas_coord = patch_coord * scale + offset``。
     """
     h, w = patch.shape[:2]
     canvas = np.full((crop_size, crop_size, 3), fill_value, dtype=patch.dtype)
 
-    src_y0 = max((h - crop_size) // 2, 0)
-    src_x0 = max((w - crop_size) // 2, 0)
-    src_y1 = src_y0 + min(h, crop_size)
-    src_x1 = src_x0 + min(w, crop_size)
+    scale = min(1.0, crop_size / max(h, w))
+    if scale < 1.0:
+        new_w = max(1, int(round(w * scale)))
+        new_h = max(1, int(round(h * scale)))
+        patch = cv2.resize(patch, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        h, w = new_h, new_w
 
-    trimmed = patch[src_y0:src_y1, src_x0:src_x1]
-    th, tw = trimmed.shape[:2]
-
-    dst_y0 = (crop_size - th) // 2
-    dst_x0 = (crop_size - tw) // 2
-    canvas[dst_y0:dst_y0 + th, dst_x0:dst_x0 + tw] = trimmed
-    return canvas, (dst_y0 - src_y0, dst_x0 - src_x0)
+    dst_y0 = (crop_size - h) // 2
+    dst_x0 = (crop_size - w) // 2
+    canvas[dst_y0:dst_y0 + h, dst_x0:dst_x0 + w] = patch
+    return canvas, (dst_y0, dst_x0), scale
 
 
 # ------------------------------------------------------------------

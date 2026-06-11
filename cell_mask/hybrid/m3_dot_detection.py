@@ -1,13 +1,15 @@
 """M3b: DISH 紅點 (CEP17) / 黑點 (HER2) 偵測模組。
 
 演算法核心：
-    紅點 / 黑點：LAB 色彩空間 + H-形態重建 + 多準則閘控 (per-cell ROI)
-    多核排除：Cellpose DISH 模型對純 DISH 圖偵測細胞核 instance，
-              對每個 IHC 細胞先等向膨脹 region（容忍切片對齊誤差），
-              再以重疊收集 candidate DISH 核，最後依 centroid 距離 greedy
-              exclusive 分配；匹配到的 DISH 核數 ≥
-              dot_blue_exclude_threshold → 排除（多核細胞）。
-              詳見 docs/sdd-elastic-dish-matching.md。
+    1. 先以 elastic matching 把 DISH 核 instance 分配給 IHC 細胞
+       （greedy exclusive，每顆 DISH 核最多被一顆 IHC 認領）。
+    2. 建立 effective_instance_mask：IHC strict 先寫入，matched DISH
+       區只填還是 0 的像素，不搶其他細胞。
+    3. 對每顆 cell 逐顆 crop 出 region，在局部 LAB patch 上做紅/黑點
+       偵測 → 直接以 cell 為 ROI，不再做全圖偵測 + 最近鄰指派。
+    4. 多核排除：matched DISH 核數 ≥ ``dot_blue_exclude_threshold`` → 排除。
+
+詳見 docs/sdd-elastic-dish-matching.md。
 """
 
 from __future__ import annotations
@@ -18,10 +20,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from scipy.ndimage import (
-    center_of_mass,
-    distance_transform_edt,
-)
+from joblib import Parallel, delayed
+from scipy.ndimage import center_of_mass, find_objects
 from scipy.spatial import cKDTree
 from skimage.color import rgb2lab
 from skimage.measure import label, regionprops
@@ -83,15 +83,20 @@ def detect_all_dots(
     instance_mask: np.ndarray,
     config: object,
     dish_nucleus_mask: np.ndarray,
+    dish_ids_by_cell: Optional[Dict[int, List[int]]] = None,
+    n_jobs: Optional[int] = None,
 ) -> Tuple[List[DetectedDot], Dict[int, CellDotResult]]:
-    """偵測 dish_image 中所有 HER2 黑點與 CEP17 紅點，並分配至各細胞。
+    """逐顆 matched cell 偵測 HER2 黑點與 CEP17 紅點。
 
     Args:
         dish_image: (H, W, 3) uint8 RGB，白背景(255)，已套用 core_mask。
-        instance_mask: (H, W) 整數，0=背景，1..N=細胞ID。
-        config: 具有 ``dot_*`` 欄位的配置物件。
-        dish_nucleus_mask: (H, W) int，0=背景，1..M=DISH 細胞核 ID（Cellpose 輸出）。
-            用於計算多核重疊以排除多核細胞。
+        instance_mask: (H, W) 整數，0=背景，1..N=IHC 細胞 ID（strict 分割）。
+        config: 具有 ``dot_*`` / ``dish_elastic_*`` 欄位的配置物件。
+        dish_nucleus_mask: (H, W) int，0=背景，1..M=DISH 細胞核 ID。
+        dish_ids_by_cell: 可選，預先算好的 elastic matching 結果
+            ``{ihc_cell_id: [dish_id, ...]}``。未提供時內部會自行呼叫。
+        n_jobs: per-cell 偵測的平行度（joblib）。None=用滿所有核心 (-1)，
+            1=序列，其他正整數=指定行程數。
 
     Returns:
         (all_dots, per_cell_results)
@@ -102,47 +107,34 @@ def detect_all_dots(
         raise ValueError(
             f"shape 不一致: dish={dish_image.shape[:2]} vs mask={instance_mask.shape}"
         )
+    if dish_nucleus_mask is None:
+        raise ValueError("dish_nucleus_mask 為必填參數，未提供。")
+    if dish_nucleus_mask.shape != instance_mask.shape:
+        raise ValueError(
+            "shape 不一致: "
+            f"dish_nucleus_mask={dish_nucleus_mask.shape} vs mask={instance_mask.shape}"
+        )
 
     instance_mask_i32 = instance_mask.astype(np.int32, copy=False)
+    dish_nucleus_mask_i32 = dish_nucleus_mask.astype(np.int32, copy=False)
+
+    if dish_ids_by_cell is None:
+        dish_ids_by_cell = elastic_dish_nucleus_matching(
+            dish_nucleus_mask=dish_nucleus_mask_i32,
+            strict_instance_mask=instance_mask_i32,
+            cfg=config,
+        )
+
+    effective_mask = _build_effective_instance_mask(
+        strict_instance_mask=instance_mask_i32,
+        dish_nucleus_mask=dish_nucleus_mask_i32,
+        dish_ids_by_cell=dish_ids_by_cell,
+    )
 
     L, a, b = _rgb_to_lab(dish_image)
-    bg_mask, cell_roi = _build_masks(L, instance_mask_i32, config)
+    bg_threshold = float(getattr(config, "dot_background_l_threshold", 95.0))
+    bg_mask_global = L > bg_threshold
 
-    if not cell_roi.any():
-        logger.info("detect_all_dots: cell_roi 為空，回傳空結果")
-        return [], {}
-
-    # 為 ROI 膨脹區內的 dot 提供最近鄰 cell_id 查找表
-    nearest_cell_id, nearest_cell_dist = _build_nearest_cell_lookup(
-        instance_mask_i32,
-        cell_roi,
-    )
-    boundary_dist = _compute_boundary_distance(instance_mask_i32)
-
-    red_dots = _detect_red_dots(
-        a=a,
-        cell_roi=cell_roi,
-        bg_mask=bg_mask,
-        nearest_instance_mask=nearest_cell_id,
-        strict_instance_mask=instance_mask_i32,
-        nearest_cell_dist=nearest_cell_dist,
-        boundary_dist=boundary_dist,
-        cfg=config,
-    )
-    black_dots = _detect_black_dots(
-        L=L,
-        a=a,
-        b=b,
-        cell_roi=cell_roi,
-        bg_mask=bg_mask,
-        nearest_instance_mask=nearest_cell_id,
-        strict_instance_mask=instance_mask_i32,
-        nearest_cell_dist=nearest_cell_dist,
-        boundary_dist=boundary_dist,
-        cfg=config,
-    )
-
-    # 群聚合併（同類型）
     default_merge_distance = float(getattr(config, "dot_merge_distance", 3.0))
     red_merge_distance = float(
         getattr(config, "dot_red_merge_distance", default_merge_distance)
@@ -150,30 +142,155 @@ def detect_all_dots(
     black_merge_distance = float(
         getattr(config, "dot_black_merge_distance", default_merge_distance)
     )
-    red_dots = _merge_close_dots(red_dots, red_merge_distance)
-    black_dots = _merge_close_dots(black_dots, black_merge_distance)
 
-    # 多核排除計數：以 Cellpose DISH 核 instance 與 IHC 細胞做彈性匹配
-    dish_ids_by_cell = _elastic_dish_nucleus_matching(
-        dish_nucleus_mask=dish_nucleus_mask.astype(np.int32, copy=False),
-        strict_instance_mask=instance_mask_i32,
-        cfg=config,
+    all_dots: List[DetectedDot] = []
+    per_cell: Dict[int, CellDotResult] = {}
+
+    # find_objects 一次取得每個 label 的 bbox，取代逐顆對整張影像掃 (== cid)。
+    # slices[k] 對應 label k+1 的 (slice_y, slice_x)；label 不存在則為 None。
+    slices = find_objects(effective_mask)
+    cell_ids = sorted({int(v) for v in np.unique(effective_mask) if v != 0})
+    tasks = [
+        (cid, slices[cid - 1])
+        for cid in cell_ids
+        if cid - 1 < len(slices) and slices[cid - 1] is not None
+    ]
+
+    # 每顆 cell 完全獨立（只讀傳入陣列的 bbox 切片），多核平行。
+    # joblib 對大陣列自動 memmap，每個只 dump 一次供所有 worker 共享唯讀。
+    n_jobs_eff = -1 if n_jobs is None else n_jobs
+    cell_results = Parallel(n_jobs=n_jobs_eff)(
+        delayed(_detect_one_cell)(
+            cid, sl, effective_mask, L, a, b, bg_mask_global,
+            config, red_merge_distance, black_merge_distance,
+        )
+        for cid, sl in tasks
     )
 
-    all_dots = red_dots + black_dots
-    per_cell = _group_dots_by_cell(
-        all_dots, instance_mask_i32, dish_ids_by_cell, config
-    )
+    for cid, red_dots, black_dots in cell_results:
+        cdr = CellDotResult(cell_id=cid)
+        cdr.cep17_dots = red_dots
+        cdr.her2_dots = black_dots
+        per_cell[cid] = cdr
+        all_dots.extend(red_dots)
+        all_dots.extend(black_dots)
 
+    _finalize_per_cell(per_cell, dish_ids_by_cell, config)
+
+    n_red = sum(1 for d in all_dots if d.dot_type == "cep17")
+    n_black = sum(1 for d in all_dots if d.dot_type == "her2")
     logger.info(
         "detect_all_dots: 紅點=%d, 黑點=%d, 涉及細胞=%d",
-        len(red_dots), len(black_dots), len(per_cell),
+        n_red, n_black, len(per_cell),
     )
     return all_dots, per_cell
 
 
+def _detect_one_cell(
+    cid: int,
+    sl: Tuple[slice, slice],
+    effective_mask: np.ndarray,
+    L: np.ndarray,
+    a: np.ndarray,
+    b: np.ndarray,
+    bg_mask_global: np.ndarray,
+    cfg: object,
+    red_merge_distance: float,
+    black_merge_distance: float,
+) -> Tuple[int, List[DetectedDot], List[DetectedDot]]:
+    """在單顆 cell 的 bbox patch 上偵測紅/黑點，回傳全 tile 座標的點。
+
+    供 joblib 平行呼叫：只讀傳入陣列在 ``sl`` 的切片，無共用寫入，
+    因此各 cell 之間完全獨立。
+
+    Returns:
+        ``(cell_id, red_dots, black_dots)``；無 ROI 時兩串列皆空。
+    """
+    y0 = sl[0].start
+    x0 = sl[1].start
+
+    region_local = effective_mask[sl] == cid
+    bg_local = bg_mask_global[sl]
+    cell_roi_local = region_local & (~bg_local)
+    if not cell_roi_local.any():
+        return cid, [], []
+
+    L_local = L[sl]
+    a_local = a[sl]
+    b_local = b[sl]
+
+    red_dots = _detect_red_dots(
+        a=a_local,
+        cell_roi=cell_roi_local,
+        bg_mask=bg_local,
+        cfg=cfg,
+        cell_id=cid,
+    )
+    black_dots = _detect_black_dots(
+        L=L_local,
+        a=a_local,
+        b=b_local,
+        cell_roi=cell_roi_local,
+        bg_mask=bg_local,
+        cfg=cfg,
+        cell_id=cid,
+    )
+    red_dots = _merge_close_dots(red_dots, red_merge_distance)
+    black_dots = _merge_close_dots(black_dots, black_merge_distance)
+
+    # 局部 patch 座標 → 全 tile 座標
+    for d in red_dots:
+        d.y += y0
+        d.x += x0
+    for d in black_dots:
+        d.y += y0
+        d.x += x0
+    return cid, red_dots, black_dots
+
+
 # ------------------------------------------------------------------
-# 色彩空間與遮罩
+# Effective instance mask（IHC strict + matched DISH 補位）
+# ------------------------------------------------------------------
+
+def _build_effective_instance_mask(
+    strict_instance_mask: np.ndarray,
+    dish_nucleus_mask: np.ndarray,
+    dish_ids_by_cell: Dict[int, List[int]],
+) -> np.ndarray:
+    """Hard-assign 每個像素到一顆 IHC 細胞。
+
+    優先序：
+        Pass 1: IHC strict mask 先寫入（嚴格分割優先）。
+        Pass 2: matched DISH 核區只填還是 0 的像素，等於把 cell footprint
+                往 DISH 核位置擴張，但絕不覆蓋其他細胞的 strict 區。
+    """
+    out = strict_instance_mask.astype(np.int32, copy=True)
+    if dish_nucleus_mask.size == 0:
+        return out
+
+    dish_to_ihc: Dict[int, int] = {}
+    for cid, dish_ids in dish_ids_by_cell.items():
+        for did in dish_ids:
+            dish_to_ihc[int(did)] = int(cid)
+    if not dish_to_ihc:
+        return out
+
+    max_dish = int(dish_nucleus_mask.max())
+    if max_dish <= 0:
+        return out
+
+    lookup = np.zeros(max_dish + 1, dtype=np.int32)
+    for did, cid in dish_to_ihc.items():
+        if 0 < did <= max_dish:
+            lookup[did] = cid
+    extended = lookup[dish_nucleus_mask]
+    fill_mask = (out == 0) & (extended > 0)
+    out[fill_mask] = extended[fill_mask]
+    return out
+
+
+# ------------------------------------------------------------------
+# 色彩空間
 # ------------------------------------------------------------------
 
 def _rgb_to_lab(img_rgb: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -182,43 +299,18 @@ def _rgb_to_lab(img_rgb: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray
     return lab[..., 0], lab[..., 1], lab[..., 2]
 
 
-def _build_masks(
-    L: np.ndarray,
-    instance_mask: np.ndarray,
-    cfg: object,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """建立 (bg_mask, cell_roi)。
-
-    cell_roi 會以 ``dot_cell_roi_dilate`` (px) 往外擴，
-    以涵蓋 Cellpose 邊界外緊鄰的 dot（典型值 2–4 px）。
-    背景像素 (L>閾值) 仍會從 ROI 中扣除。
-    """
-    bg_threshold = float(getattr(cfg, "dot_background_l_threshold", 95.0))
-    roi_dilate = int(getattr(cfg, "dot_cell_roi_dilate", 0))
-    bg_mask = L > bg_threshold
-
-    cell_base = instance_mask > 0
-    if roi_dilate > 0:
-        cell_base = binary_dilation(cell_base, disk(roi_dilate))
-    cell_roi = cell_base & (~bg_mask)
-    return bg_mask, cell_roi
-
-
 # ------------------------------------------------------------------
-# 紅點 (CEP17) 偵測
+# 紅點 (CEP17) 偵測 — 在單顆 cell 的局部 patch 上執行
 # ------------------------------------------------------------------
 
 def _detect_red_dots(
     a: np.ndarray,
     cell_roi: np.ndarray,
     bg_mask: np.ndarray,
-    nearest_instance_mask: np.ndarray,
-    strict_instance_mask: np.ndarray,
-    nearest_cell_dist: np.ndarray,
-    boundary_dist: np.ndarray,
     cfg: object,
+    cell_id: int,
 ) -> List[DetectedDot]:
-    """紅點偵測主流程。"""
+    """紅點偵測主流程（patch-local 座標）。"""
     h_depth = float(getattr(cfg, "dot_red_h", 12.0))
     a_min = float(getattr(cfg, "dot_red_a_min", 25.0))
     min_area = int(getattr(cfg, "dot_red_min_area", 7))
@@ -231,15 +323,12 @@ def _detect_red_dots(
 
     seed_dilate = int(getattr(cfg, "dot_seed_dilate_radius", 3))
 
-    # a* 限制在 cell_roi，其餘填 0（中性）
     a_masked = np.where(cell_roi, a, 0.0).astype(np.float32)
 
-    # Step 1: H-maxima 找局部紅色極值種子（突出鄰域 ≥ h 階）
     peak_mask = h_maxima(a_masked, h=h_depth).astype(bool) & cell_roi
     if not peak_mask.any():
         return []
 
-    # Step 2: 種子膨脹 disk(seed_dilate)，再與 a*>=a_min 交集形成 dot 連通區
     dot_region = binary_dilation(peak_mask, disk(seed_dilate))
     dot_region &= (a_masked >= a_min) & cell_roi
 
@@ -259,12 +348,12 @@ def _detect_red_dots(
         if p.solidity < min_sol:
             continue
 
-        rows_abs, cols_abs = p.coords[:, 0], p.coords[:, 1]
-        mean_a_dot = float(a[rows_abs, cols_abs].mean())
+        rows, cols = p.coords[:, 0], p.coords[:, 1]
+        mean_a_dot = float(a[rows, cols].mean())
 
         ring_stats = _compute_ring_stats(
             bbox=p.bbox,
-            blob_pixels_rc=(rows_abs, cols_abs),
+            blob_pixels_rc=(rows, cols),
             ring_gap=ring_gap,
             ring_width=ring_width,
             cell_roi=cell_roi,
@@ -279,17 +368,6 @@ def _detect_red_dots(
             continue
 
         cy, cx = p.centroid
-        cell_id = _assign_cell_id(
-            strict_instance_mask=strict_instance_mask,
-            nearest_instance_mask=nearest_instance_mask,
-            nearest_cell_dist=nearest_cell_dist,
-            boundary_dist=boundary_dist,
-            rows_abs=rows_abs,
-            cols_abs=cols_abs,
-            cy=cy,
-            cx=cx,
-            cfg=cfg,
-        )
         dots.append(DetectedDot(
             y=float(cy),
             x=float(cx),
@@ -307,7 +385,7 @@ def _detect_red_dots(
 
 
 # ------------------------------------------------------------------
-# 黑點 (HER2) 偵測
+# 黑點 (HER2) 偵測 — 在單顆 cell 的局部 patch 上執行
 # ------------------------------------------------------------------
 
 def _detect_black_dots(
@@ -316,13 +394,10 @@ def _detect_black_dots(
     b: np.ndarray,
     cell_roi: np.ndarray,
     bg_mask: np.ndarray,
-    nearest_instance_mask: np.ndarray,
-    strict_instance_mask: np.ndarray,
-    nearest_cell_dist: np.ndarray,
-    boundary_dist: np.ndarray,
     cfg: object,
+    cell_id: int,
 ) -> List[DetectedDot]:
-    """黑點偵測主流程。"""
+    """黑點偵測主流程（patch-local 座標）。"""
     h_depth = float(getattr(cfg, "dot_black_h", 15.0))
     l_max = float(getattr(cfg, "dot_black_l_max", 50.0))
     min_area = int(getattr(cfg, "dot_black_min_area", 5))
@@ -351,15 +426,12 @@ def _detect_black_dots(
         )
     )
 
-    # L* 限制在 cell_roi，其餘填 100（中性亮值，避免成為極小值）
     L_masked = np.where(cell_roi, L, 100.0).astype(np.float32)
 
-    # Step 1: H-minima 找局部暗區種子
     pit_mask = h_minima(L_masked, h=h_depth).astype(bool) & cell_roi
     if not pit_mask.any():
         return []
 
-    # Step 2: 種子膨脹 disk(seed_dilate)，限於 L*<=l_max 的候選暗區
     dot_region = binary_dilation(pit_mask, disk(seed_dilate))
     dot_region &= (L_masked <= l_max) & cell_roi
 
@@ -369,28 +441,40 @@ def _detect_black_dots(
     label_img = label(dot_region, connectivity=2)
     props = regionprops(label_img, intensity_image=L_masked)
 
+    def _log_reject(prop, gate: str, detail: str) -> None:
+        """Debug-log 一個被某道閘門擋下的黑點候選（供下界調參用）。"""
+        logger.debug(
+            "黑點排除 cell=%d c=(%.0f,%.0f) gate=%s %s",
+            cell_id, prop.centroid[0], prop.centroid[1], gate, detail,
+        )
+
     dots: List[DetectedDot] = []
     for p in props:
         if p.area < min_area or p.area > max_area:
+            _log_reject(p, "area", f"area={p.area} range=[{min_area},{max_area}]")
             continue
         radius = math.sqrt(p.area / math.pi)
         if max_radius > 0 and radius > max_radius:
+            _log_reject(p, "radius", f"radius={radius:.1f} max={max_radius:.1f}")
             continue
         circ = _circularity(p.area, p.perimeter)
         if circ < min_circ:
+            _log_reject(p, "circularity", f"circ={circ:.2f} min={min_circ:.2f}")
             continue
         if p.solidity < min_sol:
+            _log_reject(p, "solidity", f"solidity={p.solidity:.2f} min={min_sol:.2f}")
             continue
 
-        rows_abs, cols_abs = p.coords[:, 0], p.coords[:, 1]
-        mean_L_dot = float(L[rows_abs, cols_abs].mean())
-        mean_a_dot = float(a[rows_abs, cols_abs].mean())
-        mean_b_dot = float(b[rows_abs, cols_abs].mean())
-        p20_l_dot = float(np.percentile(L[rows_abs, cols_abs], 20))
+        rows, cols = p.coords[:, 0], p.coords[:, 1]
+        mean_L_dot = float(L[rows, cols].mean())
+        mean_a_dot = float(a[rows, cols].mean())
+        mean_b_dot = float(b[rows, cols].mean())
+        p20_l_dot = float(np.percentile(L[rows, cols], 20))
         if p20_l_max > 0 and p20_l_dot > p20_l_max:
+            _log_reject(p, "p20_l", f"p20_L={p20_l_dot:.1f} max={p20_l_max:.1f}")
             continue
 
-        chroma_px = np.hypot(a[rows_abs, cols_abs], b[rows_abs, cols_abs])
+        chroma_px = np.hypot(a[rows, cols], b[rows, cols])
         median_chroma = float(np.median(chroma_px))
         p90_chroma = float(np.percentile(chroma_px, 90))
         chroma_gate_failed = False
@@ -399,15 +483,13 @@ def _detect_black_dots(
         if max_p90_chroma > 0 and p90_chroma > max_p90_chroma:
             chroma_gate_failed = True
 
-        # 色彩中性：blob 內部 a/b 的彩度不能太高（否則是彩色暗點，例如暗紫核）。
-        # 但若點位非常暗且局部對比足夠，允許視為可疑 HER2 點保留召回率。
         chroma = math.hypot(mean_a_dot, mean_b_dot)
         if max_chroma > 0 and chroma > max_chroma:
             chroma_gate_failed = True
 
         ring_stats = _compute_ring_stats(
             bbox=p.bbox,
-            blob_pixels_rc=(rows_abs, cols_abs),
+            blob_pixels_rc=(rows, cols),
             ring_gap=ring_gap,
             ring_width=ring_width,
             cell_roi=cell_roi,
@@ -415,34 +497,36 @@ def _detect_black_dots(
             intensity_imgs=(L,),
         )
         if ring_stats is None:
+            _log_reject(p, "ring_empty", "no valid ring pixels")
             continue
         mean_L_ring = ring_stats[0]
         contrast = mean_L_ring - mean_L_dot
         if contrast < min_contrast:
+            _log_reject(p, "contrast", f"contrast={contrast:.1f} min={min_contrast:.1f}")
             continue
 
-        # 非暗核核心：ring 本身不能太暗
         if mean_L_ring < min_ring_l:
+            _log_reject(p, "ring_l", f"ring_L={mean_L_ring:.1f} min={min_ring_l:.1f}")
             continue
 
         if chroma_gate_failed:
+            chroma_detail = (
+                f"chroma med/p90/mean={median_chroma:.1f}/{p90_chroma:.1f}/{chroma:.1f}"
+            )
             if mean_L_dot > very_dark_l_max:
+                _log_reject(
+                    p, "chroma+bright",
+                    f"{chroma_detail} L={mean_L_dot:.1f}>{very_dark_l_max:.1f}",
+                )
                 continue
             if contrast < very_dark_min_contrast:
+                _log_reject(
+                    p, "chroma+lowcontrast",
+                    f"{chroma_detail} contrast={contrast:.1f}<{very_dark_min_contrast:.1f}",
+                )
                 continue
 
         cy, cx = p.centroid
-        cell_id = _assign_cell_id(
-            strict_instance_mask=strict_instance_mask,
-            nearest_instance_mask=nearest_instance_mask,
-            nearest_cell_dist=nearest_cell_dist,
-            boundary_dist=boundary_dist,
-            rows_abs=rows_abs,
-            cols_abs=cols_abs,
-            cy=cy,
-            cx=cx,
-            cfg=cfg,
-        )
         dots.append(DetectedDot(
             y=float(cy),
             x=float(cx),
@@ -456,15 +540,20 @@ def _detect_black_dots(
             score=-mean_L_dot,
         ))
 
+    if props:
+        logger.debug(
+            "黑點偵測 cell=%d 接受=%d / 候選blob=%d",
+            cell_id, len(dots), len(props),
+        )
     return dots
 
 
 # ------------------------------------------------------------------
-# DISH 細胞核 彈性匹配 — 用於排除多核細胞（主要方法）
+# DISH 細胞核 彈性匹配 — 用於排除多核細胞 + 擴張偵測 ROI
 # 詳見 docs/sdd-elastic-dish-matching.md
 # ------------------------------------------------------------------
 
-def _elastic_dish_nucleus_matching(
+def elastic_dish_nucleus_matching(
     dish_nucleus_mask: np.ndarray,
     strict_instance_mask: np.ndarray,
     cfg: object,
@@ -480,13 +569,6 @@ def _elastic_dish_nucleus_matching(
                 ——每個 DISH 核最多被一個 IHC 細胞認領，IHC 可認領多顆（多核）。
                 超過 ``dish_elastic_max_dist_px`` 的 pair 直接排除。
 
-    Args:
-        dish_nucleus_mask: (H, W) int32，0=背景，1..M=DISH 細胞核 ID。
-        strict_instance_mask: (H, W) int32，0=背景，1..N=IHC 細胞 ID。
-        cfg: 須提供：
-            ``dish_elastic_expand_factor`` (float, 預設 1.5) — 面積膨脹倍數
-            ``dish_elastic_max_dist_px`` (float, 預設 50.0) — centroid 最大距離閾值
-
     Returns:
         ``{ihc_cell_id: [assigned_dish_id, ...]}``。
     """
@@ -500,32 +582,48 @@ def _elastic_dish_nucleus_matching(
     if not ihc_ids or not dish_ids:
         return result
 
-    # Step 1 & 2: 逐顆 IHC 細胞膨脹，收集與之重疊的 DISH 核 candidate
     ihc_centroids: Dict[int, Tuple[float, float]] = {}
     cell_candidates: Dict[int, List[int]] = {cid: [] for cid in ihc_ids}
 
+    # 用 find_objects 一次取得每顆 label 的 bbox，把所有 per-cell 運算侷限到
+    # 自己的小視窗，避免在整張 strip 大小的陣列上反覆掃描 / dilation。
+    H, W = strict_instance_mask.shape
+    ihc_slices = find_objects(strict_instance_mask)
     for cid in ihc_ids:
-        cell_mask = (strict_instance_mask == cid)
-        cy, cx = center_of_mass(cell_mask)
-        ihc_centroids[cid] = (float(cy), float(cx))
+        sl = ihc_slices[cid - 1] if cid - 1 < len(ihc_slices) else None
+        if sl is None:
+            continue
+        local = (strict_instance_mask[sl] == cid)
+        cy, cx = center_of_mass(local)
+        ihc_centroids[cid] = (float(cy) + sl[0].start, float(cx) + sl[1].start)
 
-        area = int(cell_mask.sum())
+        area = int(local.sum())
         if area == 0:
             continue
         r = max(1, round(
             (math.sqrt(area * expand_factor) - math.sqrt(area)) / math.sqrt(math.pi)
         ))
-        expanded = binary_dilation(cell_mask, disk(r))
-        overlap_vals = dish_nucleus_mask[expanded]
+        # dilation 至多外擴 r：取 bbox 外加 r padding 的視窗，侷部 dilate 後
+        # 結果與全圖 dilation 完全相同，但成本只與單顆細胞大小相關。
+        r0 = max(0, sl[0].start - r)
+        r1 = min(H, sl[0].stop + r)
+        c0 = max(0, sl[1].start - r)
+        c1 = min(W, sl[1].stop + r)
+        win = (strict_instance_mask[r0:r1, c0:c1] == cid)
+        expanded = binary_dilation(win, disk(r))
+        overlap_vals = dish_nucleus_mask[r0:r1, c0:c1][expanded]
         cell_candidates[cid] = [int(v) for v in np.unique(overlap_vals) if v != 0]
 
-    # 預先計算所有 DISH 核 centroid
     dish_centroids: Dict[int, Tuple[float, float]] = {}
+    dish_slices = find_objects(dish_nucleus_mask)
     for did in dish_ids:
-        cy, cx = center_of_mass(dish_nucleus_mask == did)
-        dish_centroids[did] = (float(cy), float(cx))
+        sl = dish_slices[did - 1] if did - 1 < len(dish_slices) else None
+        if sl is None:
+            continue
+        local = (dish_nucleus_mask[sl] == did)
+        cy, cx = center_of_mass(local)
+        dish_centroids[did] = (float(cy) + sl[0].start, float(cx) + sl[1].start)
 
-    # Step 3: 依 centroid 距離排序，greedy exclusive 分配
     pairs: List[Tuple[float, int, int]] = []
     for cid, candidates in cell_candidates.items():
         iy, ix = ihc_centroids[cid]
@@ -547,7 +645,7 @@ def _elastic_dish_nucleus_matching(
     n_matched_any = sum(1 for v in result.values() if len(v) > 0)
     n_multi = sum(1 for v in result.values() if len(v) >= exclude_thr)
     logger.info(
-        "_elastic_dish_nucleus_matching: IHC=%d, DISH=%d, 有匹配=%d, "
+        "elastic_dish_nucleus_matching: IHC=%d, DISH=%d, 有匹配=%d, "
         "多核候選(>=%d)=%d, expand_factor=%.1f, max_dist=%.1fpx",
         len(ihc_ids), len(dish_ids), n_matched_any, exclude_thr, n_multi,
         expand_factor, max_dist_px,
@@ -577,13 +675,7 @@ def _compute_ring_stats(
 ) -> Optional[Tuple[float, ...]]:
     """在 blob 局部 bbox 內計算環形遮罩與 intensity 統計。
 
-    Args:
-        bbox: regionprops 的 bbox = (min_row, min_col, max_row, max_col)
-        blob_pixels_rc: (rows, cols) 的絕對座標（全圖）。
-        intensity_imgs: 需要統計的 intensity 影像們。
-
-    Returns:
-        (mean_i1, mean_i2, ...) 對應 intensity_imgs；若 ring 空則回傳 None。
+    所有座標皆為傳入 `cell_roi` / `bg_mask` 所在的座標系（一般為單顆細胞的 patch）。
     """
     r0, c0, r1, c1 = bbox
     pad = max(ring_gap + ring_width, 1)
@@ -592,7 +684,6 @@ def _compute_ring_stats(
     lr1 = min(cell_roi.shape[0], r1 + pad)
     lc1 = min(cell_roi.shape[1], c1 + pad)
 
-    # 在局部區域內建立 blob 遮罩
     local_h = lr1 - lr0
     local_w = lc1 - lc0
     local_blob = np.zeros((local_h, local_w), dtype=bool)
@@ -613,102 +704,6 @@ def _compute_ring_stats(
     return tuple(out)
 
 
-def _build_nearest_cell_lookup(
-    instance_mask: np.ndarray,
-    cell_roi: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """為 cell_roi（可能已膨脹超出 instance_mask）內的每個像素，
-    建立「最近 instance_mask 細胞 ID」的查找表。
-
-    - instance_mask > 0 的像素，id 不變
-    - cell_roi 內但 instance_mask == 0 的像素，指派最近的 cell id
-    - 其他像素保持 0
-    """
-    base = (instance_mask > 0)
-    # 若 cell_roi 已完全位於 base 內，無須計算最近鄰
-    need_lookup = cell_roi & (~base)
-    dist_to_cell = distance_transform_edt(~base).astype(np.float32)
-    if not need_lookup.any():
-        return instance_mask.astype(np.int32), dist_to_cell
-
-    # distance_transform_edt(background=True 的 mask) 會回傳到最近前景的距離。
-    # return_indices=True 回傳每個位置「最近前景像素」的座標。
-    # 我們要以 base（真細胞像素）為前景，找 need_lookup 內每個位置最近的 base id。
-    _, indices = distance_transform_edt(~base, return_indices=True)
-    out = instance_mask.astype(np.int32, copy=True)
-    yy, xx = indices
-    out_vals = instance_mask[yy[need_lookup], xx[need_lookup]]
-    out[need_lookup] = out_vals
-    return out, dist_to_cell
-
-
-def _compute_boundary_distance(instance_mask: np.ndarray) -> np.ndarray:
-    """回傳每個像素到最近 label 邊界的距離（px）。"""
-    m = instance_mask
-    boundary = np.zeros(m.shape, dtype=bool)
-
-    boundary[1:, :] |= (m[1:, :] != m[:-1, :])
-    boundary[:-1, :] |= (m[:-1, :] != m[1:, :])
-    boundary[:, 1:] |= (m[:, 1:] != m[:, :-1])
-    boundary[:, :-1] |= (m[:, :-1] != m[:, 1:])
-
-    # 將貼邊細胞視為邊界，避免邊界附近誤歸屬。
-    boundary[0, :] |= (m[0, :] > 0)
-    boundary[-1, :] |= (m[-1, :] > 0)
-    boundary[:, 0] |= (m[:, 0] > 0)
-    boundary[:, -1] |= (m[:, -1] > 0)
-
-    return distance_transform_edt(~boundary).astype(np.float32)
-
-
-def _assign_cell_id(
-    strict_instance_mask: np.ndarray,
-    nearest_instance_mask: np.ndarray,
-    nearest_cell_dist: np.ndarray,
-    boundary_dist: np.ndarray,
-    rows_abs: np.ndarray,
-    cols_abs: np.ndarray,
-    cy: float,
-    cx: float,
-    cfg: object,
-) -> int:
-    """依 blob 與細胞重疊、距離與邊界緩衝區分配 cell_id。"""
-    min_overlap_ratio = float(getattr(cfg, "dot_assignment_min_overlap_ratio", 0.20))
-    max_assignment_dist = float(getattr(cfg, "dot_assignment_max_distance", 2.0))
-    boundary_margin = float(getattr(cfg, "dot_assignment_boundary_margin", 1.0))
-
-    iy = int(round(cy))
-    ix = int(round(cx))
-    H, W = strict_instance_mask.shape
-    if not (0 <= iy < H and 0 <= ix < W):
-        return 0
-
-    # 優先使用 blob 與原始 instance mask 的實際重疊來決定 cell_id。
-    strict_ids = strict_instance_mask[rows_abs, cols_abs]
-    inside_ids = strict_ids[strict_ids > 0]
-    cell_id = 0
-    if inside_ids.size > 0:
-        overlap_ratio = inside_ids.size / float(strict_ids.size)
-        if overlap_ratio < min_overlap_ratio:
-            return 0
-        votes = np.bincount(inside_ids)
-        cell_id = int(np.argmax(votes))
-    else:
-        # 若 blob 全在膨脹 ROI 外圍，僅允許非常靠近真細胞時才最近鄰指派。
-        if nearest_cell_dist[iy, ix] > max_assignment_dist:
-            return 0
-        cell_id = int(nearest_instance_mask[iy, ix])
-
-    if cell_id <= 0:
-        return 0
-
-    # 邊界附近 (含細胞互相貼合處) 視為不確定區，避免誤判歸屬。
-    if boundary_dist[iy, ix] < boundary_margin:
-        return 0
-
-    return cell_id
-
-
 # ------------------------------------------------------------------
 # 群聚合併
 # ------------------------------------------------------------------
@@ -725,7 +720,6 @@ def _merge_close_dots(
     tree = cKDTree(coords)
     pairs = tree.query_pairs(r=merge_distance)
 
-    # 聯合查找（Union-Find）
     parent = list(range(len(dots)))
 
     def find(i: int) -> int:
@@ -746,7 +740,6 @@ def _merge_close_dots(
     for idx in range(len(dots)):
         groups.setdefault(find(idx), []).append(idx)
 
-    # 每組保留 score 最高者
     kept: List[DetectedDot] = []
     for group_idx in groups.values():
         best = max(group_idx, key=lambda k: dots[k].score)
@@ -755,41 +748,19 @@ def _merge_close_dots(
 
 
 # ------------------------------------------------------------------
-# 依細胞分組 + 擴增判定
+# 細胞層級統計 + 擴增判定
 # ------------------------------------------------------------------
 
-def _group_dots_by_cell(
-    all_dots: List[DetectedDot],
-    instance_mask: np.ndarray,
+def _finalize_per_cell(
+    per_cell: Dict[int, CellDotResult],
     dish_ids_by_cell: Dict[int, List[int]],
     cfg: object,
-) -> Dict[int, CellDotResult]:
-    """依 cell_id 分組，計算計數與擴增判定，並標記多核排除細胞。
-
-    ``dish_ids_by_cell`` 來自 :func:`_elastic_dish_nucleus_matching`：
-    ``{ihc_cell_id: [assigned_dish_nucleus_id, ...]}``。
-    """
+) -> None:
+    """填入計數、ratio、藍區數量、excluded、is_amplified（in-place）。"""
     amp_ratio = float(getattr(cfg, "dot_amplification_ratio", 2.0))
     amp_count = int(getattr(cfg, "dot_her2_count_threshold", 6))
     exclude_thr = int(getattr(cfg, "dot_blue_exclude_threshold", 2))
     exclude_zero = bool(getattr(cfg, "dish_elastic_exclude_zero", False))
-
-    per_cell: Dict[int, CellDotResult] = {}
-    cell_ids = sorted(set(np.unique(instance_mask)) - {0})
-    for cid in cell_ids:
-        cid_int = int(cid)
-        per_cell[cid_int] = CellDotResult(cell_id=cid_int)
-
-    for dot in all_dots:
-        if dot.cell_id <= 0:
-            continue
-        cdr = per_cell.get(dot.cell_id)
-        if cdr is None:
-            continue
-        if dot.dot_type == "her2":
-            cdr.her2_dots.append(dot)
-        elif dot.dot_type == "cep17":
-            cdr.cep17_dots.append(dot)
 
     for cdr in per_cell.values():
         cdr.her2_dot_count = len(cdr.her2_dots)
@@ -798,6 +769,7 @@ def _group_dots_by_cell(
             cdr.her2_cep17_ratio = cdr.her2_dot_count / cdr.cep17_dot_count
         else:
             cdr.her2_cep17_ratio = float("inf") if cdr.her2_dot_count > 0 else 0.0
+
         assigned_ids = dish_ids_by_cell.get(cdr.cell_id, [])
         cdr.assigned_dish_ids = list(assigned_ids)
         cdr.blue_region_count = len(cdr.assigned_dish_ids)
@@ -814,8 +786,6 @@ def _group_dots_by_cell(
                 cdr.her2_dot_count >= amp_count
                 or (cdr.cep17_dot_count > 0 and cdr.her2_cep17_ratio >= amp_ratio)
             )
-
-    return per_cell
 
 
 # ------------------------------------------------------------------
