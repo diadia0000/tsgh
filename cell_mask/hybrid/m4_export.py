@@ -186,8 +186,8 @@ def _draw_overlay_layers(
     if dish_nucleus_mask is not None and per_cell_dots is not None:
         matched_ids = set()
         for cdr in per_cell_dots.values():
-            # 粉色覆蓋所有被 elastic matching 認領的 DISH 核 (含 excluded 細胞
-            # 的多核)；excluded 細胞只是在 _draw_drift_arrows 跳過畫箭頭。
+            # 粉色覆蓋所有被 elastic matching 認領的 DISH 核（一對一下每顆細胞
+            # 至多 1 核；drop-out 細胞無認領核，故不會被塗粉色）。
             matched_ids.update(
                 int(d) for d in getattr(cdr, "assigned_dish_ids", [])
             )
@@ -284,8 +284,8 @@ def _draw_drift_arrows(
 ) -> None:
     """對每個非排除細胞畫飄移箭頭：IHC centroid → 認領的 DISH 核 centroid。
 
-    一顆 IHC 多核時，每顆認領 DISH 核都畫一支獨立箭頭（見招狀展開）。
-    被排除的細胞（excluded=True）跳過，只保留斜十字標記。
+    一對一配對下每顆細胞至多認領 1 核，畫一支箭頭指向該核。
+    被排除的細胞（excluded=True，drop-out）跳過，只保留斜十字標記。
     """
     if dish_nucleus_mask is None or per_cell_dots is None:
         return
@@ -477,9 +477,8 @@ def export_per_cell_images(
     未配對的細胞：退回 IHC cell_instance_mask 形狀。細胞外背景填 255，
     之後放入固定 ``crop_size x crop_size`` 白底畫布。
 
-    註：m3 偵測 ROI 是 effective_mask（IHC strict ∪ DISH fill），比粉色核
-    略寬；少數落在核外 IHC 本體的點不會顯示在此 crop（已由座標越界守衛擋下），
-    但仍計入 CSV count。若要兩者完全一致需改 m3 偵測 ROI（會動到 count）。
+    註：m3 偵測 ROI 已改為「配對到的 DISH 核區域」，與此 crop 的粉色核形狀
+    一致——只有核內的紅黑點才計數，crop 與 CSV count 範圍相同，無核外漏算。
 
     若提供 ``per_cell_dots``，會在每張 crop 上：
       - 畫出該細胞範圍內的 HER2 黑點 / CEP17 紅點

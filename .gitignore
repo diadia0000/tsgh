@@ -18,8 +18,6 @@ models/
 dish_cellpose_v*
 config.py
 tile/*
-.claude
-.agent/
 uv.lock
 skills-lock.json
 .codegraph/

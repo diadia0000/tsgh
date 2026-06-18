@@ -1,15 +1,16 @@
 """M3b: DISH 紅點 (CEP17) / 黑點 (HER2) 偵測模組。
 
-演算法核心：
-    1. 先以 elastic matching 把 DISH 核 instance 分配給 IHC 細胞
-       （競爭消解最佳指派，每顆 DISH 核最多被一顆 IHC 認領）。
-    2. 建立 effective_instance_mask：IHC strict 先寫入，matched DISH
-       區只填還是 0 的像素，不搶其他細胞。
-    3. 對每顆 cell 逐顆 crop 出 region，在局部 LAB patch 上做紅/黑點
-       偵測 → 直接以 cell 為 ROI，不再做全圖偵測 + 最近鄰指派。
-    4. 排除規則：核數 1=valid；>= ``dot_blue_exclude_threshold``=多核（排除）；
-       核數 0 再分兩種——曾有可行候選卻在競爭中落敗=drop-out（排除、打 X）；
-       從頭就沒有可行候選=忽略配對、照常計入。被排除者不計入分析。
+演算法核心（以細胞為中心）：
+    1. 先以 elastic matching 讓每顆 IHC 細胞（綠框面積放大 factor 倍）認領
+       「離它質心最近的 DISH 核」（一對一、最近優先、lock；每顆細胞至多 1 核）。
+    2. 建立 nucleus_owner_mask：每個 matched DISH 核 pixel 標上擁有者 IHC
+       細胞 id，其餘為 0。這就是紅黑點的計數 ROI。
+    3. 對每顆認到核的 cell，在其「配對核區域」的局部 LAB patch 上做紅/黑點
+       偵測——整顆核的點全記給擁有者，不沿 IHC 領地邊界把跨界核的點切給鄰居；
+       沒配到核的細胞計 0 點。
+    4. 排除規則：認到 1 核=valid；0 核再分兩種——曾有候選核卻競爭落敗
+       =drop-out（排除、打 X）；從頭就沒有候選=照常計入（顯示 0/0）。被排除者
+       不計入分析。一對一配對下每顆細胞至多 1 核，故不再有「多核排除」。
 
 像素級偵測核心（紅/黑點、環統計、合併）在 m3_dot_kernels.py；
 DISH 核彈性匹配在 m3_elastic_matching.py。詳見 docs/sdd-elastic-dish-matching.md。
@@ -52,8 +53,8 @@ class CellDotResult:
     her2_cep17_ratio: float = 0.0        # float("inf") 當 cep17_dot_count == 0
     is_amplified: bool = False
     blue_region_count: int = 0
-    excluded: bool = False               # drop-out(0 核) 或 多核(≥ threshold) → 排除
-    exclude_reason: str = ""             # "" | "drop_out" | "multi_nucleus"（打 X 用）
+    excluded: bool = False               # drop-out(0 核、競爭落敗) → 排除、打 X
+    exclude_reason: str = ""             # "" | "drop_out"（打 X 用）
     her2_dots: List[DetectedDot] = field(default_factory=list)
     cep17_dots: List[DetectedDot] = field(default_factory=list)
     # elastic matching 認領到的 DISH 核 ID（用於視覺化飄移箭頭與粉色輪廓）
@@ -114,8 +115,9 @@ def detect_all_dots(
         # 預先算好的指派沒有「可行候選」資訊，無從判定 drop-out → 一律不排除。
         drop_out_ids = set()
 
-    effective_mask = _build_effective_instance_mask(
-        strict_instance_mask=instance_mask_i32,
+    # 紅黑點只在「配對到的 DISH 核區域」內計算——整顆核的點都記給贏得它的細胞，
+    # 不再沿 IHC strict 領地邊界把跨界核的點切給鄰居；沒配到核的細胞不計任何點。
+    count_mask = _build_nucleus_owner_mask(
         dish_nucleus_mask=dish_nucleus_mask_i32,
         dish_ids_by_cell=dish_ids_by_cell,
     )
@@ -135,13 +137,12 @@ def detect_all_dots(
     all_dots: List[DetectedDot] = []
     per_cell: Dict[int, CellDotResult] = {}
 
-    # find_objects 一次取得每個 label 的 bbox，取代逐顆對整張影像掃 (== cid)。
-    # slices[k] 對應 label k+1 的 (slice_y, slice_x)；label 不存在則為 None。
-    slices = find_objects(effective_mask)
-    cell_ids = sorted({int(v) for v in np.unique(effective_mask) if v != 0})
+    # 偵測 ROI = 配對核區域；slices[k] 對應 owner cell k+1 的核 bbox（無則 None）。
+    slices = find_objects(count_mask)
+    all_ihc_ids = sorted({int(v) for v in np.unique(instance_mask_i32) if v != 0})
     tasks = [
         (cid, slices[cid - 1])
-        for cid in cell_ids
+        for cid in all_ihc_ids
         if cid - 1 < len(slices) and slices[cid - 1] is not None
     ]
 
@@ -150,17 +151,19 @@ def detect_all_dots(
     n_jobs_eff = -1 if n_jobs is None else n_jobs
     cell_results = Parallel(n_jobs=n_jobs_eff)(
         delayed(_detect_one_cell)(
-            cid, sl, effective_mask, L, a, b, bg_mask_global,
+            cid, sl, count_mask, L, a, b, bg_mask_global,
             config, red_merge_distance, black_merge_distance,
         )
         for cid, sl in tasks
     )
 
+    # 先給所有 IHC 細胞建空結果（沒配到核者維持 0/0、照常計入），再填有偵測到的。
+    for cid in all_ihc_ids:
+        per_cell[cid] = CellDotResult(cell_id=cid)
     for cid, red_dots, black_dots in cell_results:
-        cdr = CellDotResult(cell_id=cid)
+        cdr = per_cell[cid]
         cdr.cep17_dots = red_dots
         cdr.her2_dots = black_dots
-        per_cell[cid] = cdr
         all_dots.extend(red_dots)
         all_dots.extend(black_dots)
 
@@ -178,7 +181,7 @@ def detect_all_dots(
 def _detect_one_cell(
     cid: int,
     sl: Tuple[slice, slice],
-    effective_mask: np.ndarray,
+    count_mask: np.ndarray,
     L: np.ndarray,
     a: np.ndarray,
     b: np.ndarray,
@@ -198,7 +201,7 @@ def _detect_one_cell(
     y0 = sl[0].start
     x0 = sl[1].start
 
-    region_local = effective_mask[sl] == cid
+    region_local = count_mask[sl] == cid  # 該細胞贏得的 DISH 核區域
     bg_local = bg_mask_global[sl]
     cell_roi_local = region_local & (~bg_local)
     if not cell_roi_local.any():
@@ -238,44 +241,33 @@ def _detect_one_cell(
 
 
 # ------------------------------------------------------------------
-# Effective instance mask（IHC strict + matched DISH 補位）
+# Nucleus owner mask（紅黑點計數 ROI：matched DISH 核 → 擁有者 IHC 細胞）
 # ------------------------------------------------------------------
 
-def _build_effective_instance_mask(
-    strict_instance_mask: np.ndarray,
+def _build_nucleus_owner_mask(
     dish_nucleus_mask: np.ndarray,
     dish_ids_by_cell: Dict[int, List[int]],
 ) -> np.ndarray:
-    """Hard-assign 每個像素到一顆 IHC 細胞。
+    """把每個 matched DISH 核 pixel 標上其擁有者 IHC 細胞 id；其餘為 0。
 
-    優先序：
-        Pass 1: IHC strict mask 先寫入（嚴格分割優先）。
-        Pass 2: matched DISH 核區只填還是 0 的像素，等於把 cell footprint
-                往 DISH 核位置擴張，但絕不覆蓋其他細胞的 strict 區。
+    紅黑點只在這個遮罩內計算：整顆核的點都記給贏得它的細胞，不沿 IHC strict
+    領地邊界把跨界核的點切給鄰居（那會讓鄰居偷算到別人核裡的點）。沒被任何
+    核配到的細胞不出現在此遮罩中 → 計 0 點。
     """
-    out = strict_instance_mask.astype(np.int32, copy=True)
+    out = np.zeros(dish_nucleus_mask.shape, dtype=np.int32)
     if dish_nucleus_mask.size == 0:
         return out
-
-    dish_to_ihc: Dict[int, int] = {}
-    for cid, dish_ids in dish_ids_by_cell.items():
-        for did in dish_ids:
-            dish_to_ihc[int(did)] = int(cid)
-    if not dish_to_ihc:
-        return out
-
     max_dish = int(dish_nucleus_mask.max())
     if max_dish <= 0:
         return out
 
     lookup = np.zeros(max_dish + 1, dtype=np.int32)
-    for did, cid in dish_to_ihc.items():
-        if 0 < did <= max_dish:
-            lookup[did] = cid
-    extended = lookup[dish_nucleus_mask]
-    fill_mask = (out == 0) & (extended > 0)
-    out[fill_mask] = extended[fill_mask]
-    return out
+    for cid, dish_ids in dish_ids_by_cell.items():
+        for did in dish_ids:
+            did = int(did)
+            if 0 < did <= max_dish:
+                lookup[did] = int(cid)
+    return lookup[dish_nucleus_mask]
 
 
 # ------------------------------------------------------------------
@@ -291,7 +283,6 @@ def _finalize_per_cell(
     """填入計數、ratio、藍區數量、excluded、is_amplified（in-place）。"""
     amp_ratio = float(getattr(cfg, "dot_amplification_ratio", 2.0))
     amp_count = int(getattr(cfg, "dot_her2_count_threshold", 6))
-    exclude_thr = int(getattr(cfg, "dot_blue_exclude_threshold", 2))
     exclude_zero = bool(getattr(cfg, "dish_elastic_exclude_zero", False))
 
     for cdr in per_cell.values():
@@ -305,13 +296,10 @@ def _finalize_per_cell(
         assigned_ids = dish_ids_by_cell.get(cdr.cell_id, [])
         cdr.assigned_dish_ids = list(assigned_ids)
         cdr.blue_region_count = len(cdr.assigned_dish_ids)
-        # 核數分類：>=threshold=多核（排除）；==1=valid；==0 再分兩種——
-        # 曾有可行候選卻競爭落敗（cell_id in drop_out_ids）=drop-out（排除、打 X）；
-        # 從頭就沒有可行候選=忽略配對、照常計入（不排除）。
-        if cdr.blue_region_count >= exclude_thr:
-            cdr.excluded = True
-            cdr.exclude_reason = "multi_nucleus"
-        elif (
+        # 一對一配對：每顆細胞至多 1 核。認到核=valid；0 核且曾有候選卻競爭落敗
+        # （cell_id in drop_out_ids）=drop-out（排除、打 X）；0 核且從頭無候選
+        # =忽略配對、照常計入（不排除）。一對一下不再有多核排除。
+        if (
             cdr.blue_region_count == 0
             and exclude_zero
             and cdr.cell_id in drop_out_ids

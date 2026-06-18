@@ -146,19 +146,21 @@ class Config:
     dot_black_very_dark_l_max: float = 40.0
     dot_black_very_dark_min_contrast: float = 10.0
 
-    # --- 多核排除（彈性匹配；見 docs/sdd-elastic-dish-matching.md）---
-    # 以 Cellpose DISH 模型輸出的細胞核 instance 與 IHC 細胞做彈性匹配，
-    # 匹配到的 DISH 核數量 ≥ dot_blue_exclude_threshold → 排除（多核細胞）。
+    # --- 彈性匹配（以細胞為中心；見 m3_elastic_matching.py）---
+    # [已棄用] 舊多核排除門檻；一對一配對下每顆細胞至多 1 核，不再做多核排除，
+    # 此參數已無作用，保留僅為相容舊 config。
     dot_blue_exclude_threshold: int = 2
 
-    # IHC 細胞 region 等向膨脹面積倍數（Step 1）。1.0 = 不膨脹；1.5 = 面積放大 1.5 倍。
-    # r = (sqrt(A*f) - sqrt(A)) / sqrt(π)，用於容忍 IHC/DISH 切片對齊誤差。
+    # 以細胞為中心的搜尋範圍倍數（綠框「面積」放大倍數）：每顆 IHC 細胞把自身面積
+    # 放大此倍數，等效圓半徑 reach = sqrt(factor * area / π)；質心落在 reach 內的
+    # DISH 核為候選，再以一對一、最近優先配對（最近先 lock，落敗者往後找可用核）。
     dish_elastic_expand_factor: float = 1.5
-    # 是否排除 drop-out 細胞（核數 0、曾有可行候選卻在競爭中落敗且無備援核）。
+    # 是否排除 drop-out 細胞（核數 0、曾有候選核卻競爭落敗且無可用核）。
     # 預設 True：這類 competition loser 打 X、不計入分析。
-    # 注意：核數 0 但「從頭就沒有可行候選」的細胞不算 drop-out，一律照常計入。
+    # 注意：核數 0 但「從頭就沒有候選」的細胞不算 drop-out，照常計入(0/0)。
     dish_elastic_exclude_zero: bool = True
-    # Centroid 配對最大允許歐氏距離（像素），超過此距離的候選 pair 直接排除。
+    # [已棄用] 舊「以核為中心」法的核↔細胞邊界容忍距離；改以細胞為中心 +
+    # dish_elastic_expand_factor 後此參數已無作用，保留僅為相容舊 config。
     dish_elastic_max_dist_px: float = 50.0
 
     # --- 群聚合併 ---
