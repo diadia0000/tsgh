@@ -8,7 +8,6 @@ once before the batch loop and reused.
 ```bash
 python hybrid_pipeline.py --ihc tile_x1024_y2048.tiff --dish tile_x1024_y2048.tiff  # single tile
 python hybrid_pipeline.py --batch [--test] [--output DIR]                            # batch scan dirs
-python hybrid_pipeline.py --roi --ihc IHC_DIR --dish DISH_DIR                        # ROI: assemble tiles in memory, analyze as one image
 ```
 Tile pairing is by filename coordinate parsing `tile_x{int}_y{int}`.
 

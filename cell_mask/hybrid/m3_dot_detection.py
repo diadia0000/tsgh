@@ -2,12 +2,14 @@
 
 演算法核心：
     1. 先以 elastic matching 把 DISH 核 instance 分配給 IHC 細胞
-       （greedy exclusive，每顆 DISH 核最多被一顆 IHC 認領）。
+       （競爭消解最佳指派，每顆 DISH 核最多被一顆 IHC 認領）。
     2. 建立 effective_instance_mask：IHC strict 先寫入，matched DISH
        區只填還是 0 的像素，不搶其他細胞。
     3. 對每顆 cell 逐顆 crop 出 region，在局部 LAB patch 上做紅/黑點
        偵測 → 直接以 cell 為 ROI，不再做全圖偵測 + 最近鄰指派。
-    4. 多核排除：matched DISH 核數 ≥ ``dot_blue_exclude_threshold`` → 排除。
+    4. 排除規則：核數 1=valid；>= ``dot_blue_exclude_threshold``=多核（排除）；
+       核數 0 再分兩種——曾有可行候選卻在競爭中落敗=drop-out（排除、打 X）；
+       從頭就沒有可行候選=忽略配對、照常計入。被排除者不計入分析。
 
 像素級偵測核心（紅/黑點、環統計、合併）在 m3_dot_kernels.py；
 DISH 核彈性匹配在 m3_elastic_matching.py。詳見 docs/sdd-elastic-dish-matching.md。
@@ -17,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from joblib import Parallel, delayed
@@ -50,7 +52,8 @@ class CellDotResult:
     her2_cep17_ratio: float = 0.0        # float("inf") 當 cep17_dot_count == 0
     is_amplified: bool = False
     blue_region_count: int = 0
-    excluded: bool = False               # 多核（藍色區塊 ≥ threshold）→ 排除
+    excluded: bool = False               # drop-out(0 核) 或 多核(≥ threshold) → 排除
+    exclude_reason: str = ""             # "" | "drop_out" | "multi_nucleus"（打 X 用）
     her2_dots: List[DetectedDot] = field(default_factory=list)
     cep17_dots: List[DetectedDot] = field(default_factory=list)
     # elastic matching 認領到的 DISH 核 ID（用於視覺化飄移箭頭與粉色輪廓）
@@ -102,11 +105,14 @@ def detect_all_dots(
     dish_nucleus_mask_i32 = dish_nucleus_mask.astype(np.int32, copy=False)
 
     if dish_ids_by_cell is None:
-        dish_ids_by_cell = elastic_dish_nucleus_matching(
+        dish_ids_by_cell, drop_out_ids = elastic_dish_nucleus_matching(
             dish_nucleus_mask=dish_nucleus_mask_i32,
             strict_instance_mask=instance_mask_i32,
             cfg=config,
         )
+    else:
+        # 預先算好的指派沒有「可行候選」資訊，無從判定 drop-out → 一律不排除。
+        drop_out_ids = set()
 
     effective_mask = _build_effective_instance_mask(
         strict_instance_mask=instance_mask_i32,
@@ -158,7 +164,7 @@ def detect_all_dots(
         all_dots.extend(red_dots)
         all_dots.extend(black_dots)
 
-    _finalize_per_cell(per_cell, dish_ids_by_cell, config)
+    _finalize_per_cell(per_cell, dish_ids_by_cell, drop_out_ids, config)
 
     n_red = sum(1 for d in all_dots if d.dot_type == "cep17")
     n_black = sum(1 for d in all_dots if d.dot_type == "her2")
@@ -279,6 +285,7 @@ def _build_effective_instance_mask(
 def _finalize_per_cell(
     per_cell: Dict[int, CellDotResult],
     dish_ids_by_cell: Dict[int, List[int]],
+    drop_out_ids: Set[int],
     cfg: object,
 ) -> None:
     """填入計數、ratio、藍區數量、excluded、is_amplified（in-place）。"""
@@ -298,12 +305,22 @@ def _finalize_per_cell(
         assigned_ids = dish_ids_by_cell.get(cdr.cell_id, [])
         cdr.assigned_dish_ids = list(assigned_ids)
         cdr.blue_region_count = len(cdr.assigned_dish_ids)
+        # 核數分類：>=threshold=多核（排除）；==1=valid；==0 再分兩種——
+        # 曾有可行候選卻競爭落敗（cell_id in drop_out_ids）=drop-out（排除、打 X）；
+        # 從頭就沒有可行候選=忽略配對、照常計入（不排除）。
         if cdr.blue_region_count >= exclude_thr:
             cdr.excluded = True
-        elif cdr.blue_region_count == 0 and exclude_zero:
+            cdr.exclude_reason = "multi_nucleus"
+        elif (
+            cdr.blue_region_count == 0
+            and exclude_zero
+            and cdr.cell_id in drop_out_ids
+        ):
             cdr.excluded = True
+            cdr.exclude_reason = "drop_out"
         else:
             cdr.excluded = False
+            cdr.exclude_reason = ""
         if cdr.excluded:
             cdr.is_amplified = False
         else:

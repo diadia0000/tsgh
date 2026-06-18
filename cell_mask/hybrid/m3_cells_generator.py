@@ -61,15 +61,22 @@ def build_all_positive_results(
     Returns:
         每個細胞對應一筆 ``CellAnalysisResult``，且皆為陽性。
     """
-    cell_ids = sorted(set(np.unique(cell_instance_mask)) - {0})
+    cell_ids = sorted(int(cid) for cid in np.unique(cell_instance_mask) if cid != 0)
+    if not cell_ids:
+        logger.info("All-positive 標註完成: 0 個細胞")
+        return []
+
+    # 一次掃完整張 label mask 取得所有質心，避免逐細胞建立全圖 boolean mask。
+    centroids = ndimage.center_of_mass(
+        np.ones(cell_instance_mask.shape, dtype=np.uint8),
+        labels=cell_instance_mask,
+        index=cell_ids,
+    )
     results: List[CellAnalysisResult] = []
 
-    for cid in cell_ids:
-        region_mask = (cell_instance_mask == cid)
-        if not np.any(region_mask):
+    for cid, (cy, cx) in zip(cell_ids, centroids):
+        if np.isnan(cy) or np.isnan(cx):
             continue
-
-        cy, cx = ndimage.center_of_mass(region_mask)
         results.append(
             CellAnalysisResult(
                 cell_id=int(cid),

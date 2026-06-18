@@ -37,6 +37,7 @@ _COLOR_DISH_BBOX = (0, 165, 255)    # 橘色：未被認領的 DISH 核輪廓
 _COLOR_DISH_MATCHED = (147, 20, 255)  # 深粉色：被 elastic matching 認領的 DISH 核
 _COLOR_DRIFT_ARROW = (139, 0, 0)    # 深藍：飄移箭頭 (IHC → 認領 DISH)
 _COLOR_CELL_ID = (0, 255, 255)      # 黃色：細胞 ID 編號
+_COLOR_WINDOW_GRID = (255, 255, 0)  # 青色：1k sliding-window 接縫虛線格
 
 
 # ------------------------------------------------------------------
@@ -220,13 +221,22 @@ def _draw_cell_boundaries(
     cell_instance_mask: np.ndarray,
 ) -> None:
     """在 canvas 上繪製所有細胞的輪廓線。"""
-    cell_ids = set(np.unique(cell_instance_mask)) - {0}
-    for cid in cell_ids:
-        binary = (cell_instance_mask == cid).astype(np.uint8)
+    mask_i32 = cell_instance_mask.astype(np.int32, copy=False)
+    slices = find_objects(mask_i32)
+    for label_id, sl in enumerate(slices, start=1):
+        if sl is None:
+            continue
+        y_sl, x_sl = sl
+        local = (mask_i32[y_sl, x_sl] == label_id).astype(np.uint8)
         contours, _ = cv2.findContours(
-            binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            local, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
-        cv2.drawContours(canvas, contours, -1, _COLOR_BOUNDARY, 1)
+        if not contours:
+            continue
+        cv2.drawContours(
+            canvas, contours, -1, _COLOR_BOUNDARY, 1, cv2.LINE_8,
+            offset=(int(x_sl.start), int(y_sl.start)),
+        )
 
 
 def _draw_dish_nucleus_contours(
@@ -289,11 +299,15 @@ def _draw_drift_arrows(
         return
 
     dish_centroids: Dict[int, Tuple[float, float]] = {}
-    for did in matched_ids:
-        region = (dish_nucleus_mask == did)
-        if region.any():
-            cy, cx = center_of_mass(region)
-            dish_centroids[did] = (float(cy), float(cx))
+    matched_list = sorted(matched_ids)
+    centers = center_of_mass(
+        np.ones(dish_nucleus_mask.shape, dtype=np.uint8),
+        labels=dish_nucleus_mask,
+        index=matched_list,
+    )
+    for did, (cy, cx) in zip(matched_list, centers):
+        if not (math.isnan(cy) or math.isnan(cx)):
+            dish_centroids[int(did)] = (float(cy), float(cx))
 
     for cell in results:
         cdr = per_cell_dots.get(cell.cell_id)
@@ -373,6 +387,77 @@ def _draw_dots(
 
 
 # ------------------------------------------------------------------
+# 1k sliding-window 接縫虛線格
+# ------------------------------------------------------------------
+
+def draw_dashed_grid(
+    canvas: np.ndarray,
+    tile_size: int,
+    color: Tuple[int, int, int] = _COLOR_WINDOW_GRID,
+    thickness: int = 2,
+    dash: int = 22,
+    gap: int = 14,
+) -> None:
+    """在 ``canvas`` 上「就地」畫出 ``tile_size`` 間距的內部接縫虛線格。
+
+    只畫影像內部的接縫線（不畫最外緣），讓醫師一眼看出 sliding-window 切在哪、
+    驗證跨接縫細胞是否已正確縫合。座標慣例與 ``canvas`` 一致（BGR / RGB 皆可，
+    僅 ``color`` 通道順序需相符）。
+    """
+    h, w = canvas.shape[:2]
+    for x in range(tile_size, w, tile_size):
+        _dashed_segment(canvas, (x, 0), (x, h), color, thickness, dash, gap)
+    for y in range(tile_size, h, tile_size):
+        _dashed_segment(canvas, (0, y), (w, y), color, thickness, dash, gap)
+
+
+def _dashed_segment(
+    canvas: np.ndarray,
+    pt1: Tuple[int, int],
+    pt2: Tuple[int, int],
+    color: Tuple[int, int, int],
+    thickness: int,
+    dash: int,
+    gap: int,
+) -> None:
+    """沿 pt1→pt2 以 (dash, gap) 節奏畫虛線（僅支援水平 / 垂直線）。"""
+    (x1, y1), (x2, y2) = pt1, pt2
+    step = dash + gap
+    if x1 == x2:  # 垂直
+        for y in range(y1, y2, step):
+            cv2.line(canvas, (x1, y), (x1, min(y + dash, y2)), color, thickness)
+    else:         # 水平
+        for x in range(x1, x2, step):
+            cv2.line(canvas, (x, y1), (min(x + dash, x2), y1), color, thickness)
+
+
+def stamp_grid_on_overlays(
+    output_dir: Path,
+    tile_size: int,
+    pattern: str = "*_overlay.png",
+) -> int:
+    """為 ``output_dir`` 中所有符合 ``pattern`` 的影像就地補上虛線格。
+
+    放在所有匯出之後執行：以「檔名」為準（預設所有 ``*_overlay.png``）統一蓋格線，
+    保證不漏任何一張疊圖，且不必把 grid 參數穿進每個匯出函式。
+
+    Returns:
+        實際蓋上格線的檔案數。
+    """
+    count = 0
+    for path in sorted(output_dir.glob(pattern)):
+        image = cv2.imread(str(path))  # BGR
+        if image is None:
+            continue
+        draw_dashed_grid(image, tile_size)
+        cv2.imwrite(str(path), image)
+        count += 1
+    if count:
+        logger.info("已在 %d 張 %s 上補虛線格 (tile=%d)", count, pattern, tile_size)
+    return count
+
+
+# ------------------------------------------------------------------
 # 逐細胞固定尺寸裁切影像
 # ------------------------------------------------------------------
 
@@ -418,6 +503,12 @@ def export_per_cell_images(
     cells_dir.mkdir(parents=True, exist_ok=True)
 
     saved_paths: List[Path] = []
+    cell_slices = find_objects(cell_instance_mask.astype(np.int32, copy=False))
+    dish_slices = (
+        find_objects(dish_nucleus_mask.astype(np.int32, copy=False))
+        if dish_nucleus_mask is not None
+        else []
+    )
 
     for cell in results:
         cdr = per_cell_dots.get(cell.cell_id) if per_cell_dots is not None else None
@@ -427,25 +518,53 @@ def export_per_cell_images(
             else []
         )
 
-        # 被配對的細胞：crop 只跟著粉色 DISH 核形狀走（與 overlay 粉色輪廓
-        # 一致）。不與 IHC 本體聯集——drift 會讓兩塊分離、bbox 暴增成「亂切」。
-        region_mask: Optional[np.ndarray] = None
-        if assigned_ids:
-            region_mask = np.zeros_like(cell_instance_mask, dtype=bool)
-            for did in assigned_ids:
-                region_mask |= (dish_nucleus_mask == did)
+        region_local: Optional[np.ndarray] = None
+        bbox: Optional[Tuple[int, int, int, int]] = None
+
+        # 被配對的細胞：只在匹配 DISH 核 bbox 的 union 內建立局部 mask，
+        # 避免每顆細胞都配置 4096x4096 全圖 boolean mask。
+        valid_dish_slices = []
+        for did in assigned_ids:
+            idx = int(did) - 1
+            if 0 <= idx < len(dish_slices) and dish_slices[idx] is not None:
+                valid_dish_slices.append((int(did), dish_slices[idx]))
+        if valid_dish_slices and dish_nucleus_mask is not None:
+            y0 = min(int(sl[0].start) for _, sl in valid_dish_slices)
+            x0 = min(int(sl[1].start) for _, sl in valid_dish_slices)
+            y1 = max(int(sl[0].stop) for _, sl in valid_dish_slices)
+            x1 = max(int(sl[1].stop) for _, sl in valid_dish_slices)
+            region_local = np.zeros((y1 - y0, x1 - x0), dtype=bool)
+            for did, sl in valid_dish_slices:
+                yy0 = int(sl[0].start) - y0
+                yy1 = int(sl[0].stop) - y0
+                xx0 = int(sl[1].start) - x0
+                xx1 = int(sl[1].stop) - x0
+                region_local[yy0:yy1, xx0:xx1] |= (
+                    dish_nucleus_mask[sl] == did
+                )
+            bbox = (y0, x0, y1, x1)
 
         # 未配對（無粉色）或粉色核遺失 → 退回 IHC 細胞實例形狀。
-        if region_mask is None or not region_mask.any():
-            region_mask = (cell_instance_mask == cell.cell_id)
+        if region_local is None or not region_local.any():
+            idx = int(cell.cell_id) - 1
+            if idx < 0 or idx >= len(cell_slices) or cell_slices[idx] is None:
+                continue
+            sl = cell_slices[idx]
+            y0, x0 = int(sl[0].start), int(sl[1].start)
+            y1, x1 = int(sl[0].stop), int(sl[1].stop)
+            region_local = (cell_instance_mask[sl] == cell.cell_id)
+            bbox = (y0, x0, y1, x1)
 
-        if not np.any(region_mask):
+        if bbox is None or region_local is None or not region_local.any():
             continue
 
-        cell_crop, (y0, x0, _, _) = _extract_mask_shaped_cell(
-            source_image,
-            region_mask,
+        y0, x0, y1, x1 = bbox
+        cell_crop, (local_y0, local_x0, _, _) = _extract_mask_shaped_cell(
+            source_image[y0:y1, x0:x1],
+            region_local,
         )
+        full_y0 = y0 + local_y0
+        full_x0 = x0 + local_x0
         fixed_crop, (offset_y, offset_x), scale = _fit_to_fixed_canvas(
             cell_crop,
             crop_size=crop_size,
@@ -459,8 +578,8 @@ def export_per_cell_images(
                 crop_bgr=crop_bgr,
                 cell=cell,
                 cell_dot_result=per_cell_dots.get(cell.cell_id),
-                bbox_y0=y0,
-                bbox_x0=x0,
+                bbox_y0=full_y0,
+                bbox_x0=full_x0,
                 canvas_offset_y=offset_y,
                 canvas_offset_x=offset_x,
                 canvas_scale=scale,

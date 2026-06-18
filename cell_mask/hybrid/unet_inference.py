@@ -51,6 +51,7 @@ class UNetPPInference:
         encoder_name: str = "efficientnet-b4",
         num_classes: int = 2,
         image_size: Tuple[int, int] = (1024, 1024),
+        batch_size: int = 4,
         device: Optional[torch.device] = None,
     ) -> None:
         """
@@ -64,6 +65,7 @@ class UNetPPInference:
             device: 計算設備 (None 則自動偵測)
         """
         self.image_size = self._sanitize_window_size(image_size)
+        self.batch_size = max(1, int(batch_size))
         self.device = device or (
             torch.device("cuda") if torch.cuda.is_available()
             else torch.device("cpu")
@@ -289,19 +291,46 @@ class UNetPPInference:
             h, w, win_h, win_w, len(windows),
         )
 
-        num_classes = self.model.classes if hasattr(self.model, 'classes') else 2
-        proba_full = np.zeros((h, w, num_classes), dtype=np.float32)
-
-        for y0, x0, y1, x1 in windows:
-            patch = image[y0:y1, x0:x1]
-            _, patch_proba = self._predict_direct(patch, return_proba=True)
-            proba_full[y0:y1, x0:x1] = patch_proba[: y1 - y0, : x1 - x0]
-
-        mask = proba_full.argmax(axis=2).astype(np.uint8)
-
+        num_classes = int(getattr(self.model, "classes", 2))
+        proba_full = None
+        mask_full = None
         if return_proba:
-            return mask, proba_full
-        return mask
+            proba_full = np.zeros((h, w, num_classes), dtype=np.float32)
+        else:
+            mask_full = np.zeros((h, w), dtype=np.uint8)
+
+        for start in range(0, len(windows), self.batch_size):
+            batch_windows = windows[start:start + self.batch_size]
+            tensors: List[torch.Tensor] = []
+            original_sizes: List[Tuple[int, int]] = []
+            for y0, x0, y1, x1 in batch_windows:
+                tensor, original_size = self.preprocess(image[y0:y1, x0:x1])
+                tensors.append(tensor)
+                original_sizes.append(original_size)
+
+            batch_tensor = torch.cat(tensors, dim=0).to(self.device)
+            outputs = self.model(batch_tensor)
+
+            if return_proba:
+                assert proba_full is not None
+                probs = torch.softmax(outputs, dim=1).permute(0, 2, 3, 1).cpu().numpy()
+                for idx, (y0, x0, y1, x1) in enumerate(batch_windows):
+                    ph, pw = original_sizes[idx]
+                    proba_full[y0:y1, x0:x1] = probs[idx, :ph, :pw, :]
+            else:
+                assert mask_full is not None
+                preds = outputs.argmax(dim=1).cpu().numpy().astype(np.uint8)
+                for idx, (y0, x0, y1, x1) in enumerate(batch_windows):
+                    ph, pw = original_sizes[idx]
+                    mask_full[y0:y1, x0:x1] = preds[idx, :ph, :pw]
+
+        if not return_proba:
+            assert mask_full is not None
+            return mask_full
+
+        assert proba_full is not None
+        mask = proba_full.argmax(axis=2).astype(np.uint8)
+        return mask, proba_full
 
     @staticmethod
     def _generate_window_coords(

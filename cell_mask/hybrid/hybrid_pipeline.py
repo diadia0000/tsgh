@@ -23,12 +23,11 @@ Usage:
 
 import argparse
 import logging
-import re
 import sys
 import time
 import uuid
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -54,13 +53,21 @@ from m1_overlay import (
     overlay_ihc_mask_on_dish,
     parse_tile_coords,
 )
-from m2_segmentation import CellposeSegmenter, segment_masked_dish
+from m2_segmentation import (
+    CellposeSegmenter,
+    segment_masked_dish,
+    segment_windowed,
+)
 from cell_mask.hybrid.m3_cells_generator import (
     CellAnalysisResult,
     build_all_positive_results,
 )
 from m3_dot_detection import detect_all_dots, merge_dot_results_to_cell_analysis
-from m4_export import export_cell_dot_annotations, export_overlay_visualization
+from m4_export import (
+    export_cell_dot_annotations,
+    export_overlay_visualization,
+    stamp_grid_on_overlays,
+)
 
 # ------------------------------------------------------------------
 # Logging 設定
@@ -85,6 +92,7 @@ def _init_unet_inferencer():
         encoder_name=config.unet_encoder_name,
         num_classes=config.unet_num_classes,
         image_size=config.unet_image_size,
+        batch_size=config.batch_size,
         device=None,
     )
 
@@ -96,6 +104,7 @@ def _init_cellpose_segmenter() -> CellposeSegmenter:
         diameter=config.cellpose_diameter,
         flow_threshold=config.cellpose_flow_threshold,
         cellprob_threshold=config.cellpose_cellprob_threshold,
+        batch_size=getattr(config, "cellpose_batch_size", 16),
         gpu=config.cellpose_gpu,
     )
 
@@ -107,6 +116,7 @@ def _init_dish_cellpose_segmenter() -> CellposeSegmenter:
         diameter=config.cellpose_dish_diameter,
         flow_threshold=config.cellpose_dish_flow_threshold,
         cellprob_threshold=config.cellpose_dish_cellprob_threshold,
+        batch_size=getattr(config, "cellpose_batch_size", 16),
         gpu=config.cellpose_gpu,
     )
 
@@ -116,8 +126,8 @@ def _init_dish_cellpose_segmenter() -> CellposeSegmenter:
 # ------------------------------------------------------------------
 
 def process_single_tile(
-    ihc_tile_path: Union[Path, np.ndarray],
-    dish_tile_path: Union[Path, np.ndarray],
+    ihc_tile_path: Path,
+    dish_tile_path: Path,
     unet_inferencer: object,
     cellpose_segmenter: CellposeSegmenter,
     dish_cellpose_segmenter: CellposeSegmenter,
@@ -137,8 +147,7 @@ def process_single_tile(
         output_dir: 輸出目錄。
         cfg_hash: 配置雜湊。
         merge_dir: 合併影像目錄 (可選)。
-        tile_id: 輸出子目錄/檔名前綴。None 時取 ``dish_tile_path.stem``；
-            ROI 記憶體組裝模式（傳 ndarray）必須指定。
+        tile_id: 輸出子目錄/檔名前綴。None 時取 ``dish_tile_path.stem``。
 
     Returns:
         分類結果列表，失敗時回傳 None。
@@ -148,10 +157,16 @@ def process_single_tile(
     tile_output = output_dir / tile_id
     start_time = time.perf_counter()
 
+    # 先載入影像並驗證 patch 規格（正方形、邊長 ≥ default_tile_size）。
+    # 不合格直接拋 ValueError（real-task 直呼端會中止；批次端於 run_batch 攔截續跑）。
+    ihc_image = _read_rgb(ihc_tile_path)
+    dish_image = _read_rgb(dish_tile_path)
+    _validate_patch_shape(ihc_image, dish_image, min_size=config.default_tile_size)
+
     try:
         # ---- M1: 產生核心遮罩 + IHC-DISH 50/50 疊合 ----
         core_mask = generate_ihc_core_mask(
-            ihc_tile_path,
+            ihc_image,
             unet_inferencer,
             close_kernel=config.core_close_kernel,
         )
@@ -172,9 +187,6 @@ def process_single_tile(
                 crop_size=config.cell_crop_size,
             )
             return []
-
-        dish_image = _read_rgb(dish_tile_path)
-        ihc_image = _read_rgb(ihc_tile_path)
 
         # M1 Step 1: IHC core mask → masked IHC
         masked_ihc = apply_mask_to_ihc_image(
@@ -240,11 +252,13 @@ def process_single_tile(
             check_contrast=False,
         )
 
-        # ---- M2: Cellpose 分割 IHC-DISH 疊合影像 ----
+        # ---- M2: 視窗化 Cellpose 分割 IHC-DISH 疊合影像 + 接縫縫合 ----
         instance_mask = segment_masked_dish(
             m2_input_overlay,
             cellpose_segmenter,
             remove_border=config.clear_border_cells,
+            tile_size=config.default_tile_size,
+            min_seam_contact_px=config.window_seam_min_contact_px,
         )
 
         io.imsave(
@@ -257,8 +271,14 @@ def process_single_tile(
         # M3a: 所有細胞標記為陽性（centroid + cell_id）
         results = build_all_positive_results(instance_mask)
 
-        # M3b: DISH 細胞核偵測（用純 DISH 圖） + 紅/黑點偵測 + 多核排除
-        dish_nucleus_mask = dish_cellpose_segmenter.predict(dish_image)
+        # M3b: DISH 細胞核偵測（用純 DISH 圖，同樣視窗化 + 接縫縫合）
+        #      + 紅/黑點偵測 + 多核排除
+        dish_nucleus_mask = segment_windowed(
+            dish_image,
+            dish_cellpose_segmenter,
+            tile_size=config.default_tile_size,
+            min_seam_contact_px=config.window_seam_min_contact_px,
+        )
         # 用 IHC core_mask 過濾掉主要落在白色背景區的 DISH 核 instance，
         # 避免橘色輪廓 / 多核計數誤觸 mask 之外的細胞。
         dish_nucleus_mask = _filter_dish_nucleus_by_core_mask(
@@ -316,6 +336,12 @@ def process_single_tile(
                     "Tile %s: merge 影像尺寸 %s 與 mask 尺寸 %s 不匹配，跳過 merge overlay",
                     tile_id, merge_image.shape[:2], instance_mask.shape[:2],
                 )
+
+        # ---- 視覺化補上 1k sliding-window 接縫虛線格（驗證邊緣細胞縫合）----
+        if config.draw_window_grid:
+            stamp_grid_on_overlays(
+                tile_output, tile_size=config.default_tile_size
+            )
 
         elapsed = time.perf_counter() - start_time
         pos_count = sum(1 for r in results if r.is_her2_positive)
@@ -387,10 +413,8 @@ def _filter_dish_nucleus_by_core_mask(
     return mask_i32
 
 
-def _read_rgb(src: Union[Path, np.ndarray]) -> np.ndarray:
-    """讀取影像並確保為 RGB uint8；傳入 ndarray 則原樣回傳（已組裝的記憶體大圖）。"""
-    if isinstance(src, np.ndarray):
-        return src.astype(np.uint8, copy=False)
+def _read_rgb(src: Path) -> np.ndarray:
+    """讀取影像並確保為 RGB uint8。"""
     image = io.imread(str(src))
     if image.ndim == 2:
         image = np.stack([image] * 3, axis=-1)
@@ -399,47 +423,35 @@ def _read_rgb(src: Union[Path, np.ndarray]) -> np.ndarray:
     return image.astype(np.uint8)
 
 
-_TILE_COORD_RE = re.compile(r"tile_x(\d+)_y(\d+)")
+def _validate_patch_shape(
+    ihc_image: np.ndarray,
+    dish_image: np.ndarray,
+    min_size: int,
+) -> None:
+    """驗證醫師手切 patch 規格：IHC/DISH 同尺寸、邊長 ≥ ``min_size``。
 
+    real-task 假設 patch 永遠正方形、解析度 ≥ 1k（可為 2k/4k/8k…）。邊長小於
+    ``min_size`` 直接拒絕（沒有比單一視窗更小的有效輸入）；非正方形僅警告，
+    因 sliding-window 仍可處理矩形，只是格線假設正方形。
 
-def _assemble_tiles(
-    tile_dir: Path,
-    tile_size: int,
-) -> Tuple[np.ndarray, int, int]:
-    """把目錄內座標連續的 ``tile_x{int}_y{int}`` 影像在記憶體拼成單張大圖。
-
-    用於 ROI 模式：醫師選定的 ROI 已切成 1k tile，這裡不落地巨型 TIFF，
-    直接在記憶體組裝後整塊餵進 pipeline，讓分割自然跨越原 tile 邊界。
-    缺格以背景值 255（白）填充。
-
-    Args:
-        tile_dir: 含 ``tile_x{int}_y{int}`` 影像的目錄。
-        tile_size: 單 tile 邊長（pixels）。
-
-    Returns:
-        ``(canvas, x0, y0)``：大圖 ``(H, W, 3)`` uint8，及左上角 tile 全域座標。
+    Raises:
+        ValueError: 任一邊小於 ``min_size``，或 IHC/DISH 尺寸不一致。
     """
-    coords = {}
-    for p in tile_dir.iterdir():
-        m = _TILE_COORD_RE.search(p.name)
-        if m and p.suffix.lower() in config.supported_extensions:
-            coords[(int(m.group(1)), int(m.group(2)))] = p
-    if not coords:
-        raise FileNotFoundError(f"目錄內找不到 tile_x_y 影像: {tile_dir}")
-
-    xs = sorted({x for x, _ in coords})
-    ys = sorted({y for _, y in coords})
-    x0, y0 = xs[0], ys[0]
-    cols = (xs[-1] - x0) // tile_size + 1
-    rows = (ys[-1] - y0) // tile_size + 1
-
-    canvas = np.full((rows * tile_size, cols * tile_size, 3), 255, dtype=np.uint8)
-    for (x, y), p in coords.items():
-        r = (y - y0) // tile_size
-        c = (x - x0) // tile_size
-        canvas[r * tile_size:(r + 1) * tile_size,
-               c * tile_size:(c + 1) * tile_size] = _read_rgb(p)
-    return canvas, x0, y0
+    if ihc_image.shape[:2] != dish_image.shape[:2]:
+        raise ValueError(
+            f"IHC/DISH patch 尺寸不一致: ihc={ihc_image.shape[:2]} "
+            f"vs dish={dish_image.shape[:2]}"
+        )
+    h, w = ihc_image.shape[:2]
+    if min(h, w) < min_size:
+        raise ValueError(
+            f"patch 邊長 {h}x{w} 小於最小允許尺寸 {min_size}px——拒絕處理。"
+        )
+    if h != w:
+        logger.warning(
+            "patch 非正方形 (%dx%d)；sliding-window 仍可處理，但格線假設正方形。",
+            h, w,
+        )
 
 
 # ------------------------------------------------------------------
@@ -488,10 +500,16 @@ def run_batch(
         logger.info(
             "[%d/%d] 處理 tile: %s", idx, total, dish_path.stem
         )
-        result = process_single_tile(
-            ihc_path, dish_path, unet, cellpose, dish_cellpose, output_dir, cfg_hash,
-            merge_dir=merge_dir,
-        )
+        try:
+            result = process_single_tile(
+                ihc_path, dish_path, unet, cellpose, dish_cellpose, output_dir,
+                cfg_hash, merge_dir=merge_dir,
+            )
+        except Exception as exc:
+            # patch 規格不符（ValueError）或前置讀檔失敗：記錄後跳過，批次續跑。
+            logger.error("Tile %s 前置/規格檢查失敗，跳過: %s", dish_path.stem, exc)
+            stats["failed"] += 1
+            continue
         if result is None:
             stats["failed"] += 1
         elif len(result) == 0:
@@ -557,12 +575,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="單 tile 模式: DISH tile 檔名或路徑",
     )
     parser.add_argument(
-        "--roi",
-        action="store_true",
-        help="ROI 模式: --ihc/--dish 視為 tile 目錄，記憶體組裝成單張大圖後整塊分析 "
-             "(解決跨 tile 邊緣細胞遺失)",
-    )
-    parser.add_argument(
         "--output",
         type=str,
         default=None,
@@ -583,8 +595,6 @@ def main() -> None:
         dish_dir = config.dish_test_dir if args.test else config.dish_tile_dir
         merge_dir = config.merge_test_dir if args.test else config.merge_tile_dir
         run_batch(ihc_dir, dish_dir, output_dir, merge_dir=merge_dir)
-    elif args.roi and args.ihc and args.dish:
-        _run_roi_cli(args.ihc, args.dish, output_dir)
     elif args.ihc and args.dish:
         _run_single_tile_cli(args.ihc, args.dish, output_dir)
     else:
@@ -608,41 +618,6 @@ def _run_single_tile_cli(
     process_single_tile(
         ihc_path, dish_path, unet, cellpose, dish_cellpose, output_dir, cfg_hash,
         merge_dir=config.merge_tile_dir,
-    )
-
-
-def _run_roi_cli(
-    ihc_dir_arg: str,
-    dish_dir_arg: str,
-    output_dir: Path,
-) -> None:
-    """CLI ROI 模式: 將 IHC/DISH tile 目錄記憶體組裝成單張大圖後整塊分析。
-
-    不落地巨型 TIFF；組裝後直接以 ndarray 餵 ``process_single_tile``，
-    分割自然跨越原 tile 邊界，避免每片 ``clear_border`` 砍掉接縫細胞。
-    """
-    ihc_dir = Path(ihc_dir_arg)
-    dish_dir = Path(dish_dir_arg)
-
-    ihc_image, x0, y0 = _assemble_tiles(ihc_dir, config.default_tile_size)
-    dish_image, dx0, dy0 = _assemble_tiles(dish_dir, config.default_tile_size)
-    if ihc_image.shape != dish_image.shape or (x0, y0) != (dx0, dy0):
-        raise ValueError(
-            f"IHC/DISH ROI 不一致: ihc={ihc_image.shape}@({x0},{y0}) "
-            f"dish={dish_image.shape}@({dx0},{dy0})"
-        )
-
-    tile_id = f"tile_x{x0}_y{y0}"
-    logger.info("ROI 記憶體組裝完成: %s 尺寸=%s", tile_id, ihc_image.shape)
-
-    cfg_hash = compute_config_hash(config)
-    unet = _init_unet_inferencer()
-    cellpose = _init_cellpose_segmenter()
-    dish_cellpose = _init_dish_cellpose_segmenter()
-
-    process_single_tile(
-        ihc_image, dish_image, unet, cellpose, dish_cellpose,
-        output_dir, cfg_hash, merge_dir=None, tile_id=tile_id,
     )
 
 
