@@ -42,6 +42,54 @@ logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------
+# DISH 核 core_mask 過濾
+# ------------------------------------------------------------------
+
+def _filter_dish_nucleus_by_core_mask(
+    dish_nucleus_mask: np.ndarray,
+    core_mask: np.ndarray,
+    min_inside_ratio: float = 1.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """移除「未完全落在 IHC core_mask 內」的 DISH 核 instance。
+
+    Returns:
+        ``(kept_mask, out_of_bounds_mask)``——前者把出界核設為 0；後者只保留
+        被丟棄的「出界核」原始 label，供下游判定「壓在邊界、對應到出界核」
+        的 IHC 細胞並打 X。
+    """
+    if dish_nucleus_mask.size == 0:
+        return dish_nucleus_mask, np.zeros_like(dish_nucleus_mask)
+    mask_i32 = dish_nucleus_mask.astype(np.int32, copy=False)
+    max_id = int(mask_i32.max())
+    if max_id <= 0:
+        return mask_i32, np.zeros_like(mask_i32)
+    core_bool = core_mask.astype(bool, copy=False)
+    flat = mask_i32.ravel()
+    total = np.bincount(flat, minlength=max_id + 1)
+    inside = np.bincount(
+        flat,
+        weights=core_bool.ravel().astype(np.int64),
+        minlength=max_id + 1,
+    ).astype(np.int64)
+    outside = total - inside
+    if min_inside_ratio >= 1.0:
+        drop = outside > 0
+    else:
+        drop = inside < (min_inside_ratio * total)
+    drop[0] = False
+    out_of_bounds_mask = (
+        np.where(drop[mask_i32], mask_i32, 0).astype(np.int32)
+        if drop.any()
+        else np.zeros_like(mask_i32)
+    )
+    if drop.any():
+        remap = np.arange(max_id + 1, dtype=np.int32)
+        remap[drop] = 0
+        mask_i32 = remap[mask_i32]
+    return mask_i32, out_of_bounds_mask
+
+
+# ------------------------------------------------------------------
 # 資料結構
 # ------------------------------------------------------------------
 
@@ -72,24 +120,22 @@ def detect_all_dots(
     instance_mask: np.ndarray,
     config: object,
     dish_nucleus_mask: np.ndarray,
-    out_of_bounds_nucleus_mask: np.ndarray,
+    core_mask: np.ndarray,
     n_jobs: Optional[int] = None,
-) -> Tuple[List[DetectedDot], Dict[int, CellDotResult]]:
+) -> Tuple[List[DetectedDot], Dict[int, CellDotResult], np.ndarray]:
     """逐顆 matched cell 偵測 HER2 黑點與 CEP17 紅點。
 
     Args:
         dish_image: (H, W, 3) uint8 RGB，白背景(255)，已套用 core_mask。
         instance_mask: (H, W) 整數，0=背景，1..N=IHC 細胞 ID（strict 分割）。
         config: 具有 ``dot_*`` / ``dish_elastic_*`` 欄位的配置物件。
-        dish_nucleus_mask: (H, W) int，0=背景，1..M=DISH 細胞核 ID（已過濾出界核）。
-        out_of_bounds_nucleus_mask: (H, W) int，只含被 core_mask 過濾掉的「出界核」
-            原始 label（碰到 UNet++ mask 外）。與其重疊、且最終沒配到任何合格核的
-            IHC 細胞會被打 X 排除（壓在邊界的污染細胞）。
+        dish_nucleus_mask: (H, W) int，0=背景，1..M=DISH 細胞核 ID（原始，未過濾）。
+        core_mask: (H, W) uint8{0,1}，IHC UNet++ 核心遮罩；用於過濾出界 DISH 核。
         n_jobs: per-cell 偵測的平行度（joblib）。None=用滿所有核心 (-1)，
             1=序列，其他正整數=指定行程數。
 
     Returns:
-        (all_dots, per_cell_results)
+        (all_dots, per_cell_results, filtered_dish_nucleus_mask)
     """
     if dish_image.ndim != 3 or dish_image.shape[2] != 3:
         raise ValueError(f"dish_image 必須為 (H,W,3) RGB，實際 {dish_image.shape}")
@@ -104,12 +150,13 @@ def detect_all_dots(
             "shape 不一致: "
             f"dish_nucleus_mask={dish_nucleus_mask.shape} vs mask={instance_mask.shape}"
         )
-    if out_of_bounds_nucleus_mask.shape != instance_mask.shape:
-        raise ValueError(
-            "shape 不一致: "
-            f"out_of_bounds_nucleus_mask={out_of_bounds_nucleus_mask.shape} "
-            f"vs mask={instance_mask.shape}"
-        )
+
+    min_inside_ratio = float(
+        getattr(config, "dish_nucleus_core_min_inside_ratio", 1.0)
+    )
+    dish_nucleus_mask, out_of_bounds_nucleus_mask = _filter_dish_nucleus_by_core_mask(
+        dish_nucleus_mask, core_mask, min_inside_ratio=min_inside_ratio
+    )
 
     instance_mask_i32 = instance_mask.astype(np.int32, copy=False)
     dish_nucleus_mask_i32 = dish_nucleus_mask.astype(np.int32, copy=False)
@@ -191,7 +238,7 @@ def detect_all_dots(
         "detect_all_dots: 紅點=%d, 黑點=%d, 涉及細胞=%d",
         n_red, n_black, len(per_cell),
     )
-    return all_dots, per_cell
+    return all_dots, per_cell, dish_nucleus_mask
 
 
 def _detect_one_cell(

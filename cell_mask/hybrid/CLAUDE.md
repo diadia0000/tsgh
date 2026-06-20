@@ -10,7 +10,7 @@ python hybrid_pipeline.py --ihc tile_x1024_y2048.tiff --dish tile_x1024_y2048.ti
 python hybrid_pipeline.py --batch [--test] [--output DIR]                            # batch scan dirs
 ```
 Tile pairing is by filename coordinate parsing `tile_x{int}_y{int}`.
-Key imports: `m1_overlay`, `m2_segmentation` (local-style); `cell_mask.hybrid.m3_module` (package); `m4_export` (facade).
+Key imports in `hybrid_pipeline.py`: all local-style — `m1_overlay`, `m2_segmentation`, `m3_cell_detection`, `m4_export`.
 
 ## Configuration
 `config.py` is **gitignored**; run `cp config_example.py config.py` first, then edit paths/params.

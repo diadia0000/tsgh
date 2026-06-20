@@ -26,8 +26,9 @@ import logging
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -58,7 +59,7 @@ from m2_segmentation import (
     segment_masked_dish,
     segment_windowed,
 )
-from cell_mask.hybrid.m3_module import (
+from m3_cell_detection import (
     CellAnalysisResult,
     build_all_positive_results,
     detect_all_dots,
@@ -78,6 +79,27 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class M1StageArtifacts:
+    """M1 輸出影像與遮罩，供後續 M2/M3/M4 共用。"""
+
+    core_mask: np.ndarray
+    masked_ihc: np.ndarray
+    dish_mask_overlay: np.ndarray
+    overlay_image: np.ndarray
+    m2_input_overlay: np.ndarray
+
+
+@dataclass
+class M3StageArtifacts:
+    """M3 點位偵測與逐細胞分析輸出。"""
+
+    results: List[CellAnalysisResult]
+    all_dots: list
+    per_cell_dots: dict
+    dish_nucleus_mask: np.ndarray
 
 
 # ------------------------------------------------------------------
@@ -165,8 +187,7 @@ def process_single_tile(
     _validate_patch_shape(ihc_image, dish_image, min_size=config.default_tile_size)
 
     try:
-        # ---- M1: 產生核心遮罩 + IHC-DISH 50/50 疊合 ----
-        core_mask = generate_ihc_core_mask(
+        core_mask = generate_ihc_core_mask(  # pyright: ignore[reportArgumentType]
             ihc_image,
             unet_inferencer,
             close_kernel=config.core_close_kernel,
@@ -176,191 +197,47 @@ def process_single_tile(
             logger.warning(
                 "Tile %s: 核心遮罩全空 — 僅匯出空 CSV", tile_id
             )
-            export_cell_dot_annotations(
-                np.zeros((core_mask.shape[0], core_mask.shape[1], 3), dtype=np.uint8),
-                np.zeros(core_mask.shape, dtype=np.int32),
-                [],
-                tile_output,
-                slide_id=config.slide_id,
-                tile_id=tile_id,
-                model_version=config.model_version,
-                config_hash=cfg_hash,
-                crop_size=config.cell_crop_size,
-            )
+            _export_empty_tile(tile_output, tile_id, cfg_hash, core_mask)
             return []
 
-        # M1 Step 1: IHC core mask → masked IHC
-        masked_ihc = apply_mask_to_ihc_image(
-            ihc_image,
-            core_mask,
-            mask_blur_sigma=config.mask_blur_sigma,
-            background_fill_value=config.background_fill_value,
-        )
+        m1_artifacts = _run_m1_overlay_stage(ihc_image, dish_image, core_mask)
+        _write_m1_artifacts(tile_output, tile_id, m1_artifacts)
 
-        # M1 Step 2: IHC core mask → masked DISH
-        dish_mask_overlay = overlay_ihc_mask_on_dish(
-            dish_image,
-            core_mask,
-            mask_blur_sigma=config.mask_blur_sigma,
-            background_fill_value=config.background_fill_value,
-        )
-
-        # M1 Step 3: 50/50 alpha blend → IHC-DISH 疊合影像
-        overlay_image = fuse_masked_ihc_with_dish(
-            dish_mask_overlay,
-            masked_ihc,
-            ihc_alpha=config.overlay_alpha,
-        )
-
-        # 明確定義 M2 Cellpose 的輸入影像
-        m2_input_overlay = overlay_image
-
-        # ---- M1 中間結果落地 ----
-        tile_output.mkdir(parents=True, exist_ok=True)
-        io.imsave(
-            str(tile_output / f"{tile_id}_ihc_core_mask.png"),
-            (core_mask * 255).astype(np.uint8),
-            check_contrast=False,
-        )
-        io.imsave(
-            str(tile_output / f"{tile_id}_masked_ihc.png"),
-            masked_ihc,
-            check_contrast=False,
-        )
-        io.imsave(
-            str(tile_output / f"{tile_id}_ihc_tumor.png"),
-            masked_ihc,
-            check_contrast=False,
-        )
-        io.imsave(
-            str(tile_output / f"{tile_id}_dish_mask_overlay.png"),
-            dish_mask_overlay,
-            check_contrast=False,
-        )
-        io.imsave(
-            str(tile_output / f"{tile_id}_dish_tumor.png"),
-            dish_mask_overlay,
-            check_contrast=False,
-        )
-        io.imsave(
-            str(tile_output / f"{tile_id}_ihc_dish_overlay_raw.png"),
-            overlay_image,
-            check_contrast=False,
-        )
-        io.imsave(
-            str(tile_output / f"{tile_id}_m2_input_overlay.png"),
-            m2_input_overlay,
-            check_contrast=False,
-        )
-
-        # ---- M2: 重疊視窗 Cellpose 分割 IHC-DISH 疊合影像 + 去重 ----
-        instance_mask = segment_masked_dish(
-            m2_input_overlay,
+        instance_mask = _run_m2_segmentation_stage(
+            m1_artifacts.m2_input_overlay,
             cellpose_segmenter,
-            remove_border=config.clear_border_cells,
-            tile_size=config.default_tile_size,
-            overlap=config.window_overlap_px,
-            dedup_iomin=config.window_dedup_iomin,
-        )
-
-        io.imsave(
-            str(tile_output / f"{tile_id}_m2_cell_instance_binary.png"),
-            ((instance_mask > 0).astype(np.uint8) * 255),
-            check_contrast=False,
-        )
-
-        # ---- M3: 逐細胞分析 ----
-        # M3a: 所有細胞標記為陽性（centroid + cell_id）
-        results = build_all_positive_results(instance_mask)
-
-        # M3b: DISH 細胞核偵測（用純 DISH 圖，同樣重疊視窗 + 去重）
-        #      + 紅/黑點偵測
-        dish_nucleus_mask = segment_windowed(
-            dish_image,
-            dish_cellpose_segmenter,
-            tile_size=config.default_tile_size,
-            overlap=config.window_overlap_px,
-            dedup_iomin=config.window_dedup_iomin,
-        )
-        # 用 IHC core_mask 過濾掉跑出 mask 的 DISH 核 instance（預設：接觸到
-        # mask 外就整顆丟），避免橘色輪廓 / 計數誤觸 mask 之外的細胞。
-        # out_of_bounds_nucleus_mask 留著被丟掉的出界核，供 detect_all_dots
-        # 把「壓在邊界、對應到出界核且未配到合格核」的 IHC 細胞打 X。
-        dish_nucleus_mask, out_of_bounds_nucleus_mask = _filter_dish_nucleus_by_core_mask(
-            dish_nucleus_mask,
-            core_mask,
-            min_inside_ratio=config.dish_nucleus_core_min_inside_ratio,
-        )
-        all_dots, per_cell_dots = detect_all_dots(
-            dish_mask_overlay,
-            instance_mask,
-            config,
-            dish_nucleus_mask=dish_nucleus_mask,
-            out_of_bounds_nucleus_mask=out_of_bounds_nucleus_mask,
-        )
-        results = merge_dot_results_to_cell_analysis(results, per_cell_dots)
-
-        # ---- M4: 匯出 (單細胞來源為 dish_mask_overlay) ----
-        export_cell_dot_annotations(
-            dish_mask_overlay,
-            instance_mask,
-            results,
             tile_output,
-            visualization_image=dish_mask_overlay,
-            slide_id=config.slide_id,
-            tile_id=tile_id,
-            model_version=config.model_version,
-            config_hash=cfg_hash,
-            crop_size=config.cell_crop_size,
-            all_dots=all_dots,
-            per_cell_dots=per_cell_dots,
-            dish_nucleus_mask=dish_nucleus_mask,
+            tile_id,
         )
 
-        # 醫師檢視圖: IHC-DISH 疊合底圖 + 細胞邊界/AMP 標記 + 點位
-        export_overlay_visualization(
-            overlay_image,
+        m3_artifacts = _run_m3_analysis_stage(
+            dish_image,
+            m1_artifacts.dish_mask_overlay,
             instance_mask,
-            results,
-            tile_output / f"{tile_id}_ihc_dish_overlay.png",
-            all_dots=all_dots,
+            m1_artifacts.core_mask,
+            dish_cellpose_segmenter,
         )
 
-        # ---- Merge overlay: 將 cellpose 細胞邊界繪製在原始合併影像上 ----
-        merge_tile_path = _find_merge_tile(merge_dir, tile_id)
-        if merge_tile_path is not None:
-            merge_image = _read_rgb(merge_tile_path)
-            if merge_image.shape[:2] == instance_mask.shape[:2]:
-                export_overlay_visualization(
-                    merge_image,
-                    instance_mask,
-                    results,
-                    tile_output / f"{tile_id}_merge_overlay.png",
-                    all_dots=all_dots,
-                )
-                logger.info("Merge overlay 匯出完成: %s", tile_id)
-            else:
-                logger.warning(
-                    "Tile %s: merge 影像尺寸 %s 與 mask 尺寸 %s 不匹配，跳過 merge overlay",
-                    tile_id, merge_image.shape[:2], instance_mask.shape[:2],
-                )
-
-        # ---- 視覺化補上 1k sliding-window 接縫虛線格（驗證邊緣細胞縫合）----
-        if config.draw_window_grid:
-            stamp_grid_on_overlays(
-                tile_output, tile_size=config.default_tile_size
-            )
+        _export_tile_outputs(
+            tile_output,
+            tile_id,
+            cfg_hash,
+            m1_artifacts,
+            instance_mask,
+            m3_artifacts,
+            merge_dir,
+        )
 
         elapsed = time.perf_counter() - start_time
-        pos_count = sum(1 for r in results if r.is_her2_positive)
+        pos_count = sum(1 for r in m3_artifacts.results if r.is_her2_positive)
         logger.info(
             "Tile %s 處理完成: %d 細胞 (%d 陽性), %.2f 秒",
             tile_id,
-            len(results),
+            len(m3_artifacts.results),
             pos_count,
             elapsed,
         )
-        return results
+        return m3_artifacts.results
 
     except ValueError as exc:
         logger.error("Tile %s 維度錯誤: %s", tile_id, exc)
@@ -368,6 +245,235 @@ def process_single_tile(
     except Exception as exc:
         logger.error("Tile %s 處理失敗: %s", tile_id, exc, exc_info=True)
         return None
+
+
+def _run_m1_overlay_stage(
+    ihc_image: np.ndarray,
+    dish_image: np.ndarray,
+    core_mask: np.ndarray,
+) -> M1StageArtifacts:
+    """執行 M1 overlay：masked IHC/DISH 與 M2 輸入影像。"""
+    masked_ihc = apply_mask_to_ihc_image(
+        ihc_image,
+        core_mask,
+        mask_blur_sigma=config.mask_blur_sigma,
+        background_fill_value=config.background_fill_value,
+    )
+    dish_mask_overlay = overlay_ihc_mask_on_dish(
+        dish_image,
+        core_mask,
+        mask_blur_sigma=config.mask_blur_sigma,
+        background_fill_value=config.background_fill_value,
+    )
+    overlay_image = fuse_masked_ihc_with_dish(
+        dish_mask_overlay,
+        masked_ihc,
+        ihc_alpha=config.overlay_alpha,
+    )
+
+    return M1StageArtifacts(
+        core_mask=core_mask,
+        masked_ihc=masked_ihc,
+        dish_mask_overlay=dish_mask_overlay,
+        overlay_image=overlay_image,
+        m2_input_overlay=overlay_image,
+    )
+
+
+def _write_m1_artifacts(
+    tile_output: Path,
+    tile_id: str,
+    artifacts: M1StageArtifacts,
+) -> None:
+    """落地 M1 中間結果，保留既有檔名以維持相容。"""
+    tile_output.mkdir(parents=True, exist_ok=True)
+    io.imsave(
+        str(tile_output / f"{tile_id}_ihc_core_mask.png"),
+        (artifacts.core_mask * 255).astype(np.uint8),
+        check_contrast=False,
+    )
+    io.imsave(
+        str(tile_output / f"{tile_id}_masked_ihc.png"),
+        artifacts.masked_ihc,
+        check_contrast=False,
+    )
+    io.imsave(
+        str(tile_output / f"{tile_id}_ihc_tumor.png"),
+        artifacts.masked_ihc,
+        check_contrast=False,
+    )
+    io.imsave(
+        str(tile_output / f"{tile_id}_dish_mask_overlay.png"),
+        artifacts.dish_mask_overlay,
+        check_contrast=False,
+    )
+    io.imsave(
+        str(tile_output / f"{tile_id}_dish_tumor.png"),
+        artifacts.dish_mask_overlay,
+        check_contrast=False,
+    )
+    io.imsave(
+        str(tile_output / f"{tile_id}_ihc_dish_overlay_raw.png"),
+        artifacts.overlay_image,
+        check_contrast=False,
+    )
+    io.imsave(
+        str(tile_output / f"{tile_id}_m2_input_overlay.png"),
+        artifacts.m2_input_overlay,
+        check_contrast=False,
+    )
+
+
+def _run_m2_segmentation_stage(
+    m2_input_overlay: np.ndarray,
+    cellpose_segmenter: CellposeSegmenter,
+    tile_output: Path,
+    tile_id: str,
+) -> np.ndarray:
+    """執行 M2 segmentation 並落地 binary instance mask 檢視圖。"""
+    instance_mask = segment_masked_dish(
+        m2_input_overlay,
+        cellpose_segmenter,
+        remove_border=config.clear_border_cells,
+        tile_size=config.default_tile_size,
+        overlap=config.window_overlap_px,
+        dedup_iomin=config.window_dedup_iomin,
+    )
+
+    io.imsave(
+        str(tile_output / f"{tile_id}_m2_cell_instance_binary.png"),
+        ((instance_mask > 0).astype(np.uint8) * 255),
+        check_contrast=False,
+    )
+    return instance_mask
+
+
+def _run_m3_analysis_stage(
+    dish_image: np.ndarray,
+    dish_mask_overlay: np.ndarray,
+    instance_mask: np.ndarray,
+    core_mask: np.ndarray,
+    dish_cellpose_segmenter: CellposeSegmenter,
+) -> M3StageArtifacts:
+    """執行 M3：逐細胞結果、DISH 核偵測、紅黑點偵測與結果合併。"""
+    results = build_all_positive_results(instance_mask)
+    dish_nucleus_mask = segment_windowed(
+        dish_image,
+        dish_cellpose_segmenter,
+        tile_size=config.default_tile_size,
+        overlap=config.window_overlap_px,
+        dedup_iomin=config.window_dedup_iomin,
+    )
+    all_dots, per_cell_dots, dish_nucleus_mask = detect_all_dots(
+        dish_mask_overlay,
+        instance_mask,
+        config,
+        dish_nucleus_mask=dish_nucleus_mask,
+        core_mask=core_mask,
+    )
+    results = merge_dot_results_to_cell_analysis(results, per_cell_dots)
+    return M3StageArtifacts(
+        results=results,
+        all_dots=all_dots,
+        per_cell_dots=per_cell_dots,
+        dish_nucleus_mask=dish_nucleus_mask,
+    )
+
+
+def _export_empty_tile(
+    tile_output: Path,
+    tile_id: str,
+    cfg_hash: str,
+    core_mask: np.ndarray,
+) -> None:
+    """核心遮罩全空時，只輸出空的 M4 報表與空底圖。"""
+    export_cell_dot_annotations(
+        np.zeros((core_mask.shape[0], core_mask.shape[1], 3), dtype=np.uint8),
+        np.zeros(core_mask.shape, dtype=np.int32),
+        [],
+        tile_output,
+        slide_id=config.slide_id,
+        tile_id=tile_id,
+        model_version=config.model_version,
+        config_hash=cfg_hash,
+        crop_size=config.cell_crop_size,
+    )
+
+
+def _export_tile_outputs(
+    tile_output: Path,
+    tile_id: str,
+    cfg_hash: str,
+    m1_artifacts: M1StageArtifacts,
+    instance_mask: np.ndarray,
+    m3_artifacts: M3StageArtifacts,
+    merge_dir: Optional[Path],
+) -> None:
+    """執行 M4 輸出、醫師檢視圖、merge overlay 與 sliding-window 格線。"""
+    export_cell_dot_annotations(
+        m1_artifacts.dish_mask_overlay,
+        instance_mask,
+        m3_artifacts.results,
+        tile_output,
+        visualization_image=m1_artifacts.dish_mask_overlay,
+        slide_id=config.slide_id,
+        tile_id=tile_id,
+        model_version=config.model_version,
+        config_hash=cfg_hash,
+        crop_size=config.cell_crop_size,
+        all_dots=m3_artifacts.all_dots,
+        per_cell_dots=m3_artifacts.per_cell_dots,
+        dish_nucleus_mask=m3_artifacts.dish_nucleus_mask,
+    )
+
+    export_overlay_visualization(
+        m1_artifacts.overlay_image,
+        instance_mask,
+        m3_artifacts.results,
+        tile_output / f"{tile_id}_ihc_dish_overlay.png",
+        all_dots=m3_artifacts.all_dots,
+    )
+
+    _export_merge_overlay(
+        merge_dir,
+        tile_id,
+        tile_output,
+        instance_mask,
+        m3_artifacts,
+    )
+
+    if config.draw_window_grid:
+        stamp_grid_on_overlays(tile_output, tile_size=config.default_tile_size)
+
+
+def _export_merge_overlay(
+    merge_dir: Optional[Path],
+    tile_id: str,
+    tile_output: Path,
+    instance_mask: np.ndarray,
+    m3_artifacts: M3StageArtifacts,
+) -> None:
+    """若存在對應 merge 影像，將 cellpose 邊界繪製在原始合併影像上。"""
+    merge_tile_path = _find_merge_tile(merge_dir, tile_id)
+    if merge_tile_path is None:
+        return
+
+    merge_image = _read_rgb(merge_tile_path)
+    if merge_image.shape[:2] == instance_mask.shape[:2]:
+        export_overlay_visualization(
+            merge_image,
+            instance_mask,
+            m3_artifacts.results,
+            tile_output / f"{tile_id}_merge_overlay.png",
+            all_dots=m3_artifacts.all_dots,
+        )
+        logger.info("Merge overlay 匯出完成: %s", tile_id)
+        return
+
+    logger.warning(
+        "Tile %s: merge 影像尺寸 %s 與 mask 尺寸 %s 不匹配，跳過 merge overlay",
+        tile_id, merge_image.shape[:2], instance_mask.shape[:2],
+    )
 
 
 def _find_merge_tile(merge_dir: Optional[Path], tile_id: str) -> Optional[Path]:
@@ -379,62 +485,6 @@ def _find_merge_tile(merge_dir: Optional[Path], tile_id: str) -> Optional[Path]:
         if candidate.exists():
             return candidate
     return None
-
-
-def _filter_dish_nucleus_by_core_mask(
-    dish_nucleus_mask: np.ndarray,
-    core_mask: np.ndarray,
-    min_inside_ratio: float = 1.0,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """移除「未完全落在 IHC core_mask 內」的 DISH 核 instance。
-
-    對每個 nucleus label 計算「在 core_mask 內的像素比例」：
-      - ``min_inside_ratio >= 1.0``（預設）：核只要有任一 pixel 在 core_mask 外
-        （接觸到 mask 外緣 / 跑出去）就整顆丟棄——對應「接觸到 mask 外就不算」。
-      - ``min_inside_ratio < 1.0``：保留 inside_ratio ≥ 門檻者（容忍 UNet++ 邊緣
-        鋸齒，例如 0.95 容許 5% 出界）。
-    其餘 instance 像素保持不變、label 不重編。
-
-    Why: dish_cellpose 在原始 DISH 圖推論，會在 IHC core_mask 之外的白色背景區
-    也偵測出細胞核，導致橘色輪廓跑到 mask 外、也讓計數誤觸 mask 之外的細胞。
-
-    Returns:
-        ``(kept_mask, out_of_bounds_mask)``——前者把出界核設為 0；後者只保留
-        被丟棄的「出界核」原始 label（其完整像素範圍，含落在 mask 內的部分），
-        供下游判定「壓在邊界、對應到出界核」的 IHC 細胞並打 X。
-    """
-    if dish_nucleus_mask.size == 0:
-        return dish_nucleus_mask, np.zeros_like(dish_nucleus_mask)
-    mask_i32 = dish_nucleus_mask.astype(np.int32, copy=False)
-    max_id = int(mask_i32.max())
-    if max_id <= 0:
-        return mask_i32, np.zeros_like(mask_i32)
-    core_bool = core_mask.astype(bool, copy=False)
-    flat = mask_i32.ravel()
-    # 用整數權重精確計數 inside（避免浮點誤差讓「剛好全包含」被誤判出界）。
-    total = np.bincount(flat, minlength=max_id + 1)
-    inside = np.bincount(
-        flat,
-        weights=core_bool.ravel().astype(np.int64),
-        minlength=max_id + 1,
-    ).astype(np.int64)
-    outside = total - inside
-    if min_inside_ratio >= 1.0:
-        drop = outside > 0                      # 任一 pixel 出界即丟
-    else:
-        drop = inside < (min_inside_ratio * total)
-    drop[0] = False
-    # 出界核遮罩：保留被丟棄核的原始 label（須在 remap 之前取，否則已歸 0）。
-    out_of_bounds_mask = (
-        np.where(drop[mask_i32], mask_i32, 0).astype(np.int32)
-        if drop.any()
-        else np.zeros_like(mask_i32)
-    )
-    if drop.any():
-        remap = np.arange(max_id + 1, dtype=np.int32)
-        remap[drop] = 0
-        mask_i32 = remap[mask_i32]
-    return mask_i32, out_of_bounds_mask
 
 
 def _read_rgb(src: Path) -> np.ndarray:
