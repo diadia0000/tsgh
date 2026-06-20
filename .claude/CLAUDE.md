@@ -6,5 +6,5 @@
 
 @rules/codegraph-first.md
 @rules/karpathy_rule.md
-
+ Before editing any file, read it first. Before modifying a function, use codegraph for all callers. Research before you edit.
 

@@ -25,7 +25,7 @@ tile dirs, `output_dir`, `slide_id`/`model_version`. `compute_config_hash()` is 
   - `m3_cells_generator.py` — `build_all_positive_results()` computes a centroid per cell.
   - `m3_elastic_matching.py` — cell-centric one-to-one matching: each IHC cell's search radius is its area scaled by `dish_elastic_expand_factor` (1.5×, `reach=sqrt(factor*area/π)`); every (cell, nucleus) candidate pair is matched nearest-first with locking, so each cell claims at most one nucleus.
   - `m3_dot_detection.py` — per-cell red-dot (CEP17) / black-dot (HER2) detection on a local LAB patch;
-    cell with no claimed nucleus but a lost candidate → drop-out exclusion (X); no candidate at all → counted as 0/0. No multi-nucleus exclusion under one-to-one matching.
+    cell with no claimed nucleus but a lost candidate → drop-out exclusion (X); no claimed nucleus but overlapping an out-of-bounds nucleus (one dropped by the core-mask filter) → boundary-contamination exclusion (X); no candidate at all → counted as 0/0. A valid claimed nucleus always wins (kept). No multi-nucleus exclusion under one-to-one matching.
   - `m3_dot_kernels.py` — pixel-level red/black dot detection, ring statistics, and merge core.
   - Amplification: HER2/CEP17 ≥ `dot_amplification_ratio` or HER2 ≥ `dot_her2_count_threshold`.
 - **M4 `m4_export.py`** — `export_cell_dot_annotations()` writes the report CSV, overlay PNG, and

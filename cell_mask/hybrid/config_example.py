@@ -147,21 +147,21 @@ class Config:
     dot_black_very_dark_min_contrast: float = 10.0
 
     # --- 彈性匹配（以細胞為中心；見 m3_elastic_matching.py）---
-    # [已棄用] 舊多核排除門檻；一對一配對下每顆細胞至多 1 核，不再做多核排除，
-    # 此參數已無作用，保留僅為相容舊 config。
-    dot_blue_exclude_threshold: int = 2
-
     # 以細胞為中心的搜尋範圍倍數（綠框「面積」放大倍數）：每顆 IHC 細胞把自身面積
-    # 放大此倍數，等效圓半徑 reach = sqrt(factor * area / π)；質心落在 reach 內的
-    # DISH 核為候選，再以一對一、最近優先配對（最近先 lock，落敗者往後找可用核）。
+    # 放大此倍數，等效圓半徑 reach = max(sqrt(factor * area / π), min_reach_px)。
+    # 候選有二：(a) 與綠框像素重疊的 DISH 核（重疊優先、一律候選）；(b) 質心落在
+    # reach 內的核。再以一對一、重疊優先 + 最近優先配對（先 lock，落敗者往後找）。
     dish_elastic_expand_factor: float = 1.5
+    # reach 的「絕對下限 px」：用以橋接純飄移（核與綠框無重疊但很近）的情形。0=不設
+    # 下限（僅靠面積公式 + 重疊候選）。欲讓無重疊的近鄰核也能配到，調大此值（例如 30）。
+    dish_elastic_min_reach_px: float = 0.0
     # 是否排除 drop-out 細胞（核數 0、曾有候選核卻競爭落敗且無可用核）。
     # 預設 True：這類 competition loser 打 X、不計入分析。
     # 注意：核數 0 但「從頭就沒有候選」的細胞不算 drop-out，照常計入(0/0)。
     dish_elastic_exclude_zero: bool = True
-    # [已棄用] 舊「以核為中心」法的核↔細胞邊界容忍距離；改以細胞為中心 +
-    # dish_elastic_expand_factor 後此參數已無作用，保留僅為相容舊 config。
-    dish_elastic_max_dist_px: float = 50.0
+    # DISH 核需「落在 UNet++ core_mask 內」的最小像素比例：1.0=完全包含才留（核只要
+    # 有任一 pixel 跑出 mask 就整顆丟）；<1.0 容忍 mask 邊緣鋸齒（例如 0.95 容許 5% 出界）。
+    dish_nucleus_core_min_inside_ratio: float = 1.0
 
     # --- 群聚合併 ---
     dot_merge_distance: float = 3.0
@@ -187,11 +187,14 @@ class Config:
         default_factory=lambda: [".tiff", ".tif", ".png", ".jpg", ".jpeg"]
     )
 
-    # ========== 視窗化分割 / 接縫縫合（大 patch sliding-window）==========
-    # M2 細胞與 M3b DISH 核分割皆以 default_tile_size 視窗逐塊跑 Cellpose 後縫合。
-    # 一對跨接縫相鄰 label 的接觸像素數 ≥ 此值才聯集成同一顆（抑制雜訊誤併）。
-    window_seam_min_contact_px: int = 1
-    # 在所有 *_overlay.png 上畫出 1k 視窗虛線格（驗證邊緣細胞縫合用）。
+    # ========== 視窗化分割 / 重疊去重（大 patch sliding-window）==========
+    # M2 細胞與 M3b DISH 核分割皆以 default_tile_size「重疊」視窗逐塊跑 Cellpose 後去重。
+    # 相鄰視窗的重疊寬度（px）：應 ≥ 最大細胞/核直徑，邊界細胞才會至少在一個視窗
+    # 內完整出現，避免被接縫切成兩顆。stride = default_tile_size - window_overlap_px。
+    window_overlap_px: int = 256
+    # 重疊去重門檻：兩 instance 交集 / min(面積) ≥ 此值即視為同一顆（保留較大者）。
+    window_dedup_iomin: float = 0.5
+    # 在所有 *_overlay.png 上畫出 1k 視窗虛線格（視覺參考用；重疊視窗下非單一接縫線）。
     draw_window_grid: bool = True
 
     # ========== 追溯性欄位 ==========

@@ -27,7 +27,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -252,13 +252,14 @@ def process_single_tile(
             check_contrast=False,
         )
 
-        # ---- M2: 視窗化 Cellpose 分割 IHC-DISH 疊合影像 + 接縫縫合 ----
+        # ---- M2: 重疊視窗 Cellpose 分割 IHC-DISH 疊合影像 + 去重 ----
         instance_mask = segment_masked_dish(
             m2_input_overlay,
             cellpose_segmenter,
             remove_border=config.clear_border_cells,
             tile_size=config.default_tile_size,
-            min_seam_contact_px=config.window_seam_min_contact_px,
+            overlap=config.window_overlap_px,
+            dedup_iomin=config.window_dedup_iomin,
         )
 
         io.imsave(
@@ -271,24 +272,30 @@ def process_single_tile(
         # M3a: 所有細胞標記為陽性（centroid + cell_id）
         results = build_all_positive_results(instance_mask)
 
-        # M3b: DISH 細胞核偵測（用純 DISH 圖，同樣視窗化 + 接縫縫合）
-        #      + 紅/黑點偵測 + 多核排除
+        # M3b: DISH 細胞核偵測（用純 DISH 圖，同樣重疊視窗 + 去重）
+        #      + 紅/黑點偵測
         dish_nucleus_mask = segment_windowed(
             dish_image,
             dish_cellpose_segmenter,
             tile_size=config.default_tile_size,
-            min_seam_contact_px=config.window_seam_min_contact_px,
+            overlap=config.window_overlap_px,
+            dedup_iomin=config.window_dedup_iomin,
         )
-        # 用 IHC core_mask 過濾掉主要落在白色背景區的 DISH 核 instance，
-        # 避免橘色輪廓 / 多核計數誤觸 mask 之外的細胞。
-        dish_nucleus_mask = _filter_dish_nucleus_by_core_mask(
-            dish_nucleus_mask, core_mask
+        # 用 IHC core_mask 過濾掉跑出 mask 的 DISH 核 instance（預設：接觸到
+        # mask 外就整顆丟），避免橘色輪廓 / 計數誤觸 mask 之外的細胞。
+        # out_of_bounds_nucleus_mask 留著被丟掉的出界核，供 detect_all_dots
+        # 把「壓在邊界、對應到出界核且未配到合格核」的 IHC 細胞打 X。
+        dish_nucleus_mask, out_of_bounds_nucleus_mask = _filter_dish_nucleus_by_core_mask(
+            dish_nucleus_mask,
+            core_mask,
+            min_inside_ratio=config.dish_nucleus_core_min_inside_ratio,
         )
         all_dots, per_cell_dots = detect_all_dots(
             dish_mask_overlay,
             instance_mask,
             config,
             dish_nucleus_mask=dish_nucleus_mask,
+            out_of_bounds_nucleus_mask=out_of_bounds_nucleus_mask,
         )
         results = merge_dot_results_to_cell_analysis(results, per_cell_dots)
 
@@ -376,41 +383,57 @@ def _find_merge_tile(merge_dir: Optional[Path], tile_id: str) -> Optional[Path]:
 def _filter_dish_nucleus_by_core_mask(
     dish_nucleus_mask: np.ndarray,
     core_mask: np.ndarray,
-    keep_threshold: float = 0.5,
-) -> np.ndarray:
-    """移除主要落在 IHC core_mask 之外的 DISH 核 instance。
+    min_inside_ratio: float = 1.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """移除「未完全落在 IHC core_mask 內」的 DISH 核 instance。
 
-    對每個 nucleus label 計算「在 core_mask 內的像素比例」，
-    比例 < ``keep_threshold`` 的整個 instance 設為 0（移出 mask）。
+    對每個 nucleus label 計算「在 core_mask 內的像素比例」：
+      - ``min_inside_ratio >= 1.0``（預設）：核只要有任一 pixel 在 core_mask 外
+        （接觸到 mask 外緣 / 跑出去）就整顆丟棄——對應「接觸到 mask 外就不算」。
+      - ``min_inside_ratio < 1.0``：保留 inside_ratio ≥ 門檻者（容忍 UNet++ 邊緣
+        鋸齒，例如 0.95 容許 5% 出界）。
     其餘 instance 像素保持不變、label 不重編。
 
-    Why: dish_cellpose 在原始 DISH 圖推論，會在 IHC core_mask 之外的
-    白色背景區也偵測出細胞核，導致橘色輪廓出現在 mask 外的白底區，
-    也讓多核排除誤把背景核算進來。
+    Why: dish_cellpose 在原始 DISH 圖推論，會在 IHC core_mask 之外的白色背景區
+    也偵測出細胞核，導致橘色輪廓跑到 mask 外、也讓計數誤觸 mask 之外的細胞。
+
+    Returns:
+        ``(kept_mask, out_of_bounds_mask)``——前者把出界核設為 0；後者只保留
+        被丟棄的「出界核」原始 label（其完整像素範圍，含落在 mask 內的部分），
+        供下游判定「壓在邊界、對應到出界核」的 IHC 細胞並打 X。
     """
     if dish_nucleus_mask.size == 0:
-        return dish_nucleus_mask
+        return dish_nucleus_mask, np.zeros_like(dish_nucleus_mask)
     mask_i32 = dish_nucleus_mask.astype(np.int32, copy=False)
     max_id = int(mask_i32.max())
     if max_id <= 0:
-        return mask_i32
+        return mask_i32, np.zeros_like(mask_i32)
     core_bool = core_mask.astype(bool, copy=False)
     flat = mask_i32.ravel()
+    # 用整數權重精確計數 inside（避免浮點誤差讓「剛好全包含」被誤判出界）。
     total = np.bincount(flat, minlength=max_id + 1)
     inside = np.bincount(
         flat,
-        weights=core_bool.ravel().astype(np.float32),
+        weights=core_bool.ravel().astype(np.int64),
         minlength=max_id + 1,
-    )
-    with np.errstate(divide="ignore", invalid="ignore"):
-        ratio = np.where(total > 0, inside / total, 0.0)
-    drop = ratio < keep_threshold
+    ).astype(np.int64)
+    outside = total - inside
+    if min_inside_ratio >= 1.0:
+        drop = outside > 0                      # 任一 pixel 出界即丟
+    else:
+        drop = inside < (min_inside_ratio * total)
     drop[0] = False
+    # 出界核遮罩：保留被丟棄核的原始 label（須在 remap 之前取，否則已歸 0）。
+    out_of_bounds_mask = (
+        np.where(drop[mask_i32], mask_i32, 0).astype(np.int32)
+        if drop.any()
+        else np.zeros_like(mask_i32)
+    )
     if drop.any():
         remap = np.arange(max_id + 1, dtype=np.int32)
         remap[drop] = 0
         mask_i32 = remap[mask_i32]
-    return mask_i32
+    return mask_i32, out_of_bounds_mask
 
 
 def _read_rgb(src: Path) -> np.ndarray:

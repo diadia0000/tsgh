@@ -8,9 +8,11 @@
     3. 對每顆認到核的 cell，在其「配對核區域」的局部 LAB patch 上做紅/黑點
        偵測——整顆核的點全記給擁有者，不沿 IHC 領地邊界把跨界核的點切給鄰居；
        沒配到核的細胞計 0 點。
-    4. 排除規則：認到 1 核=valid；0 核再分兩種——曾有候選核卻競爭落敗
-       =drop-out（排除、打 X）；從頭就沒有候選=照常計入（顯示 0/0）。被排除者
-       不計入分析。一對一配對下每顆細胞至多 1 核，故不再有「多核排除」。
+    4. 排除規則：認到 1 核=valid（合格核優先）；0 核再分三種——曾有候選核卻
+       競爭落敗=drop-out（排除、打 X）；與「出界核」（碰到 UNet++ mask 外、已被
+       core_mask 過濾掉者）重疊=污染細胞（排除、打 X）；其餘從頭就沒有候選
+       =照常計入（顯示 0/0）。被排除者不計入分析。一對一配對下每顆細胞至多
+       1 核，故不再有「多核排除」。
 
 像素級偵測核心（紅/黑點、環統計、合併）在 m3_dot_kernels.py；
 DISH 核彈性匹配在 m3_elastic_matching.py。詳見 docs/sdd-elastic-dish-matching.md。
@@ -70,7 +72,7 @@ def detect_all_dots(
     instance_mask: np.ndarray,
     config: object,
     dish_nucleus_mask: np.ndarray,
-    dish_ids_by_cell: Optional[Dict[int, List[int]]] = None,
+    out_of_bounds_nucleus_mask: np.ndarray,
     n_jobs: Optional[int] = None,
 ) -> Tuple[List[DetectedDot], Dict[int, CellDotResult]]:
     """逐顆 matched cell 偵測 HER2 黑點與 CEP17 紅點。
@@ -79,9 +81,10 @@ def detect_all_dots(
         dish_image: (H, W, 3) uint8 RGB，白背景(255)，已套用 core_mask。
         instance_mask: (H, W) 整數，0=背景，1..N=IHC 細胞 ID（strict 分割）。
         config: 具有 ``dot_*`` / ``dish_elastic_*`` 欄位的配置物件。
-        dish_nucleus_mask: (H, W) int，0=背景，1..M=DISH 細胞核 ID。
-        dish_ids_by_cell: 可選，預先算好的 elastic matching 結果
-            ``{ihc_cell_id: [dish_id, ...]}``。未提供時內部會自行呼叫。
+        dish_nucleus_mask: (H, W) int，0=背景，1..M=DISH 細胞核 ID（已過濾出界核）。
+        out_of_bounds_nucleus_mask: (H, W) int，只含被 core_mask 過濾掉的「出界核」
+            原始 label（碰到 UNet++ mask 外）。與其重疊、且最終沒配到任何合格核的
+            IHC 細胞會被打 X 排除（壓在邊界的污染細胞）。
         n_jobs: per-cell 偵測的平行度（joblib）。None=用滿所有核心 (-1)，
             1=序列，其他正整數=指定行程數。
 
@@ -101,19 +104,32 @@ def detect_all_dots(
             "shape 不一致: "
             f"dish_nucleus_mask={dish_nucleus_mask.shape} vs mask={instance_mask.shape}"
         )
+    if out_of_bounds_nucleus_mask.shape != instance_mask.shape:
+        raise ValueError(
+            "shape 不一致: "
+            f"out_of_bounds_nucleus_mask={out_of_bounds_nucleus_mask.shape} "
+            f"vs mask={instance_mask.shape}"
+        )
 
     instance_mask_i32 = instance_mask.astype(np.int32, copy=False)
     dish_nucleus_mask_i32 = dish_nucleus_mask.astype(np.int32, copy=False)
 
-    if dish_ids_by_cell is None:
-        dish_ids_by_cell, drop_out_ids = elastic_dish_nucleus_matching(
-            dish_nucleus_mask=dish_nucleus_mask_i32,
-            strict_instance_mask=instance_mask_i32,
-            cfg=config,
-        )
-    else:
-        # 預先算好的指派沒有「可行候選」資訊，無從判定 drop-out → 一律不排除。
-        drop_out_ids = set()
+    dish_ids_by_cell, drop_out_ids = elastic_dish_nucleus_matching(
+        dish_nucleus_mask=dish_nucleus_mask_i32,
+        strict_instance_mask=instance_mask_i32,
+        cfg=config,
+    )
+
+    # 與「出界核」有像素重疊的 IHC 細胞：這些細胞壓在 UNet++ mask 邊界上。
+    # 若最終仍沒配到任何合格核，視為污染細胞打 X（合格核優先：有配到合格核
+    # 代表已飄移到核上、不在邊界，保留不打 X——於 _finalize_per_cell 判定）。
+    oob_i32 = out_of_bounds_nucleus_mask.astype(np.int32, copy=False)
+    both_oob = (instance_mask_i32 > 0) & (oob_i32 > 0)
+    oob_overlap_cells: Set[int] = (
+        {int(v) for v in np.unique(instance_mask_i32[both_oob])}
+        if both_oob.any()
+        else set()
+    )
 
     # 紅黑點只在「配對到的 DISH 核區域」內計算——整顆核的點都記給贏得它的細胞，
     # 不再沿 IHC strict 領地邊界把跨界核的點切給鄰居；沒配到核的細胞不計任何點。
@@ -167,7 +183,7 @@ def detect_all_dots(
         all_dots.extend(red_dots)
         all_dots.extend(black_dots)
 
-    _finalize_per_cell(per_cell, dish_ids_by_cell, drop_out_ids, config)
+    _finalize_per_cell(per_cell, dish_ids_by_cell, drop_out_ids, oob_overlap_cells, config)
 
     n_red = sum(1 for d in all_dots if d.dot_type == "cep17")
     n_black = sum(1 for d in all_dots if d.dot_type == "her2")
@@ -278,6 +294,7 @@ def _finalize_per_cell(
     per_cell: Dict[int, CellDotResult],
     dish_ids_by_cell: Dict[int, List[int]],
     drop_out_ids: Set[int],
+    oob_overlap_cells: Set[int],
     cfg: object,
 ) -> None:
     """填入計數、ratio、藍區數量、excluded、is_amplified（in-place）。"""
@@ -296,9 +313,10 @@ def _finalize_per_cell(
         assigned_ids = dish_ids_by_cell.get(cdr.cell_id, [])
         cdr.assigned_dish_ids = list(assigned_ids)
         cdr.blue_region_count = len(cdr.assigned_dish_ids)
-        # 一對一配對：每顆細胞至多 1 核。認到核=valid；0 核且曾有候選卻競爭落敗
-        # （cell_id in drop_out_ids）=drop-out（排除、打 X）；0 核且從頭無候選
-        # =忽略配對、照常計入（不排除）。一對一下不再有多核排除。
+        # 一對一配對：每顆細胞至多 1 核。認到核=valid（合格核優先，保留不打 X）。
+        # 0 核者再分：曾有候選卻競爭落敗（drop_out_ids）=drop-out 打 X；
+        # 壓在邊界、與出界核重疊（oob_overlap_cells）=污染細胞打 X；
+        # 其餘 0 核且從頭無候選=忽略配對、照常計入（顯示 0/0、不排除）。
         if (
             cdr.blue_region_count == 0
             and exclude_zero
@@ -306,6 +324,12 @@ def _finalize_per_cell(
         ):
             cdr.excluded = True
             cdr.exclude_reason = "drop_out"
+        elif (
+            cdr.blue_region_count == 0
+            and cdr.cell_id in oob_overlap_cells
+        ):
+            cdr.excluded = True
+            cdr.exclude_reason = "out_of_bounds_nucleus"
         else:
             cdr.excluded = False
             cdr.exclude_reason = ""
