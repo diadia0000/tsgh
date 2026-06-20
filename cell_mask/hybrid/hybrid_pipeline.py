@@ -58,11 +58,12 @@ from m2_segmentation import (
     segment_masked_dish,
     segment_windowed,
 )
-from cell_mask.hybrid.m3_cells_generator import (
+from cell_mask.hybrid.m3_module import (
     CellAnalysisResult,
     build_all_positive_results,
+    detect_all_dots,
+    merge_dot_results_to_cell_analysis,
 )
-from m3_dot_detection import detect_all_dots, merge_dot_results_to_cell_analysis
 from m4_export import (
     export_cell_dot_annotations,
     export_overlay_visualization,

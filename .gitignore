@@ -3,7 +3,6 @@ python_test_output/
 *.png
 picture/*
 build/
-docs/
 .venv/
 *.tiff
 .idea/

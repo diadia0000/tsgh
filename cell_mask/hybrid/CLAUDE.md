@@ -10,6 +10,7 @@ python hybrid_pipeline.py --ihc tile_x1024_y2048.tiff --dish tile_x1024_y2048.ti
 python hybrid_pipeline.py --batch [--test] [--output DIR]                            # batch scan dirs
 ```
 Tile pairing is by filename coordinate parsing `tile_x{int}_y{int}`.
+Key imports: `m1_overlay`, `m2_segmentation` (local-style); `cell_mask.hybrid.m3_module` (package); `m4_export` (facade).
 
 ## Configuration
 `config.py` is **gitignored**; run `cp config_example.py config.py` first, then edit paths/params.
@@ -21,15 +22,20 @@ tile dirs, `output_dir`, `slide_id`/`model_version`. `compute_config_hash()` is 
   50/50 alpha blend (`overlay_alpha`) becomes the M2 input; an empty core mask short-circuits to an empty CSV.
 - **M2 `m2_segmentation.py`** — `CellposeSegmenter` segments the fused image → cell instance mask;
   `clear_border_cells` drops seam-touching cells, then labels are renumbered.
-- **M3 cell analysis**
-  - `m3_cells_generator.py` — `build_all_positive_results()` computes a centroid per cell.
-  - `m3_elastic_matching.py` — cell-centric one-to-one matching: each IHC cell's search radius is its area scaled by `dish_elastic_expand_factor` (1.5×, `reach=sqrt(factor*area/π)`); every (cell, nucleus) candidate pair is matched nearest-first with locking, so each cell claims at most one nucleus.
-  - `m3_dot_detection.py` — per-cell red-dot (CEP17) / black-dot (HER2) detection on a local LAB patch;
-    cell with no claimed nucleus but a lost candidate → drop-out exclusion (X); no claimed nucleus but overlapping an out-of-bounds nucleus (one dropped by the core-mask filter) → boundary-contamination exclusion (X); no candidate at all → counted as 0/0. A valid claimed nucleus always wins (kept). No multi-nucleus exclusion under one-to-one matching.
-  - `m3_dot_kernels.py` — pixel-level red/black dot detection, ring statistics, and merge core.
-  - Amplification: HER2/CEP17 ≥ `dot_amplification_ratio` or HER2 ≥ `dot_her2_count_threshold`.
-- **M4 `m4_export.py`** — `export_cell_dot_annotations()` writes the report CSV, overlay PNG, and
-  `cells/cell_{id}.png` per-cell crops (`cell_crop_size`); `export_overlay_visualization()` produces the clinician-review overlay.
+- **M3 `m3_module/`** — package; `hybrid_pipeline.py` imports from `cell_mask.hybrid.m3_module`.
+  - `m3_cells_generator.py` — `CellAnalysisResult`, `build_all_positive_results()` (centroid per cell).
+  - `m3_elastic_matching.py` — `elastic_dish_nucleus_matching()`; reach = `sqrt(factor×area/π)`;
+    nearest-first with locking so each cell claims at most one nucleus.
+  - `m3_dot_detection.py` — `CellDotResult`, `detect_all_dots()`, `merge_dot_results_to_cell_analysis()`;
+    HER2 (black) / CEP17 (red) on local LAB patch; drop-out / boundary-contamination → excluded (X); no candidate → 0/0.
+  - `m3_dot_kernels.py` — `DetectedDot`; pixel-level dot detection, ring statistics, merge core.
+  - Amplification: HER2/CEP17 ≥ `dot_amplification_ratio` **or** HER2 ≥ `dot_her2_count_threshold`.
+  - `m3_cell_detection.py` — backward-compat shim; re-exports all symbols from `m3_module/` in one file.
+- **M4 `m4_export.py` + `m4_module/`** — facade re-export over three sub-modules:
+  - `m4_module/csv.py` — `DotStatsSummary`, `export_tile_csv`, `export_summary_statistics`, `write_summary_csv`.
+  - `m4_module/overlay.py` — `render_overlay_image`, `export_overlay_visualization`, `export_dot_only_visualization`, `stamp_grid_on_overlays`.
+  - `m4_module/cell_crops.py` — `export_per_cell_images`, `export_cell_dot_annotations` (unified entry point: CSV + overlay + per-cell crops).
+  - `m4_export.py` is the stable public API; callers import only from it.
 - **`unet_inference.py`** — `UNetPPInference` (EfficientNet-B4); large images use sliding-window inference.
 
 ## Invariants

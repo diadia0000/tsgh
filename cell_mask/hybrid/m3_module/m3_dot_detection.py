@@ -28,15 +28,15 @@ import numpy as np
 from joblib import Parallel, delayed
 from scipy.ndimage import find_objects
 
-from cell_mask.hybrid.m3_cells_generator import CellAnalysisResult
-from cell_mask.hybrid.m3_dot_kernels import (
+from .m3_cells_generator import CellAnalysisResult
+from .m3_dot_kernels import (
     DetectedDot,
     _detect_black_dots,
     _detect_red_dots,
     _merge_close_dots,
     _rgb_to_lab,
 )
-from cell_mask.hybrid.m3_elastic_matching import elastic_dish_nucleus_matching
+from .m3_elastic_matching import elastic_dish_nucleus_matching
 
 logger = logging.getLogger(__name__)
 
