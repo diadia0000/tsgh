@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -22,27 +21,9 @@ from skimage.morphology import (
     h_minima,
 )
 
+from cell_mask.hybrid.hybrid_data_types import DetectedDot  # noqa: F401 (re-exported)
+
 logger = logging.getLogger(__name__)
-
-
-# ------------------------------------------------------------------
-# 資料結構
-# ------------------------------------------------------------------
-
-@dataclass
-class DetectedDot:
-    """單一偵測點（全 tile 座標）。"""
-
-    y: float
-    x: float
-    radius: float
-    dot_type: str          # "her2" | "cep17"
-    cell_id: int           # 0 表示不在任何 Cellpose 細胞內
-    area: int
-    circularity: float
-    solidity: float
-    contrast: float        # 紅: mean_a_dot - mean_a_ring; 黑: mean_L_ring - mean_L_dot
-    score: float           # 排序用（紅: mean_a; 黑: -mean_L）
 
 
 # ------------------------------------------------------------------

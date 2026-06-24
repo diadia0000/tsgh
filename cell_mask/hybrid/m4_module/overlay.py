@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 from scipy.ndimage import center_of_mass, find_objects
 
-from cell_mask.hybrid.m3_module import CellAnalysisResult, CellDotResult, DetectedDot
+from cell_mask.hybrid.hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
 
 logger = logging.getLogger(__name__)
 

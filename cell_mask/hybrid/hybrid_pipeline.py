@@ -63,6 +63,7 @@ from m3_cell_detection import (
     CellAnalysisResult,
     build_all_positive_results,
     detect_all_dots,
+    enlarge_cell_instances,
     merge_dot_results_to_cell_analysis,
 )
 from m4_export import (
@@ -357,6 +358,10 @@ def _run_m3_analysis_stage(
 ) -> M3StageArtifacts:
     """執行 M3：逐細胞結果、DISH 核偵測、紅黑點偵測與結果合併。"""
     results = build_all_positive_results(instance_mask)
+    # M3 配對前處理：把綠色細胞 mask 實際放大（面積 ×cell_enlarge_area_factor），讓細胞
+    # 蓋到更多 DISH 核以提高配對成功率。放大版僅供配對 / 點偵測；原始 instance_mask 仍
+    # 用於 M4 視覺化與裁切，醫師看到的綠框維持不變。
+    matching_mask = enlarge_cell_instances(instance_mask, config)
     dish_nucleus_mask = segment_windowed(
         dish_image,
         dish_cellpose_segmenter,
@@ -366,7 +371,7 @@ def _run_m3_analysis_stage(
     )
     all_dots, per_cell_dots, dish_nucleus_mask = detect_all_dots(
         dish_mask_overlay,
-        instance_mask,
+        matching_mask,
         config,
         dish_nucleus_mask=dish_nucleus_mask,
         core_mask=core_mask,

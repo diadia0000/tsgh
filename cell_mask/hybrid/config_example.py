@@ -146,6 +146,14 @@ class Config:
     dot_black_very_dark_l_max: float = 40.0
     dot_black_very_dark_min_contrast: float = 10.0
 
+    # --- 細胞放大（M3 配對前處理；見 m3_cells_generator.enlarge_cell_instances）---
+    # 做彈性匹配前，先把每顆綠色細胞 mask 實際往背景膨脹，使其等效「面積」放大此倍數
+    # （skimage expand_labels，Voronoi 式外擴、細胞間不重疊）。放大版只用於 M3 配對與
+    # 點偵測，藉此蓋到更多 DISH 核、提高配對成功率；不影響醫師檢視的 overlay（仍畫原始
+    # M2 綠框）。1.0=不放大。注意：配對之後仍會套用 dish_elastic_expand_factor 的 reach，
+    # 兩者會疊加；若想讓物理膨脹成為唯一機制，可把 dish_elastic_expand_factor 設回 1.0。
+    cell_enlarge_area_factor: float = 1.5
+
     # --- 彈性匹配（以細胞為中心；見 m3_elastic_matching.py）---
     # 以細胞為中心的搜尋範圍倍數（綠框「面積」放大倍數）：每顆 IHC 細胞把自身面積
     # 放大此倍數，等效圓半徑 reach = max(sqrt(factor * area / π), min_reach_px)。

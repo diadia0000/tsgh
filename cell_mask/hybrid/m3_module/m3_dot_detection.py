@@ -21,16 +21,14 @@ DISH 核彈性匹配在 m3_elastic_matching.py。詳見 docs/sdd-elastic-dish-ma
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from joblib import Parallel, delayed
 from scipy.ndimage import find_objects
 
-from .m3_cells_generator import CellAnalysisResult
+from cell_mask.hybrid.hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
 from .m3_dot_kernels import (
-    DetectedDot,
     _detect_black_dots,
     _detect_red_dots,
     _merge_close_dots,
@@ -87,28 +85,6 @@ def _filter_dish_nucleus_by_core_mask(
         remap[drop] = 0
         mask_i32 = remap[mask_i32]
     return mask_i32, out_of_bounds_mask
-
-
-# ------------------------------------------------------------------
-# 資料結構
-# ------------------------------------------------------------------
-
-@dataclass
-class CellDotResult:
-    """單一細胞的點位計數結果。"""
-
-    cell_id: int
-    her2_dot_count: int = 0
-    cep17_dot_count: int = 0
-    her2_cep17_ratio: float = 0.0        # float("inf") 當 cep17_dot_count == 0
-    is_amplified: bool = False
-    blue_region_count: int = 0
-    excluded: bool = False               # drop-out(0 核、競爭落敗) → 排除、打 X
-    exclude_reason: str = ""             # "" | "drop_out"（打 X 用）
-    her2_dots: List[DetectedDot] = field(default_factory=list)
-    cep17_dots: List[DetectedDot] = field(default_factory=list)
-    # elastic matching 認領到的 DISH 核 ID（用於視覺化飄移箭頭與粉色輪廓）
-    assigned_dish_ids: List[int] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------
