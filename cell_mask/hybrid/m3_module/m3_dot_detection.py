@@ -320,9 +320,15 @@ def _finalize_per_cell(
     oob_overlap_cells: Set[int],
     cfg: object,
 ) -> None:
-    """填入計數、ratio、藍區數量、excluded、is_amplified（in-place）。"""
+    """填入計數、ratio、score、藍區數量、excluded、is_amplified（in-place）。
+
+    Score(r,b)：r=HER2 黑點、b=CEP17 紅點。b < score_cep17_min_count（預設 2）且
+    「有訊號」（非 0/0）→ 紅點不足、無法計算 Score，直接排除打 X（low_cep17）；
+    完全無訊號的 0/0 細胞不打 X、照常計入（顯示 0/0）。否則 score=r/b，
+    且 score < amp_ratio 時歸 0。is_amplified = score > 0（即 score ≥ amp_ratio）。
+    """
     amp_ratio = float(getattr(cfg, "dot_amplification_ratio", 2.0))
-    amp_count = int(getattr(cfg, "dot_her2_count_threshold", 6))
+    cep17_min = int(getattr(cfg, "score_cep17_min_count", 2))
     exclude_zero = bool(getattr(cfg, "dish_elastic_exclude_zero", False))
 
     for cdr in per_cell.values():
@@ -336,10 +342,11 @@ def _finalize_per_cell(
         assigned_ids = dish_ids_by_cell.get(cdr.cell_id, [])
         cdr.assigned_dish_ids = list(assigned_ids)
         cdr.blue_region_count = len(cdr.assigned_dish_ids)
-        # 一對一配對：每顆細胞至多 1 核。認到核=valid（合格核優先，保留不打 X）。
-        # 0 核者再分：曾有候選卻競爭落敗（drop_out_ids）=drop-out 打 X；
-        # 壓在邊界、與出界核重疊（oob_overlap_cells）=污染細胞打 X；
-        # 其餘 0 核且從頭無候選=忽略配對、照常計入（顯示 0/0、不排除）。
+        # 排除（打 X）判定，依序：
+        #   1. 0 核且曾有候選卻競爭落敗（drop_out_ids）= drop-out；
+        #   2. 0 核且壓在邊界、與出界核重疊（oob_overlap_cells）= 污染細胞；
+        #   3. 紅點不足（cep17 < cep17_min 且非 0/0 完全無訊號）= 無法計算 Score，直接打 X。
+        # 其餘（含 0/0 完全無訊號）照常計入。
         if (
             cdr.blue_region_count == 0
             and exclude_zero
@@ -353,16 +360,26 @@ def _finalize_per_cell(
         ):
             cdr.excluded = True
             cdr.exclude_reason = "out_of_bounds_nucleus"
+        elif cdr.cep17_dot_count < cep17_min and not (
+            cdr.her2_dot_count == 0 and cdr.cep17_dot_count == 0
+        ):
+            cdr.excluded = True
+            cdr.exclude_reason = "low_cep17"
         else:
             cdr.excluded = False
             cdr.exclude_reason = ""
+
         if cdr.excluded:
+            cdr.score = 0.0
             cdr.is_amplified = False
         else:
-            cdr.is_amplified = (
-                cdr.her2_dot_count >= amp_count
-                or (cdr.cep17_dot_count > 0 and cdr.her2_cep17_ratio >= amp_ratio)
+            # 此分支為 cep17 ≥ cep17_min 或 0/0 細胞，ratio 必為有限（0紅有黑的 inf 已排除）。
+            cdr.score = (
+                cdr.her2_cep17_ratio
+                if cdr.her2_cep17_ratio >= amp_ratio
+                else 0.0
             )
+            cdr.is_amplified = cdr.score > 0.0
 
 
 # ------------------------------------------------------------------
@@ -385,6 +402,7 @@ def merge_dot_results_to_cell_analysis(
         res.cep17_dot_count = cdr.cep17_dot_count
         res.her2_cep17_ratio = cdr.her2_cep17_ratio
         res.is_amplified = cdr.is_amplified
+        res.score = cdr.score
         res.blue_region_count = cdr.blue_region_count
         res.excluded = cdr.excluded
     return cell_results

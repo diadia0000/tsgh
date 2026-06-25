@@ -2,7 +2,6 @@
 
 import csv
 import logging
-import math
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Iterable, List
@@ -13,9 +12,11 @@ logger = logging.getLogger(__name__)
 
 _CSV_HEADER = [
     "cell_id",
+    "centroid_x",
+    "centroid_y",
     "reddot",
     "blackdot",
-    "ratio",
+    "score",
 ]
 
 
@@ -23,12 +24,8 @@ def _format_count(val: int, excluded: bool) -> str:
     return "NaN" if excluded else str(int(val))
 
 
-def _format_ratio(ratio: float, excluded: bool) -> str:
-    if excluded:
-        return "NaN"
-    if ratio == float("inf") or ratio == 0.0 or math.isnan(ratio):
-        return "NaN"
-    return f"{ratio:.4f}"
+def _format_score(score: float, excluded: bool) -> str:
+    return "NaN" if excluded else f"{score:.4f}"
 
 
 def export_tile_csv(
@@ -47,14 +44,16 @@ def export_tile_csv(
         writer.writerow(_CSV_HEADER)
         for cell in results:
             excluded = bool(getattr(cell, "excluded", False))
-            ratio = getattr(cell, "her2_cep17_ratio", 0.0)
             red = getattr(cell, "cep17_dot_count", 0)
             black = getattr(cell, "her2_dot_count", 0)
+            score = getattr(cell, "score", 0.0)
             writer.writerow([
                 cell.cell_id,
+                f"{cell.centroid_x:.2f}",
+                f"{cell.centroid_y:.2f}",
                 _format_count(red, excluded),
                 _format_count(black, excluded),
-                _format_ratio(ratio, excluded),
+                _format_score(score, excluded),
             ])
 
     logger.info("CSV 匯出完成: %s (%d 列)", output_path.name, len(results))
@@ -68,7 +67,7 @@ class DotStatsSummary:
     可代表單一 tile 的統計，亦可由多個 tile 摘要合併為 slide-level。
     僅記錄 count；百分比於寫檔時計算，避免合併產生累積誤差。
 
-    有效細胞定義：未排除（excluded=False）且 reddot >= 1 且 blackdot >= 1。
+    有效細胞定義：未排除（excluded=False）且 reddot >= 2 且 blackdot >= 1。
     """
 
     valid_cells: int = 0      # 雙色有效細胞總數
@@ -86,7 +85,7 @@ class DotStatsSummary:
         valid = [
             r for r in results
             if not getattr(r, "excluded", False)
-            and getattr(r, "cep17_dot_count", 0) >= 1
+            and getattr(r, "cep17_dot_count", 0) >= 2
             and getattr(r, "her2_dot_count", 0) >= 1
         ]
         ratio_lt2 = sum(

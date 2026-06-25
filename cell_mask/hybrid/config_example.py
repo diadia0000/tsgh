@@ -175,8 +175,14 @@ class Config:
     dot_merge_distance: float = 3.0
     dot_black_merge_distance: float = 1.4
 
-    # --- HER2 擴增判定 ---
+    # --- HER2 擴增判定（Score）---
+    # Score(r,b)=HER2/CEP17。CEP17 紅點數 < 此值且「有訊號」（非 0/0）→ 紅點不足、
+    # 無法計算 Score，該細胞直接排除打 X（excluded, low_cep17）；完全無訊號的 0/0
+    # 細胞不打 X、照常計入（顯示 0/0）。
+    score_cep17_min_count: int = 2
+    # Score ≥ 此值才視為擴增（is_amplified）；否則 Score 歸 0。
     dot_amplification_ratio: float = 2.0
+    # 保留供舊資料相容；新 Score 邏輯不再用 HER2 絕對數獨立判定擴增。
     dot_her2_count_threshold: int = 6
 
     # ========== 單細胞裁切參數 (M4) ==========

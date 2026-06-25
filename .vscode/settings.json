@@ -1,0 +1,12 @@
+{
+    "chat.mcp.serverSampling": {
+        "tsgh/.mcp.json: codegraph": {
+            "allowedModels": [
+                "copilotcli/auto",
+                "copilot/auto",
+                "ollama/Ollama/qwen-3.6:latest",
+                "ollama/Ollama/qwen3.6:27b"
+            ]
+        }
+    }
+}

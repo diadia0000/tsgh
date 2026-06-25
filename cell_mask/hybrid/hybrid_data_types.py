@@ -49,6 +49,7 @@ class CellAnalysisResult:
     cep17_dot_count: int = 0
     her2_cep17_ratio: float = 0.0
     is_amplified: bool = False
+    score: float = 0.0
     blue_region_count: int = 0
     excluded: bool = False
 
@@ -62,9 +63,10 @@ class CellDotResult:
     cep17_dot_count: int = 0
     her2_cep17_ratio: float = 0.0        # float("inf") 當 cep17_dot_count == 0
     is_amplified: bool = False
+    score: float = 0.0                   # Score(r,b)=r/b（cep17≥2 且 ratio≥2 才>0，否則 0）
     blue_region_count: int = 0
-    excluded: bool = False               # drop-out(0 核、競爭落敗) → 排除、打 X
-    exclude_reason: str = ""             # "" | "drop_out"（打 X 用）
+    excluded: bool = False               # drop-out(0 核、競爭落敗) / cep17<2 → 排除、打 X
+    exclude_reason: str = ""             # "" | "drop_out" | "out_of_bounds_nucleus" | "low_cep17"
     her2_dots: List[DetectedDot] = field(default_factory=list)
     cep17_dots: List[DetectedDot] = field(default_factory=list)
     # elastic matching 認領到的 DISH 核 ID（用於視覺化飄移箭頭與粉色輪廓）

@@ -173,14 +173,16 @@ def _draw_drift_arrows(
     per_cell_dots: Dict[int, "CellDotResult"],
     dish_nucleus_mask: np.ndarray,
 ) -> None:
-    """對每個非排除細胞畫飄移箭頭：IHC centroid → 認領的 DISH 核 centroid。"""
+    """對每個「配對到核」的細胞畫飄移箭頭：IHC centroid → 認領的 DISH 核 centroid。
+
+    只要細胞配到核（assigned_dish_ids 非空）就畫，含因紅點<2 被排除（low_cep17）
+    者；drop_out / 出界核細胞本就 0 核、無 assigned_dish_ids，不受影響。
+    """
     if dish_nucleus_mask is None or per_cell_dots is None:
         return
 
     matched_ids: set = set()
     for cdr in per_cell_dots.values():
-        if getattr(cdr, "excluded", False):
-            continue
         matched_ids.update(int(d) for d in getattr(cdr, "assigned_dish_ids", []))
     if not matched_ids:
         return
@@ -198,7 +200,7 @@ def _draw_drift_arrows(
 
     for cell in results:
         cdr = per_cell_dots.get(cell.cell_id)
-        if cdr is None or getattr(cdr, "excluded", False):
+        if cdr is None:
             continue
         assigned = getattr(cdr, "assigned_dish_ids", [])
         if not assigned:

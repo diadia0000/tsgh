@@ -22,6 +22,9 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from skimage import io
 from tqdm import tqdm
+import matplotlib
+matplotlib.use('Agg')  # headless 環境只存檔,不開 GUI 視窗
+import matplotlib.pyplot as plt
 
 # 設定 logging
 logging.basicConfig(
@@ -531,6 +534,53 @@ def save_checkpoint(
         logger.info(f"✓ 保存最佳模型 (mIoU: {state.best_miou:.4f})")
 
 
+def plot_training_history(history: Dict[str, List[float]], save_path: Path) -> None:
+    """
+    繪製訓練統計曲線並存成 PNG (Loss / mIoU / Learning Rate)
+
+    每個 epoch 結束後覆寫同一張圖,訓練中即可即時查看,
+    early stopping 或中途崩潰也能保留已訓練部分的曲線。
+
+    Args:
+        history: 包含 train_loss/train_miou/val_loss/val_miou/lr 的歷史紀錄
+        save_path: 圖片儲存路徑 (含檔名)
+    """
+    epochs = range(1, len(history['train_loss']) + 1)
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+    # Loss 曲線
+    axes[0].plot(epochs, history['train_loss'], label='Train', marker='o', markersize=3)
+    axes[0].plot(epochs, history['val_loss'], label='Val', marker='o', markersize=3)
+    axes[0].set_title('Loss')
+    axes[0].set_xlabel('Epoch')
+    axes[0].set_ylabel('Loss')
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+
+    # mIoU 曲線
+    axes[1].plot(epochs, history['train_miou'], label='Train', marker='o', markersize=3)
+    axes[1].plot(epochs, history['val_miou'], label='Val', marker='o', markersize=3)
+    axes[1].set_title('Mean IoU')
+    axes[1].set_xlabel('Epoch')
+    axes[1].set_ylabel('mIoU')
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
+
+    # Learning Rate 曲線 (對數軸)
+    axes[2].plot(epochs, history['lr'], color='tab:green', marker='o', markersize=3)
+    axes[2].set_title('Learning Rate')
+    axes[2].set_xlabel('Epoch')
+    axes[2].set_ylabel('LR')
+    axes[2].set_yscale('log')
+    axes[2].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(str(save_path), dpi=150, bbox_inches='tight')
+    plt.close()
+
+
 def main() -> None:
     """主程式入口"""
     # 載入配置
@@ -626,15 +676,23 @@ def main() -> None:
     
     # 訓練狀態
     state = TrainState()
-    
+
+    # 訓練統計歷史 (用於繪製曲線)
+    history: Dict[str, List[float]] = {
+        'train_loss': [], 'train_miou': [],
+        'val_loss': [], 'val_miou': [], 'lr': [],
+    }
+
     # 訓練迴圈
     logger.info("開始訓練...")
-    
+
     for epoch in range(config.epochs):
         state.epoch = epoch + 1
-        
+
+        # 此 epoch 訓練時實際使用的學習率 (在 scheduler.step() 之前)
+        current_lr = scheduler.get_last_lr()[0]
         logger.info(f"\nEpoch {state.epoch}/{config.epochs}")
-        logger.info(f"學習率: {scheduler.get_last_lr()[0]:.2e}")
+        logger.info(f"學習率: {current_lr:.2e}")
         
         # 訓練
         train_loss, train_miou = train_one_epoch(
@@ -663,7 +721,15 @@ def main() -> None:
             f"Train - Loss: {train_loss:.4f}, mIoU: {train_miou:.4f} | "
             f"Val - Loss: {val_loss:.4f}, mIoU: {val_miou:.4f}"
         )
-        
+
+        # 紀錄歷史並更新訓練曲線圖
+        history['train_loss'].append(train_loss)
+        history['train_miou'].append(train_miou)
+        history['val_loss'].append(val_loss)
+        history['val_miou'].append(val_miou)
+        history['lr'].append(current_lr)
+        plot_training_history(history, config.model_save_dir / 'training_curves.png')
+
         # 檢查是否為最佳模型
         is_best = val_miou > state.best_miou
         if is_best:
@@ -692,6 +758,7 @@ def main() -> None:
     logger.info("=" * 60)
     logger.info(f"訓練完成! 最佳 mIoU: {state.best_miou:.4f}")
     logger.info(f"模型已儲存至: {config.model_save_dir / 'best_model.pth'}")
+    logger.info(f"訓練曲線已儲存至: {config.model_save_dir / 'training_curves.png'}")
     logger.info("=" * 60)
 
 

@@ -31,12 +31,12 @@ from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
-import torch
+from torch import sparse
 from skimage import io
 
 # Cellpose 在 get_masks_torch 內呼叫 torch.sparse_coo_tensor；PyTorch 要求顯式表態
 # sparse invariant 檢查的開關，否則會持續發出 UserWarning。維持預設 (關閉檢查) 以保留效能。
-torch.sparse.check_sparse_tensor_invariants.disable()
+sparse.check_sparse_tensor_invariants.disable()
 
 # 將專案根目錄與 hybrid 目錄加入 sys.path，確保直接執行腳本時可解析套件匯入
 _HYBRID_DIR = Path(__file__).resolve().parent

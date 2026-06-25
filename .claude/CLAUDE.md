@@ -1,8 +1,8 @@
-## tsgh — WSI / 病理影像 pipeline
+# tsgh — WSI / medical image pipeline
 
-專案特定的慣例、路徑、注意事項寫在這個檔案即可。
+Codebase specific conventions, paths, and notes are written in this file.
 
-## 專案規則 (project rules)
+## project rules
 
 1. Before editing any file, read it first. Before modifying a function, use codegraph for all callers. Research before you edit.
 2. @rules/codegraph-first.md
