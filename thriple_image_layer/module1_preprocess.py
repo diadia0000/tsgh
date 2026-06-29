@@ -311,10 +311,10 @@ class CziPreprocessor:
                 # 這樣可以避免 "tiff2vips: page 1 differs from page 0" 錯誤
                 result.tiffsave(
                     out_path,
-                    compression="zstd",
+                    compression="jpeg",
                     tile=True,           # 必須使用 tile 格式
-                    tile_width=2048,      # tile 尺寸
-                    tile_height=2048,
+                    tile_width=1024,      # tile 尺寸
+                    tile_height=1024,
                     bigtiff=True,        # 支援大於 4GB 檔案
                     pyramid=True,        # 生成金字塔層級
                     subifd=True,         # 使用 SubIFD 格式存放金字塔層級 (VALIS 相容)

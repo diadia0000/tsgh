@@ -61,8 +61,12 @@ def generate_thumbnail(
             level=level,
             non_rigid=True,
             crop="overlap",
-            compression='lzw',
-            pyramid=True
+            compression='jpeg',
+            pyramid=True,
+            tile=True,
+            tile_width=1024,
+            tile_height=1024,
+            bigtiff=True
         )
 
     # 檢查 HER2 暫存檔案是否存在
@@ -76,7 +80,11 @@ def generate_thumbnail(
             level=level,
             non_rigid=False,
             crop="overlap",
-            compression='lzw',
+            compression='jpeg',
+            tile=True,
+            tile_width=1024,
+            tile_height=1024,
+            bigtiff=True,
             pyramid=True,
         )
     

@@ -71,6 +71,8 @@ from m4_export import (
     export_overlay_visualization,
     stamp_grid_on_overlays,
 )
+from m0_reader import iter_paired_chunks, read_size
+from m0_stitch import ChunkResult, clear_slide_edge_cells, stitch_chunks
 
 # ------------------------------------------------------------------
 # Logging 設定
@@ -181,42 +183,60 @@ def process_single_tile(
     tile_output = output_dir / tile_id
     start_time = time.perf_counter()
 
-    # 先載入影像並驗證 patch 規格（正方形、邊長 ≥ default_tile_size）。
-    # 不合格直接拋 ValueError（real-task 直呼端會中止；批次端於 run_batch 攔截續跑）。
-    ihc_image = _read_rgb(ihc_tile_path)
-    dish_image = _read_rgb(dish_tile_path)
-    _validate_patch_shape(ihc_image, dish_image, min_size=config.default_tile_size)
+    tile_size = config.default_tile_size
+    overlap = config.window_overlap_px
+
+    # M0：以 pyvips 逐塊讀取（不整載），對每塊跑 M1–M3，最後縫成 slide-level 輸出。
+    # 尺寸/配對驗證由 iter_paired_chunks 負責（IHC/DISH 同尺寸、邊長 ≥ tile_size）。
+    try:
+        full_h, full_w = read_size(dish_tile_path)
+    except Exception as exc:
+        logger.error("Tile %s 讀取尺寸失敗: %s", tile_id, exc)
+        return None
 
     try:
-        core_mask = generate_ihc_core_mask(  # pyright: ignore[reportArgumentType]
-            ihc_image,
-            unet_inferencer,
-            close_kernel=config.core_close_kernel,
-        )
-
-        if core_mask.sum() == 0:
-            logger.warning(
-                "Tile %s: 核心遮罩全空 — 僅匯出空 CSV", tile_id
+        chunk_results: List[ChunkResult] = []
+        for chunk in iter_paired_chunks(ihc_tile_path, dish_tile_path, tile_size, overlap):
+            cr = _process_one_chunk(
+                chunk, full_h, full_w,
+                unet_inferencer, cellpose_segmenter, dish_cellpose_segmenter,
             )
-            _export_empty_tile(tile_output, tile_id, cfg_hash, core_mask)
+            if cr is not None:
+                chunk_results.append(cr)
+
+        if not chunk_results:
+            logger.warning("Tile %s: 全部分塊核心遮罩皆空 — 僅匯出空 CSV", tile_id)
+            _export_empty_tile(
+                tile_output, tile_id, cfg_hash,
+                np.zeros((full_h, full_w), dtype=np.uint8),
+            )
             return []
 
-        m1_artifacts = _run_m1_overlay_stage(ihc_image, dish_image, core_mask)
-        _write_m1_artifacts(tile_output, tile_id, m1_artifacts)
-
-        instance_mask = _run_m2_segmentation_stage(
-            m1_artifacts.m2_input_overlay,
-            cellpose_segmenter,
-            tile_output,
-            tile_id,
+        stitched = stitch_chunks(
+            chunk_results, full_h, full_w, overlap,
+            background_fill_value=config.background_fill_value,
         )
 
-        m3_artifacts = _run_m3_analysis_stage(
-            dish_image,
-            m1_artifacts.dish_mask_overlay,
-            instance_mask,
-            m1_artifacts.core_mask,
-            dish_cellpose_segmenter,
+        m1_artifacts = M1StageArtifacts(
+            core_mask=stitched.core_mask,
+            masked_ihc=stitched.masked_ihc,
+            dish_mask_overlay=stitched.dish_mask_overlay,
+            overlay_image=stitched.overlay_image,
+            m2_input_overlay=stitched.overlay_image,
+        )
+        _write_m1_artifacts(tile_output, tile_id, m1_artifacts)
+
+        io.imsave(
+            str(tile_output / f"{tile_id}_m2_cell_instance_binary.png"),
+            ((stitched.instance_mask > 0).astype(np.uint8) * 255),
+            check_contrast=False,
+        )
+
+        m3_artifacts = M3StageArtifacts(
+            results=stitched.results,
+            all_dots=stitched.all_dots,
+            per_cell_dots=stitched.per_cell_dots,
+            dish_nucleus_mask=stitched.dish_nucleus_mask,
         )
 
         _export_tile_outputs(
@@ -224,7 +244,7 @@ def process_single_tile(
             tile_id,
             cfg_hash,
             m1_artifacts,
-            instance_mask,
+            stitched.instance_mask,
             m3_artifacts,
             merge_dir,
         )
@@ -232,10 +252,11 @@ def process_single_tile(
         elapsed = time.perf_counter() - start_time
         pos_count = sum(1 for r in m3_artifacts.results if r.is_her2_positive)
         logger.info(
-            "Tile %s 處理完成: %d 細胞 (%d 陽性), %.2f 秒",
+            "Tile %s 處理完成: %d 細胞 (%d 陽性), %d 分塊, %.2f 秒",
             tile_id,
             len(m3_artifacts.results),
             pos_count,
+            len(chunk_results),
             elapsed,
         )
         return m3_artifacts.results
@@ -246,6 +267,71 @@ def process_single_tile(
     except Exception as exc:
         logger.error("Tile %s 處理失敗: %s", tile_id, exc, exc_info=True)
         return None
+
+
+def _process_one_chunk(
+    chunk,
+    full_h: int,
+    full_w: int,
+    unet_inferencer: object,
+    cellpose_segmenter: CellposeSegmenter,
+    dish_cellpose_segmenter: CellposeSegmenter,
+) -> Optional[ChunkResult]:
+    """單一分塊 M1→M2→M3；回傳帶絕對座標的 ``ChunkResult``，核心遮罩全空則 None。
+
+    與整圖路徑的差異僅在「清邊」：M2 不在分塊內部接縫清邊（``remove_border=False``），
+    改在 M3 之前只清「碰到真實 slide 外緣」的細胞；跨塊重複偵測由縫合層的質心
+    core-ownership 去重。單塊時四邊皆真實 slide 邊 → 等同現行 M2 清邊行為。
+    """
+    th, tw = chunk.ihc.shape[:2]
+    core_mask = generate_ihc_core_mask(  # pyright: ignore[reportArgumentType]
+        chunk.ihc,
+        unet_inferencer,
+        close_kernel=config.core_close_kernel,
+    )
+    if core_mask.sum() == 0:
+        return None
+
+    m1 = _run_m1_overlay_stage(chunk.ihc, chunk.dish, core_mask)
+
+    instance_mask = segment_masked_dish(
+        m1.m2_input_overlay,
+        cellpose_segmenter,
+        remove_border=False,
+        tile_size=config.default_tile_size,
+        overlap=config.window_overlap_px,
+        dedup_iomin=config.window_dedup_iomin,
+    )
+    if config.clear_border_cells:
+        instance_mask = clear_slide_edge_cells(
+            instance_mask,
+            clear_top=(chunk.abs_y == 0),
+            clear_bottom=(chunk.abs_y + th >= full_h),
+            clear_left=(chunk.abs_x == 0),
+            clear_right=(chunk.abs_x + tw >= full_w),
+        )
+
+    m3 = _run_m3_analysis_stage(
+        chunk.dish,
+        m1.dish_mask_overlay,
+        instance_mask,
+        m1.core_mask,
+        dish_cellpose_segmenter,
+    )
+
+    return ChunkResult(
+        abs_x=chunk.abs_x,
+        abs_y=chunk.abs_y,
+        instance_mask=instance_mask,
+        dish_nucleus_mask=m3.dish_nucleus_mask,
+        core_mask=core_mask,
+        masked_ihc=m1.masked_ihc,
+        dish_mask_overlay=m1.dish_mask_overlay,
+        overlay_image=m1.overlay_image,
+        results=m3.results,
+        all_dots=m3.all_dots,
+        per_cell_dots=m3.per_cell_dots,
+    )
 
 
 def _run_m1_overlay_stage(
@@ -323,30 +409,6 @@ def _write_m1_artifacts(
         artifacts.m2_input_overlay,
         check_contrast=False,
     )
-
-
-def _run_m2_segmentation_stage(
-    m2_input_overlay: np.ndarray,
-    cellpose_segmenter: CellposeSegmenter,
-    tile_output: Path,
-    tile_id: str,
-) -> np.ndarray:
-    """執行 M2 segmentation 並落地 binary instance mask 檢視圖。"""
-    instance_mask = segment_masked_dish(
-        m2_input_overlay,
-        cellpose_segmenter,
-        remove_border=config.clear_border_cells,
-        tile_size=config.default_tile_size,
-        overlap=config.window_overlap_px,
-        dedup_iomin=config.window_dedup_iomin,
-    )
-
-    io.imsave(
-        str(tile_output / f"{tile_id}_m2_cell_instance_binary.png"),
-        ((instance_mask > 0).astype(np.uint8) * 255),
-        check_contrast=False,
-    )
-    return instance_mask
 
 
 def _run_m3_analysis_stage(
@@ -500,37 +562,6 @@ def _read_rgb(src: Path) -> np.ndarray:
     elif image.shape[2] == 4:
         image = image[:, :, :3]
     return image.astype(np.uint8)
-
-
-def _validate_patch_shape(
-    ihc_image: np.ndarray,
-    dish_image: np.ndarray,
-    min_size: int,
-) -> None:
-    """驗證醫師手切 patch 規格：IHC/DISH 同尺寸、邊長 ≥ ``min_size``。
-
-    real-task 假設 patch 永遠正方形、解析度 ≥ 1k（可為 2k/4k/8k…）。邊長小於
-    ``min_size`` 直接拒絕（沒有比單一視窗更小的有效輸入）；非正方形僅警告，
-    因 sliding-window 仍可處理矩形，只是格線假設正方形。
-
-    Raises:
-        ValueError: 任一邊小於 ``min_size``，或 IHC/DISH 尺寸不一致。
-    """
-    if ihc_image.shape[:2] != dish_image.shape[:2]:
-        raise ValueError(
-            f"IHC/DISH patch 尺寸不一致: ihc={ihc_image.shape[:2]} "
-            f"vs dish={dish_image.shape[:2]}"
-        )
-    h, w = ihc_image.shape[:2]
-    if min(h, w) < min_size:
-        raise ValueError(
-            f"patch 邊長 {h}x{w} 小於最小允許尺寸 {min_size}px——拒絕處理。"
-        )
-    if h != w:
-        logger.warning(
-            "patch 非正方形 (%dx%d)；sliding-window 仍可處理，但格線假設正方形。",
-            h, w,
-        )
 
 
 # ------------------------------------------------------------------

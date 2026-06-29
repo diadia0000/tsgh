@@ -55,11 +55,7 @@ class Config:
     )
     # 合併結果目錄（test_picture）
     merge_test_dir: Path = field(
-        default_factory=lambda: Path(__file__).parent / "test_picture" / "mearge"
-    )
-    # 舊欄位保留，供舊版程式碼相容使用
-    merge_dir: Path = field(
-        default_factory=lambda: Path(__file__).parent / "merge"
+        default_factory=lambda: Path(__file__).parent / "test_picture" / "merge"
     )
 
     # ========== 模型路徑 ==========
