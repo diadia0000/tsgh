@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import gc
 import logging
 import sys
 import time
@@ -71,8 +72,8 @@ from m4_export import (
     export_overlay_visualization,
     stamp_grid_on_overlays,
 )
-from m0_reader import iter_paired_chunks, read_size
-from m0_stitch import ChunkResult, clear_slide_edge_cells, stitch_chunks
+from m0_reader import chunk_offsets, iter_paired_chunks, read_size
+from m0_stitch import ChunkResult, StitchAccumulator, clear_slide_edge_cells
 
 # ------------------------------------------------------------------
 # Logging 設定
@@ -195,16 +196,21 @@ def process_single_tile(
         return None
 
     try:
-        chunk_results: List[ChunkResult] = []
+        positions = chunk_offsets(full_h, full_w, tile_size, overlap)
+        acc = StitchAccumulator(
+            positions, full_h, full_w, overlap,
+            background_fill_value=config.background_fill_value,
+        )
         for chunk in iter_paired_chunks(ihc_tile_path, dish_tile_path, tile_size, overlap):
             cr = _process_one_chunk(
                 chunk, full_h, full_w,
                 unet_inferencer, cellpose_segmenter, dish_cellpose_segmenter,
             )
             if cr is not None:
-                chunk_results.append(cr)
+                acc.add(cr)
+            # cr goes out of scope here; its numpy arrays are freed immediately
 
-        if not chunk_results:
+        if not acc.has_any:
             logger.warning("Tile %s: 全部分塊核心遮罩皆空 — 僅匯出空 CSV", tile_id)
             _export_empty_tile(
                 tile_output, tile_id, cfg_hash,
@@ -212,10 +218,7 @@ def process_single_tile(
             )
             return []
 
-        stitched = stitch_chunks(
-            chunk_results, full_h, full_w, overlap,
-            background_fill_value=config.background_fill_value,
-        )
+        stitched = acc.finalize()
 
         m1_artifacts = M1StageArtifacts(
             core_mask=stitched.core_mask,
@@ -256,7 +259,7 @@ def process_single_tile(
             tile_id,
             len(m3_artifacts.results),
             pos_count,
-            len(chunk_results),
+            len(positions),
             elapsed,
         )
         return m3_artifacts.results
@@ -626,6 +629,16 @@ def run_batch(
             stats["skipped"] += 1
         else:
             stats["success"] += 1
+
+        # Release GPU allocator cache and run Python GC between tiles to
+        # prevent monotonic memory growth across a long batch.
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+        gc.collect()
 
     # TODO(slide-level): 若需整體玻片統計，於此聚合 per-tile summary。
     # 作法：讓 process_single_tile() 額外回傳 DotStatsSummary，收集到 list 後：

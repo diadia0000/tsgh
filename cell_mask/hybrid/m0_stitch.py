@@ -111,112 +111,132 @@ def _cut_lines(starts: List[int], overlap: int) -> List[int]:
     return [starts[i] + overlap // 2 for i in range(1, len(starts))]
 
 
-def stitch_chunks(
-    chunks: List[ChunkResult],
-    full_h: int,
-    full_w: int,
-    overlap: int,
-    background_fill_value: int = 255,
-) -> StitchedTile:
-    """把所有 ``ChunkResult`` 縫成單一 ``StitchedTile``。"""
-    x_starts = sorted({c.abs_x for c in chunks})
-    y_starts = sorted({c.abs_y for c in chunks})
-    cuts_x = _cut_lines(x_starts, overlap)
-    cuts_y = _cut_lines(y_starts, overlap)
-    col_of = {x0: i for i, x0 in enumerate(x_starts)}
-    row_of = {y0: i for i, y0 in enumerate(y_starts)}
+class StitchAccumulator:
+    """逐塊增量縫合：邊處理邊貼入全圖陣列，每個 ChunkResult 加入後其 numpy 即可 GC。
 
-    fill = background_fill_value
-    instance_mask = np.zeros((full_h, full_w), np.int32)
-    dish_nucleus_mask = np.zeros((full_h, full_w), np.int32)
-    core_mask = np.zeros((full_h, full_w), np.uint8)
-    masked_ihc = np.full((full_h, full_w, 3), fill, np.uint8)
-    dish_mask_overlay = np.full((full_h, full_w, 3), fill, np.uint8)
-    overlay_image = np.full((full_h, full_w, 3), fill, np.uint8)
+    Usage::
+        positions = chunk_offsets(full_h, full_w, tile_size, overlap)
+        acc = StitchAccumulator(positions, full_h, full_w, overlap)
+        for chunk in iter_paired_chunks(...):
+            cr = _process_one_chunk(chunk, ...)
+            if cr is not None:
+                acc.add(cr)   # cr 加入後可被 GC
+        stitched = acc.finalize()
+    """
 
-    g_results: List[CellAnalysisResult] = []
-    g_all_dots: List[DetectedDot] = []
-    g_per_cell: Dict[int, CellDotResult] = {}
-    g_cid = 0
-    g_nid = 0
+    def __init__(
+        self,
+        positions: List[Tuple[int, int]],
+        full_h: int,
+        full_w: int,
+        overlap: int,
+        background_fill_value: int = 255,
+    ) -> None:
+        x_starts = sorted({x for x, _y in positions})
+        y_starts = sorted({y for _x, y in positions})
+        self._cuts_x = _cut_lines(x_starts, overlap)
+        self._cuts_y = _cut_lines(y_starts, overlap)
+        self._col_of: Dict[int, int] = {x0: i for i, x0 in enumerate(x_starts)}
+        self._row_of: Dict[int, int] = {y0: i for i, y0 in enumerate(y_starts)}
+        self._full_h = full_h
+        self._full_w = full_w
 
-    for c in chunks:
-        th, tw = c.instance_mask.shape
+        fill = background_fill_value
+        self.instance_mask = np.zeros((full_h, full_w), np.int32)
+        self.dish_nucleus_mask = np.zeros((full_h, full_w), np.int32)
+        self.core_mask = np.zeros((full_h, full_w), np.uint8)
+        self.masked_ihc = np.full((full_h, full_w, 3), fill, np.uint8)
+        self.dish_mask_overlay = np.full((full_h, full_w, 3), fill, np.uint8)
+        self.overlay_image = np.full((full_h, full_w, 3), fill, np.uint8)
+
+        self._g_results: List[CellAnalysisResult] = []
+        self._g_all_dots: List[DetectedDot] = []
+        self._g_per_cell: Dict[int, CellDotResult] = {}
+        self._g_cid = 0
+        self._g_nid = 0
+        self._has_any = False
+
+    @property
+    def has_any(self) -> bool:
+        return self._has_any
+
+    def add(self, c: ChunkResult) -> None:
+        """貼入單塊結果；呼叫後 c 的 numpy 陣列即可被 GC。"""
+        self._has_any = True
+        cuts_x, cuts_y = self._cuts_x, self._cuts_y
+        col = self._col_of[c.abs_x]
+        row = self._row_of[c.abs_y]
         x0, y0 = c.abs_x, c.abs_y
-        col, row = col_of[x0], row_of[y0]
+        th, tw = c.instance_mask.shape
 
-        # --- 此塊核心區（全圖座標 → 局部）---
         gx_lo = cuts_x[col - 1] if col > 0 else 0
-        gx_hi = cuts_x[col] if col < len(cuts_x) else full_w
+        gx_hi = cuts_x[col] if col < len(cuts_x) else self._full_w
         gy_lo = cuts_y[row - 1] if row > 0 else 0
-        gy_hi = cuts_y[row] if row < len(cuts_y) else full_h
+        gy_hi = cuts_y[row] if row < len(cuts_y) else self._full_h
         lx0, lx1 = max(0, gx_lo - x0), min(tw, gx_hi - x0)
         ly0, ly1 = max(0, gy_lo - y0), min(th, gy_hi - y0)
 
-        # --- M1 影像：只貼核心區（互不重疊）---
         gy0, gx0 = y0 + ly0, x0 + lx0
-        core_mask[gy0:y0 + ly1, gx0:x0 + lx1] = c.core_mask[ly0:ly1, lx0:lx1]
-        masked_ihc[gy0:y0 + ly1, gx0:x0 + lx1] = c.masked_ihc[ly0:ly1, lx0:lx1]
-        dish_mask_overlay[gy0:y0 + ly1, gx0:x0 + lx1] = c.dish_mask_overlay[ly0:ly1, lx0:lx1]
-        overlay_image[gy0:y0 + ly1, gx0:x0 + lx1] = c.overlay_image[ly0:ly1, lx0:lx1]
+        self.core_mask[gy0:y0 + ly1, gx0:x0 + lx1] = c.core_mask[ly0:ly1, lx0:lx1]
+        self.masked_ihc[gy0:y0 + ly1, gx0:x0 + lx1] = c.masked_ihc[ly0:ly1, lx0:lx1]
+        self.dish_mask_overlay[gy0:y0 + ly1, gx0:x0 + lx1] = c.dish_mask_overlay[ly0:ly1, lx0:lx1]
+        self.overlay_image[gy0:y0 + ly1, gx0:x0 + lx1] = c.overlay_image[ly0:ly1, lx0:lx1]
 
-        inst_sub = instance_mask[y0:y0 + th, x0:x0 + tw]
-        nuc_sub = dish_nucleus_mask[y0:y0 + th, x0:x0 + tw]
+        inst_sub = self.instance_mask[y0:y0 + th, x0:x0 + tw]
+        nuc_sub = self.dish_nucleus_mask[y0:y0 + th, x0:x0 + tw]
         nuc_map: Dict[int, int] = {}
 
         def _assign_nucleus(local_did: int) -> int:
-            nonlocal g_nid
             if local_did in nuc_map:
                 return nuc_map[local_did]
-            g_nid += 1
-            nuc_map[local_did] = g_nid
+            self._g_nid += 1
+            nuc_map[local_did] = self._g_nid
             paint = (nuc_sub == 0) & (c.dish_nucleus_mask == local_did)
-            nuc_sub[paint] = g_nid
-            return g_nid
+            nuc_sub[paint] = self._g_nid
+            return self._g_nid
 
-        # --- 被本塊認領的細胞（質心落在核心區）---
         for r in c.results:
             gxc, gyc = x0 + r.centroid_x, y0 + r.centroid_y
             if bisect_right(cuts_x, gxc) != col or bisect_right(cuts_y, gyc) != row:
-                continue  # 質心不在本塊核心區 → 留給擁有它的鄰塊
+                continue
 
-            g_cid += 1
-            new_id = g_cid
+            self._g_cid += 1
+            new_id = self._g_cid
             paint = (inst_sub == 0) & (c.instance_mask == r.cell_id)
             inst_sub[paint] = new_id
-            g_results.append(replace(r, cell_id=new_id, centroid_x=gxc, centroid_y=gyc))
+            self._g_results.append(replace(r, cell_id=new_id, centroid_x=gxc, centroid_y=gyc))
 
             cdr = c.per_cell_dots.get(r.cell_id)
             if cdr is None:
-                g_per_cell[new_id] = CellDotResult(cell_id=new_id)
+                self._g_per_cell[new_id] = CellDotResult(cell_id=new_id)
                 continue
             new_assigned = [_assign_nucleus(int(did)) for did in cdr.assigned_dish_ids]
             new_her2 = [replace(d, x=d.x + x0, y=d.y + y0, cell_id=new_id) for d in cdr.her2_dots]
             new_cep17 = [replace(d, x=d.x + x0, y=d.y + y0, cell_id=new_id) for d in cdr.cep17_dots]
-            g_per_cell[new_id] = replace(
+            self._g_per_cell[new_id] = replace(
                 cdr, cell_id=new_id, assigned_dish_ids=new_assigned,
                 her2_dots=new_her2, cep17_dots=new_cep17,
             )
-            g_all_dots.extend(new_her2)
-            g_all_dots.extend(new_cep17)
+            self._g_all_dots.extend(new_her2)
+            self._g_all_dots.extend(new_cep17)
 
-        # --- 未配對但質心落在核心區的 DISH 核：補畫（overlay 橘色輪廓相容）---
         _paint_unmatched_core_nuclei(
             c.dish_nucleus_mask, nuc_map, _assign_nucleus,
             lx0, lx1, ly0, ly1,
         )
 
-    return StitchedTile(
-        instance_mask=instance_mask,
-        dish_nucleus_mask=dish_nucleus_mask,
-        core_mask=core_mask,
-        masked_ihc=masked_ihc,
-        dish_mask_overlay=dish_mask_overlay,
-        overlay_image=overlay_image,
-        results=g_results,
-        all_dots=g_all_dots,
-        per_cell_dots=g_per_cell,
-    )
+    def finalize(self) -> StitchedTile:
+        return StitchedTile(
+            instance_mask=self.instance_mask,
+            dish_nucleus_mask=self.dish_nucleus_mask,
+            core_mask=self.core_mask,
+            masked_ihc=self.masked_ihc,
+            dish_mask_overlay=self.dish_mask_overlay,
+            overlay_image=self.overlay_image,
+            results=self._g_results,
+            all_dots=self._g_all_dots,
+            per_cell_dots=self._g_per_cell,
+        )
 
 
 def _paint_unmatched_core_nuclei(

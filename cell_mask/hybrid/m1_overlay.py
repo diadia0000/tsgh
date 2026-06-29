@@ -225,7 +225,7 @@ def find_paired_tiles(
     dish_dir: Path,
     extensions: Optional[list] = None,
 ) -> list:
-    """搜尋座標相同的 IHC/DISH tile 配對。
+    """搜尋 IHC/DISH tile 配對。
 
     Args:
         ihc_dir: IHC tile 資料夾。
@@ -234,41 +234,36 @@ def find_paired_tiles(
 
     Returns:
         已排序的 ``[(ihc_path, dish_path), ...]`` 列表。
-        座標不匹配的 tile 會以 warning 記錄並跳過。
+        按檔名排序後依序配對。
     """
     if extensions is None:
         extensions = [".tiff", ".tif", ".png"]
 
-    ihc_map = _build_coord_map(ihc_dir, extensions)
-    dish_map = _build_coord_map(dish_dir, extensions)
+    ihc_files = _collect_tile_files(ihc_dir, extensions)
+    dish_files = _collect_tile_files(dish_dir, extensions)
 
+    # 按檔名排序後依序配對
     paired: list = []
-    all_coords = set(ihc_map.keys()) | set(dish_map.keys())
+    min_count = min(len(ihc_files), len(dish_files))
+    for i in range(min_count):
+        paired.append((ihc_files[i], dish_files[i]))
 
-    for coord in sorted(all_coords):
-        if coord not in ihc_map:
-            logger.warning("DISH tile 缺少對應 IHC: coord=%s", coord)
-            continue
-        if coord not in dish_map:
-            logger.warning("IHC tile 缺少對應 DISH: coord=%s", coord)
-            continue
-        paired.append((ihc_map[coord], dish_map[coord]))
+    if len(ihc_files) != len(dish_files):
+        logger.warning(
+            "IHC (%d) 與 DISH (%d) 檔案數量不一致，僅配對 %d 對",
+            len(ihc_files), len(dish_files), min_count
+        )
 
     logger.info("配對完成: %d 對 tile", len(paired))
     return paired
 
 
-def _build_coord_map(
+def _collect_tile_files(
     tile_dir: Path,
     extensions: list,
-) -> dict:
-    """建立 {(x, y): Path} 座標索引。"""
-    coord_map: dict = {}
+) -> list:
+    """收集資料夾中符合副檔名的檔案，按檔名排序。"""
+    files: list = []
     for ext in extensions:
-        for filepath in tile_dir.glob(f"*{ext}"):
-            try:
-                coord = parse_tile_coords(filepath.stem)
-                coord_map[coord] = filepath
-            except ValueError:
-                logger.debug("跳過無法解析座標的檔案: %s", filepath.name)
-    return coord_map
+        files.extend(tile_dir.glob(f"*{ext}"))
+    return sorted(files, key=lambda p: p.name)

@@ -30,6 +30,10 @@ from typing import Iterator, List, Tuple
 import numpy as np
 import pyvips
 
+# Disable pyvips operation cache: each crop() call on a WSI would otherwise be
+# cached in C heap indefinitely, causing gradual RAM growth across thousands of tiles.
+pyvips.cache_set_max(0)
+
 from m2_segmentation import _overlap_window_coords
 
 

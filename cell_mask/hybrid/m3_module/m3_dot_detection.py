@@ -188,7 +188,7 @@ def detect_all_dots(
     # 每顆 cell 完全獨立（只讀傳入陣列的 bbox 切片），多核平行。
     # joblib 對大陣列自動 memmap，每個只 dump 一次供所有 worker 共享唯讀。
     n_jobs_eff = -1 if n_jobs is None else n_jobs
-    cell_results = Parallel(n_jobs=n_jobs_eff)(
+    cell_results = Parallel(n_jobs=n_jobs_eff, prefer='threads')(
         delayed(_detect_one_cell)(
             cid, sl, count_mask, L, a, b, bg_mask_global,
             config, red_merge_distance, black_merge_distance,
