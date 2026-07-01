@@ -1,8 +1,9 @@
 # cell_mask/hybrid — IHC-DISH Overlay & Analysis Pipeline
 
-Per-tile chain of **M1→M2→M3→M4**: fuse IHC(Her2) with DISH, segment cells,
-detect HER2/CEP17 signal dots, and judge amplification. Models are initialized
-once before the batch loop and reused.
+Per-tile chain of **M0→M1→M2→M3→M4**: read the pair in bounded-memory chunks,
+fuse IHC(Her2) with DISH, segment cells, detect HER2/CEP17 signal dots, judge
+amplification, then stitch chunk results back into one slide-level output.
+Models are initialized once before the batch loop and reused.
 
 ## Running (entry: `hybrid_pipeline.py`)
 
@@ -12,7 +13,9 @@ python hybrid_pipeline.py --batch [--test] [--output DIR]                       
 ```
 
 Tile pairing is by filename coordinate parsing `tile_x{int}_y{int}`.
-Key imports in `hybrid_pipeline.py`: all local-style — `m1_overlay`, `m2_segmentation`, `m3_cell_detection`, `m4_export`.
+Key imports in `hybrid_pipeline.py`: all local-style — `m0_reader`, `m0_stitch`, `m1_overlay`, `m2_segmentation`, `m3_cell_detection`, `m4_export`.
+Input images may be a single tile, an arbitrary ROI, or a WSI — `process_single_tile()` reads/processes/stitches
+in `default_tile_size` chunks (M0) regardless of the input's actual size, so memory stays bounded.
 
 ## Configuration
 
@@ -22,10 +25,31 @@ tile dirs, `output_dir`, `slide_id`/`model_version`. `compute_config_hash()` is 
 
 ## Architecture
 
+- **M0 `m0_reader.py` + `m0_stitch.py`** — chunked read/stitch wrapper around M1–M3 so a ROI/WSI far
+  larger than one tile doesn't need a full in-memory load (a 20k² ROI peaked at ≈31GB before this).
+  - `m0_reader.py` — `iter_paired_chunks()` opens IHC/DISH with `pyvips.Image.new_from_file(access="random")`
+    and yields aligned `Chunk(ihc, dish, abs_x, abs_y)` on the same grid as `m2_segmentation._overlap_window_coords`
+    (`tile_size`/`window_overlap_px` from config); short edges are white-filled like `module5_tile_generator._crop_tile`.
+    Input ≤ `tile_size` degenerates to a single chunk = whole-file read (regression baseline: pyvips decode is
+    bit-identical to `skimage.io.imread` for JPEG-TIFF, so this is the seam against the pre-M0 code path).
+  - `m0_stitch.py` — `_process_one_chunk()` in `hybrid_pipeline.py` runs M1→M2→M3 per chunk with
+    `remove_border=False` (no interior-seam clearing); `clear_slide_edge_cells()` only clears cells touching a
+    *real* slide edge (`abs_x/abs_y` at 0 or the full extent) before M3. `StitchAccumulator` then dedups
+    cross-chunk duplicates by **centroid core-ownership**: each chunk's core region is the strip inside
+    `overlap/2` of its neighbors, and a cell counts only in the chunk whose core contains its centroid — no
+    IoMin pass needed across chunks. It also does the slide-level relabeling (1..N cells, 1..M DISH nuclei,
+    `assigned_dish_ids` rewritten to match) and absolutizes every centroid/dot coordinate by `+(abs_x, abs_y)`,
+    then paints M1 artifacts (`core_mask`/`masked_ihc`/`dish_mask_overlay`/`overlay_image`) into the full-size
+    canvas one core-region at a time. Each `ChunkResult` is freed (GC-able) right after `acc.add()`; the batch
+    loop also runs `torch.cuda.empty_cache()` + `gc.collect()` between tiles to prevent monotonic growth.
+    Single-chunk input has an unseamed full core region → global ID == local ID, bit-identical to the pre-M0
+    single-image path (GPU inference itself is non-deterministic, so cross-run comparisons are judged against a
+    noise floor, not exact equality).
 - **M1 `m1_overlay.py`** — UNet++ produces the IHC core mask → applied to IHC & DISH →
   50/50 alpha blend (`overlay_alpha`) becomes the M2 input; an empty core mask short-circuits to an empty CSV.
-- **M2 `m2_segmentation.py`** — `CellposeSegmenter` segments the fused image → cell instance mask;
-  `clear_border_cells` drops seam-touching cells, then labels are renumbered.
+- **M2 `m2_segmentation.py`** — `CellposeSegmenter` segments the fused image → cell instance mask.
+  Border clearing now happens at the M0 stitch layer (`clear_slide_edge_cells`), not here — within a chunk,
+  `segment_masked_dish` is called with `remove_border=False` so interior seam edges are left for M0 to dedup.
 - **M3 `m3_module/`** — package; `hybrid_pipeline.py` imports from `cell_mask.hybrid.m3_module`.
   - `m3_cells_generator.py` — `CellAnalysisResult`, `build_all_positive_results()` (centroid per cell).
   - `m3_elastic_matching.py` — `elastic_dish_nucleus_matching()`; reach = `sqrt(factor×area/π)`;
