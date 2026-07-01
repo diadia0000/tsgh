@@ -2,7 +2,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, List
-
+from os import cpu_count
 
 # === 全域預設值常數 ===
 DEFAULT_SCALE_FACTOR: float = 0.5  # 縮放比例 (1.0 = 40X, 0.5 = 20X)
@@ -32,22 +32,20 @@ class ModalityConfig:
 
 @dataclass
 class PreprocessConfig:
-    """Module 1 前處理參數配置
+    """CZI 轉 TIFF 前處理參數配置"""
 
-    Attributes:
-        num_processes: 平行進程數量 (None = 自動: cpu_count - 2)
-        strip_height: 條狀區塊高度 (原始座標系 pixels)
-    """
-
-    num_processes: Optional[int] = None
-    strip_height: int = 4096
+    strip_height: int = 2048
+    num_processes: Optional[int] = cpu_count()
 
 
 @dataclass
 class ValisConfig:
     """VALIS 配準參數配置"""
 
+    max_processed_image_dim_px: int = 1024
+    max_non_rigid_registration_dim_px: int = 1024
     align_to_reference: bool = True
+    reference_img_f: str = "HER2_processed.tiff"
 
 
 @dataclass
@@ -93,9 +91,9 @@ class TileConfig:
         compression: 壓縮格式
     """
     
-    tile_width: int = 1024
-    tile_height: int = 1024
-    workers: int = 12
+    tile_width: int = 4096
+    tile_height: int = 4096
+    workers: int = 16
     compression: str = "jpeg"
 
 
@@ -112,6 +110,7 @@ class RegistrationConfig:
         output_dir: 配準結果輸出目錄
         reference_modality: 參考模態名稱
         modalities: 影像模態列表
+        preprocess: CZI 前處理參數
         valis: VALIS 配準參數
         roi: ROI 評估參數
         thumbnail: 縮圖生成參數
@@ -123,17 +122,17 @@ class RegistrationConfig:
     
     # CZI 原始檔目錄 (Module 1 輸入)
     czi_input_dir: Path = field(
-        default_factory=lambda: Path(r"E:\Class\tsgh\picture\whole_size\40X")
+        default_factory=lambda: Path("/data/czi/40X")
     )
     
     # Module 1 輸出目錄 / Module 2 輸入目錄 (處理後 TIFF)
     input_dir: Path = field(
-        default_factory=lambda: Path(r"E:\Class\tsgh\thriple_image_layer\output")
+        default_factory=lambda: Path(__file__).parent / "output"
     )
     
     # 輸出目錄 (配準結果)
     output_dir: Path = field(
-        default_factory=lambda: Path(r"E:\Class\tsgh\thriple_image_layer\output")
+        default_factory=lambda: Path(__file__).parent / "output"
     )
     
     # 參考模態名稱
@@ -141,8 +140,8 @@ class RegistrationConfig:
     
     # 影像模態列表
     modalities: List[ModalityConfig] = field(default_factory=list)
-
-    # Module 1 前處理參數
+    
+    # 前處理參數
     preprocess: PreprocessConfig = field(default_factory=PreprocessConfig)
 
     # VALIS 配準參數
@@ -180,7 +179,7 @@ class RegistrationConfig:
             ModalityConfig(
                 name="DISH",
                 filename="DISH_processed.tiff",
-                czi_filename="DISH_40X_2.czi",
+                czi_filename="DISH_40X.czi",
                 scale_factor=DEFAULT_SCALE_FACTOR,
             ),
             ModalityConfig(
@@ -212,17 +211,7 @@ class RegistrationConfig:
             Optional[ModalityConfig]: 參考模態配置
         """
         return self.get_modality_by_name(self.reference_modality)
-
-    @property
-    def reference_img_f(self) -> Optional[str]:
-        """參考影像檔名 (從 reference_modality 自動推導)
-
-        Returns:
-            Optional[str]: 參考影像檔名
-        """
-        ref = self.get_reference_modality()
-        return ref.filename if ref else None
-
+    
     @property
     def transform_params_dir(self) -> Path:
         """變換參數目錄
