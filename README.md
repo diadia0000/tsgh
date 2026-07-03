@@ -96,7 +96,6 @@ tsgh/
 ├── scripts/                         # Utility scripts
 │   ├── check_tiff_size.py           # Check TIFF file dimensions
 │   ├── cuda_test.py                 # Test CUDA availability
-│   ├── tiff_preview_server.py       # Web server for TIFF preview
 │   ├── tile_generator.py            # Generate image tiles
 │   └── tiff to png.py               # Convert TIFF to PNG
 │
@@ -321,9 +320,6 @@ python scripts/check_tiff_size.py --file image.tiff
 
 # Test CUDA availability and info
 python scripts/cuda_test.py
-
-# Start TIFF preview server (web-based viewer)
-python scripts/tiff_preview_server.py --port 8000
 
 # Generate image tiles
 python scripts/tile_generator.py --input image.tiff --output tiles/
