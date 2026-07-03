@@ -142,7 +142,7 @@ class CziPreprocessor:
         self.temp_dir = self.output_dir / "temp_strips"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         
-        self.num_processes = config.preprocess.num_processes-4
+        self.num_processes = config.preprocess.num_processes
         print(f"將使用 {self.num_processes} 個獨立進程 (記憶體安全模式)")
 
     def get_conversion_tasks(self) -> List[Dict[str, Any]]:
@@ -318,6 +318,8 @@ class CziPreprocessor:
                     bigtiff=True,        # 支援大於 4GB 檔案
                     pyramid=True,        # 生成金字塔層級
                     subifd=True,         # 使用 SubIFD 格式存放金字塔層級 (VALIS 相容)
+                    Q=100
+
                 )
                 
                 size_gb = os.path.getsize(out_path) / (1024**3)
