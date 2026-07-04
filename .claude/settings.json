@@ -24,9 +24,9 @@
       "mcp__codegraph__codegraph_impact",
       "mcp__codegraph__codegraph_node",
       "mcp__codegraph__codegraph_status",
-      "Bash(PATH=/home/sec312/.nvm/versions/node/v20.20.2/bin:__TRACKED_VAR__ /home/sec312/.nvm/versions/node/v20.20.2/bin/codegraph status)",
-      "Bash(timeout 5 /home/sec312/.nvm/versions/node/v20.20.2/bin/codegraph serve --mcp)",
-      "Bash(/home/sec312/.nvm/versions/node/v20.20.2/bin/codegraph status *)",
+      "Bash(PATH=/home/sec312/.nvm/versions/node/v22.23.1/bin:__TRACKED_VAR__ /home/sec312/.nvm/versions/node/v22.23.1/bin/codegraph status)",
+      "Bash(timeout 5 /home/sec312/.nvm/versions/node/v22.23.1/bin/codegraph serve --mcp)",
+      "Bash(/home/sec312/.nvm/versions/node/v22.23.1/bin/codegraph status *)",
       "Bash(npm rebuild *)"
     ],
     "additionalDirectories": [

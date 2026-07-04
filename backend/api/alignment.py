@@ -12,7 +12,6 @@ from backend.algorithms.thriple_image_layer.module1_preprocess import CziPreproc
 from backend.algorithms.thriple_image_layer.module2_alignment import align_images
 from backend.algorithms.thriple_image_layer.module3_roi_evaluation import evaluate_roi
 from backend.algorithms.thriple_image_layer.module4_thumbnail import generate_thumbnail
-from backend.algorithms.thriple_image_layer.module5_tile_generator import generate_triple_tiles
 from backend.api.jobs import submit_job
 from backend.schemas.alignment import AlignmentConfigIn
 from backend.schemas.common import JobAccepted
@@ -66,16 +65,5 @@ def run_thumbnail(body: AlignmentConfigIn, background_tasks: BackgroundTasks) ->
 
     return JobAccepted(job_id=submit_job(background_tasks, _run))
 
-
-@router.post("/tiles", response_model=JobAccepted)
-def run_tiles(
-    body: AlignmentConfigIn, background_tasks: BackgroundTasks, level: int = 0
-) -> JobAccepted:
-    config = body.to_registration_config()
-
-    def _run():
-        generate_triple_tiles(config, level=level)
-        tile_dir = config.output_dir / f"tiles_lv{level}-{config.tile.tile_width}"
-        return str(tile_dir), {"level": level}
 
     return JobAccepted(job_id=submit_job(background_tasks, _run))

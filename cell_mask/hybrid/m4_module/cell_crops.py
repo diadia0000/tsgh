@@ -267,7 +267,7 @@ def export_cell_dot_annotations(
 
     export_summary_statistics(
         results,
-        output_dir / f"{tile_id}_summary.csv",
+        output_dir / f"{tile_id}_summary.txt",
     )
 
     vis_image = (
