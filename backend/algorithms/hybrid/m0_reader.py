@@ -34,7 +34,10 @@ import pyvips
 # cached in C heap indefinitely, causing gradual RAM growth across thousands of tiles.
 pyvips.cache_set_max(0)
 
-from m2_segmentation import _overlap_window_coords
+try:
+    from .m2_segmentation import _overlap_window_coords
+except ImportError:
+    from m2_segmentation import _overlap_window_coords
 
 
 @dataclass

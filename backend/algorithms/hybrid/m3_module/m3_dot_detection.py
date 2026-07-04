@@ -27,7 +27,10 @@ import numpy as np
 from joblib import Parallel, delayed
 from scipy.ndimage import find_objects
 
-from cell_mask.hybrid.hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
+try:
+    from ..hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
+except ImportError:
+    from hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
 from .m3_dot_kernels import (
     _detect_black_dots,
     _detect_red_dots,

@@ -71,7 +71,10 @@ def generate_ihc_core_mask(
     Returns:
         shape ``(H, W)``、值域 ``{0, 1}`` 的 ``uint8`` 核心遮罩。
     """
-    from unet_inference import postprocess_membrane_mask  # noqa: WPS433
+    try:
+        from .unet_inference import postprocess_membrane_mask  # noqa: WPS433
+    except ImportError:
+        from unet_inference import postprocess_membrane_mask  # noqa: WPS433
 
     raw_mask: np.ndarray = unet_inferencer.predict_single(ihc_tile_path)
     core_mask = postprocess_membrane_mask(
