@@ -10,10 +10,16 @@
 import argparse
 import sys
 
-from module2_alignment import align_images
-from module3_roi_evaluation import evaluate_roi
-from module4_thumbnail import generate_thumbnail
-from config import create_default_config
+try:
+    from .module2_alignment import align_images
+    from .module3_roi_evaluation import evaluate_roi
+    from .module4_thumbnail import generate_thumbnail
+    from .config import create_default_config
+except ImportError:
+    from module2_alignment import align_images
+    from module3_roi_evaluation import evaluate_roi
+    from module4_thumbnail import generate_thumbnail
+    from config import create_default_config
 
 
 def main() -> None:
@@ -44,7 +50,10 @@ def main() -> None:
     if args.preprocess:
         print("\n[Module 1] 執行 CZI → BigTIFF 前處理...")
         try:
-            from module1_preprocess import CziPreprocessor
+            try:
+                from .module1_preprocess import CziPreprocessor
+            except ImportError:
+                from module1_preprocess import CziPreprocessor
             processor = CziPreprocessor(config)
             processor.run()
             print("✓ Module 1 完成")
@@ -83,7 +92,10 @@ def main() -> None:
     if args.tiles:
         print("\n[Module 5] 切割 Tiles...")
         try:
-            from module5_tile_generator import generate_triple_tiles
+            try:
+                from .module5_tile_generator import generate_triple_tiles
+            except ImportError:
+                from module5_tile_generator import generate_triple_tiles
             generate_triple_tiles(config, level=0)
             print("✓ Module 5 完成")
         except Exception as e:

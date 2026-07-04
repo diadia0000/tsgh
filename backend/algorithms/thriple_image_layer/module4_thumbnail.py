@@ -6,7 +6,10 @@ from pathlib import Path
 import pyvips
 from valis import registration, slide_io
 
-from config import RegistrationConfig, create_default_config, get_slide_key
+try:
+    from .config import RegistrationConfig, create_default_config, get_slide_key
+except ImportError:
+    from config import RegistrationConfig, create_default_config, get_slide_key
 
 def generate_thumbnail(
     config: RegistrationConfig,

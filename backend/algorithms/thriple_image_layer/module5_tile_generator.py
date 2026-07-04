@@ -8,7 +8,10 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Tuple
 import pyvips
 
-from config import RegistrationConfig, create_default_config
+try:
+    from .config import RegistrationConfig, create_default_config
+except ImportError:
+    from config import RegistrationConfig, create_default_config
 
 
 def _crop_tile(image: pyvips.Image, x: int, y: int, tile_w: int, tile_h: int) -> pyvips.Image:

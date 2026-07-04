@@ -1,7 +1,10 @@
 """Module 2: VALIS Alignment Pipeline"""
 from valis import registration, feature_detectors, feature_matcher, non_rigid_registrars
 
-from config import RegistrationConfig, create_default_config
+try:
+    from .config import RegistrationConfig, create_default_config
+except ImportError:
+    from config import RegistrationConfig, create_default_config
 
 
 def _patch_valis_pickle():
