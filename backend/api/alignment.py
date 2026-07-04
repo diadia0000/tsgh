@@ -64,6 +64,3 @@ def run_thumbnail(body: AlignmentConfigIn, background_tasks: BackgroundTasks) ->
         return str(config.output_dir / f"Merged_Aligned_lv{level}.tiff"), {"level": level}
 
     return JobAccepted(job_id=submit_job(background_tasks, _run))
-
-
-    return JobAccepted(job_id=submit_job(background_tasks, _run))
