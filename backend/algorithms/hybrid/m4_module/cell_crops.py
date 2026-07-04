@@ -8,7 +8,10 @@ import cv2
 import numpy as np
 from scipy.ndimage import find_objects
 
-from cell_mask.hybrid.hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
+try:
+    from ..hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
+except ImportError:
+    from hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
 from .csv import export_summary_statistics, export_tile_csv
 from .overlay import (
     _COLOR_CEP17,

@@ -14,7 +14,10 @@ import numpy as np
 from scipy import ndimage
 from skimage.segmentation import expand_labels
 
-from cell_mask.hybrid.hybrid_data_types import CellAnalysisResult  # noqa: F401 (re-exported)
+try:
+    from ..hybrid_data_types import CellAnalysisResult  # noqa: F401 (re-exported)
+except ImportError:
+    from hybrid_data_types import CellAnalysisResult  # noqa: F401 (re-exported)
 
 logger = logging.getLogger(__name__)
 

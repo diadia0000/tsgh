@@ -2,10 +2,11 @@
 docs/UI/08-pitfalls-open-decisions.md #8) -- images never leave the machine."""
 from fastapi import FastAPI
 
-from backend.api import alignment, jobs
+from backend.api import alignment, hybrid, jobs
 
 app = FastAPI(title="tsgh backend")
 app.include_router(alignment.router)
+app.include_router(hybrid.router)
 app.include_router(jobs.router)
 
 

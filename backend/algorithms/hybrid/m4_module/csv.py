@@ -7,7 +7,10 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Iterable, List
 
-from cell_mask.hybrid.hybrid_data_types import CellAnalysisResult
+try:
+    from ..hybrid_data_types import CellAnalysisResult
+except ImportError:
+    from hybrid_data_types import CellAnalysisResult
 
 logger = logging.getLogger(__name__)
 

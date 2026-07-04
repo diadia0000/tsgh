@@ -27,8 +27,12 @@ from typing import Dict, List, Tuple
 import numpy as np
 from scipy.ndimage import center_of_mass
 
-from hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
-from m2_segmentation import _relabel_sequential, _remove_border_cells
+try:
+    from .hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
+    from .m2_segmentation import _relabel_sequential, _remove_border_cells
+except ImportError:
+    from hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
+    from m2_segmentation import _relabel_sequential, _remove_border_cells
 
 
 @dataclass

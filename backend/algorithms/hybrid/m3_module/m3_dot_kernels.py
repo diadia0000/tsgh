@@ -21,7 +21,10 @@ from skimage.morphology import (
     h_minima,
 )
 
-from cell_mask.hybrid.hybrid_data_types import DetectedDot  # noqa: F401 (re-exported)
+try:
+    from ..hybrid_data_types import DetectedDot  # noqa: F401 (re-exported)
+except ImportError:
+    from hybrid_data_types import DetectedDot  # noqa: F401 (re-exported)
 
 logger = logging.getLogger(__name__)
 

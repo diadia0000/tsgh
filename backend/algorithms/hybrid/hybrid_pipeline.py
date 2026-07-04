@@ -46,34 +46,64 @@ for _path in (str(_PROJECT_ROOT), str(_HYBRID_DIR)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from config import config, compute_config_hash
-from m1_overlay import (
-    apply_mask_to_ihc_image,
-    find_paired_tiles,
-    fuse_masked_ihc_with_dish,
-    generate_ihc_core_mask,
-    overlay_ihc_mask_on_dish,
-    parse_tile_coords,
-)
-from m2_segmentation import (
-    CellposeSegmenter,
-    segment_masked_dish,
-    segment_windowed,
-)
-from m3_cell_detection import (
-    CellAnalysisResult,
-    build_all_positive_results,
-    detect_all_dots,
-    enlarge_cell_instances,
-    merge_dot_results_to_cell_analysis,
-)
-from m4_export import (
-    export_cell_dot_annotations,
-    export_overlay_visualization,
-    stamp_grid_on_overlays,
-)
-from m0_reader import chunk_offsets, iter_paired_chunks, read_size
-from m0_stitch import ChunkResult, StitchAccumulator, clear_slide_edge_cells
+try:
+    from .config import config, compute_config_hash
+    from .m1_overlay import (
+        apply_mask_to_ihc_image,
+        find_paired_tiles,
+        fuse_masked_ihc_with_dish,
+        generate_ihc_core_mask,
+        overlay_ihc_mask_on_dish,
+        parse_tile_coords,
+    )
+    from .m2_segmentation import (
+        CellposeSegmenter,
+        segment_masked_dish,
+        segment_windowed,
+    )
+    from .m3_cell_detection import (
+        CellAnalysisResult,
+        build_all_positive_results,
+        detect_all_dots,
+        enlarge_cell_instances,
+        merge_dot_results_to_cell_analysis,
+    )
+    from .m4_export import (
+        export_cell_dot_annotations,
+        export_overlay_visualization,
+        stamp_grid_on_overlays,
+    )
+    from .m0_reader import chunk_offsets, iter_paired_chunks, read_size
+    from .m0_stitch import ChunkResult, StitchAccumulator, clear_slide_edge_cells
+except ImportError:
+    from config import config, compute_config_hash
+    from m1_overlay import (
+        apply_mask_to_ihc_image,
+        find_paired_tiles,
+        fuse_masked_ihc_with_dish,
+        generate_ihc_core_mask,
+        overlay_ihc_mask_on_dish,
+        parse_tile_coords,
+    )
+    from m2_segmentation import (
+        CellposeSegmenter,
+        segment_masked_dish,
+        segment_windowed,
+    )
+    from m3_cell_detection import (
+        CellAnalysisResult,
+        build_all_positive_results,
+        detect_all_dots,
+        enlarge_cell_instances,
+        merge_dot_results_to_cell_analysis,
+    )
+    from m4_export import (
+        export_cell_dot_annotations,
+        export_overlay_visualization,
+        stamp_grid_on_overlays,
+    )
+    from m0_reader import chunk_offsets, iter_paired_chunks, read_size
+    from m0_stitch import ChunkResult, StitchAccumulator, clear_slide_edge_cells
 
 # ------------------------------------------------------------------
 # Logging 設定
@@ -112,7 +142,10 @@ class M3StageArtifacts:
 
 def _init_unet_inferencer():
     """延遲初始化 UNet++ 推論器。"""
-    from unet_inference import UNetPPInference  # noqa: WPS433
+    try:
+        from .unet_inference import UNetPPInference  # noqa: WPS433
+    except ImportError:
+        from unet_inference import UNetPPInference  # noqa: WPS433
 
     return UNetPPInference(
         model_path=config.unet_model_path,
