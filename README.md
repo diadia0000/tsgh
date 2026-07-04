@@ -83,7 +83,7 @@ tsgh/
 │       ├── unet_inference.py        # UNetPPInference (sliding-window)
 │       └── config_example.py        # Configuration template
 │
-├── thriple_image_layer/             # VALIS-based preprocessing pipeline
+├── backend/algorithms/thriple_image_layer/  # VALIS-based preprocessing pipeline
 │   ├── run_full_pipeline.py         # Orchestration entry point
 │   ├── module1_preprocess.py        # CZI → BigTIFF conversion
 │   ├── module2_alignment.py         # VALIS image alignment
@@ -292,7 +292,7 @@ class Config:
 VALIS-based pipeline for CZI → BigTIFF → aligned tiles preprocessing.
 
 ```bash
-cd thriple_image_layer
+cd backend/algorithms/thriple_image_layer
 cp config_example.py config.py
 
 # Full pipeline (alignment + ROI evaluation + thumbnail)
@@ -512,8 +512,8 @@ pip install -e .
 ### Code Style
 
 ```bash
-black cell_mask/ thriple_image_layer/ scripts/
-flake8 cell_mask/ thriple_image_layer/ scripts/
+black cell_mask/ backend/algorithms/thriple_image_layer/ scripts/
+flake8 cell_mask/ backend/algorithms/thriple_image_layer/ scripts/
 ```
 
 ### Contributing

@@ -40,6 +40,8 @@ dependencies = [
     "openslide-python>=1.4.3",
     "pillow>=10",
     "openslide-bin>=4.0.0.13",
+    "fastapi>=0.139.0",
+    "uvicorn>=0.50.0",
 ]
 
 [tool.uv]
