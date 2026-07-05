@@ -95,14 +95,11 @@ class DotStatsSummary:
     ) -> "DotStatsSummary":
         valid = [
             r for r in results
-            if not getattr(r, "excluded", False)
-            and getattr(r, "cep17_dot_count", 0) >= 2
-            and getattr(r, "her2_dot_count", 0) >= 1
+            if not r.excluded
+            and r.cep17_dot_count >= 2
+            and r.her2_dot_count >= 1
         ]
-        ratio_lt2 = sum(
-            1 for r in valid
-            if getattr(r, "her2_cep17_ratio", 0.0) < 2.0
-        )
+        ratio_lt2 = sum(1 for r in valid if r.her2_cep17_ratio < 2.0)
         copy_lt4 = sum(1 for r in valid if r.her2_dot_count < 4)
         copy_4to5 = sum(1 for r in valid if 4 <= r.her2_dot_count < 6)
         copy_gte6 = sum(1 for r in valid if r.her2_dot_count >= 6)

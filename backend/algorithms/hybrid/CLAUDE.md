@@ -1,21 +1,25 @@
 # cell_mask/hybrid — IHC-DISH Overlay & Analysis Pipeline
 
-Per-tile chain of **M0→M1→M2→M3→M4**: read the pair in bounded-memory chunks,
-fuse IHC(Her2) with DISH, segment cells, detect HER2/CEP17 signal dots, judge
-amplification, then stitch chunk results back into one slide-level output.
+Per-tile chain of **M0→M1→M2→M3→M4**: precut the ROI/WSI pair into overlapping
+1024px tile files on disk, analyze each tile independently, fuse IHC(Her2)
+with DISH, segment cells, detect HER2/CEP17 signal dots, judge amplification,
+then merge per-tile cell tables globally and lazily stitch the annotated
+overlay tiles back into one slide-level QuPath-openable pyramid TIFF.
 Models are initialized once before the batch loop and reused.
 
 ## Running (entry: `hybrid_pipeline.py`)
 
 ```bash
-python hybrid_pipeline.py --ihc tile_x1024_y2048.tiff --dish tile_x1024_y2048.tiff  # single tile
-python hybrid_pipeline.py --batch [--test] [--output DIR]                            # batch scan dirs
+python hybrid_pipeline.py --ihc roi_ihc.tiff --dish roi_dish.tiff   # single ROI/WSI pair: precut then batch
+python hybrid_pipeline.py --batch [--test] [--output DIR]           # batch: dirs are already-precut tile folders
 ```
 
 Tile pairing is by filename coordinate parsing `tile_x{int}_y{int}`.
 Key imports in `hybrid_pipeline.py`: all local-style — `m0_reader`, `m0_stitch`, `m1_overlay`, `m2_segmentation`, `m3_cell_detection`, `m4_export`.
-Input images may be a single tile, an arbitrary ROI, or a WSI — `process_single_tile()` reads/processes/stitches
-in `default_tile_size` chunks (M0) regardless of the input's actual size, so memory stays bounded.
+`--ihc`/`--dish` accepts a single tile, an arbitrary ROI, or a WSI of any size — `_run_single_tile_cli()` calls
+`precut_paired_tiles()` (M0 reader) to cut it into `default_tile_size` tile files under `output_dir/_precut_scratch/`
+first, then runs the same `run_batch()` path as `--batch`, so memory stays bounded on both read and analysis sides.
+`backend/api/hybrid.py`'s `/api/hybrid/tile` and `/api/hybrid/batch` endpoints mirror this same split.
 
 ## Configuration
 
@@ -25,26 +29,40 @@ tile dirs, `output_dir`, `slide_id`/`model_version`. `compute_config_hash()` is 
 
 ## Architecture
 
-- **M0 `m0_reader.py` + `m0_stitch.py`** — chunked read/stitch wrapper around M1–M3 so a ROI/WSI far
-  larger than one tile doesn't need a full in-memory load (a 20k² ROI peaked at ≈31GB before this).
-  - `m0_reader.py` — `iter_paired_chunks()` opens IHC/DISH with `pyvips.Image.new_from_file(access="random")`
-    and yields aligned `Chunk(ihc, dish, abs_x, abs_y)` on the same grid as `m2_segmentation._overlap_window_coords`
-    (`tile_size`/`window_overlap_px` from config); short edges are white-filled like `module5_tile_generator._crop_tile`.
-    Input ≤ `tile_size` degenerates to a single chunk = whole-file read (regression baseline: pyvips decode is
-    bit-identical to `skimage.io.imread` for JPEG-TIFF, so this is the seam against the pre-M0 code path).
-  - `m0_stitch.py` — `_process_one_chunk()` in `hybrid_pipeline.py` runs M1→M2→M3 per chunk with
-    `remove_border=False` (no interior-seam clearing); `clear_slide_edge_cells()` only clears cells touching a
-    *real* slide edge (`abs_x/abs_y` at 0 or the full extent) before M3. `StitchAccumulator` then dedups
-    cross-chunk duplicates by **centroid core-ownership**: each chunk's core region is the strip inside
-    `overlap/2` of its neighbors, and a cell counts only in the chunk whose core contains its centroid — no
-    IoMin pass needed across chunks. It also does the slide-level relabeling (1..N cells, 1..M DISH nuclei,
-    `assigned_dish_ids` rewritten to match) and absolutizes every centroid/dot coordinate by `+(abs_x, abs_y)`,
-    then paints M1 artifacts (`core_mask`/`masked_ihc`/`dish_mask_overlay`/`overlay_image`) into the full-size
-    canvas one core-region at a time. Each `ChunkResult` is freed (GC-able) right after `acc.add()`; the batch
-    loop also runs `torch.cuda.empty_cache()` + `gc.collect()` between tiles to prevent monotonic growth.
-    Single-chunk input has an unseamed full core region → global ID == local ID, bit-identical to the pre-M0
-    single-image path (GPU inference itself is non-deterministic, so cross-run comparisons are judged against a
-    noise floor, not exact equality).
+- **M0 `m0_reader.py` + `m0_stitch.py`** — precut-to-folder + per-chunk analysis, so a ROI/WSI far larger than
+  one tile never needs a full in-memory canvas (the old full-slide `StitchAccumulator` peaked at ≈400GB and was
+  deleted entirely; there is no in-pipeline chunked *read* step anymore either — cutting happens once, upfront).
+  - `m0_reader.py` — `precut_paired_tiles()` opens IHC/DISH with `pyvips.Image.new_from_file(access="random")`
+    and writes aligned `tile_x{abs_x}_y{abs_y}.tiff` files to disk on the same grid as
+    `m2_segmentation._overlap_window_coords` (`tile_size`/`window_overlap_px` from config); short edges are
+    white-filled like `module5_tile_generator._crop_tile`. Runs a thread pool (`workers=`) since it's pure I/O.
+  - `m0_stitch.py` — `compute_tile_geometry()` derives a `TileGeometry` (cut lines + which tiles touch a real
+    slide edge) purely from the set of `(abs_x, abs_y)` positions parsed from tile filenames — no read-back of
+    the original WSI's true dimensions needed — and raises `ValueError` if the grid has gaps/dupes (fail-fast:
+    the analysis stage has no other way to catch a partially-completed precut job). `hybrid_pipeline.process_precut_tile()`
+    runs M1→M2→M3 per tile via `_process_one_chunk()` with `remove_border=False` (no interior-seam clearing);
+    `clear_slide_edge_cells()` (gated by `geometry.edge_flags()`) only clears cells touching a *real* slide edge
+    before M3. `filter_and_absolutize()` then dedups cross-tile duplicates by **centroid core-ownership**: each
+    tile's core region is the strip inside `overlap/2` of its neighbors, and a cell counts only in the tile
+    whose core contains its centroid — no IoMin pass needed across tiles. It absolutizes each kept cell's
+    centroid by `+(abs_x, abs_y)` but deliberately does **not** renumber `cell_id` (still tile-local); the batch
+    driver (`run_batch()`) flattens all tiles' kept cells, sorts by `(abs_y, abs_x, cell_id)`, and renumbers
+    1..N exactly once — the only place global cell IDs are assigned. Single-tile input degenerates to final
+    ID == local ID, matching the pre-refactor single-image path (GPU inference itself is non-deterministic, so
+    cross-run comparisons are judged against a noise floor, not exact equality).
+  - Per-tile artifacts land in per-array-type folders under `output_dir/` (`core_mask/`, `masked_ihc/`,
+    `dish_nucleus_mask/`, `dish_mask_overlay/`, `instance_mask/`, `cell_crops/tile_x{x}_y{y}/`) and stay at
+    1024px — only `report.csv` + `summary.txt` (global, via `export_tile_csv`/`export_summary_statistics` on
+    the renumbered cell list) and the **annotated** slide-level overlay are assembled globally. The overlay is
+    built per-tile as `overlay_annotated/tile_x{x}_y{y}.tiff` (core-cropped via `core_crop_bounds()`, drawn with
+    `render_overlay_image()` — cell boundaries + HER2/CEP17 dot markers) then `_stitch_overlay_slide()` joins
+    them into `overlay_slide.tiff`, a pyramidal (`tile=True, pyramid=True`) TIFF QuPath can open directly.
+    `pyvips.Image.arrayjoin()` cannot be used here — it assumes a uniform per-cell grid size and silently
+    mis-pads when row/column tile sizes differ (as they do at slide edges); the fix is a manual row-then-column
+    `Image.join(..., expand=True)`. `run_batch()` is intentionally sequential (not parallelized) across tiles —
+    the 3 GPU models are loaded once in the main process and share one CUDA context, so cross-tile process
+    parallelism is unsafe (fork-under-CUDA); it also runs **fail-fast**, raising immediately if any tile errors,
+    since all tiles are pieces of one slide and a silent skip would produce a slide with an undocumented hole.
 - **M1 `m1_overlay.py`** — UNet++ produces the IHC core mask → applied to IHC & DISH →
   50/50 alpha blend (`overlay_alpha`) becomes the M2 input; an empty core mask short-circuits to an empty CSV.
 - **M2 `m2_segmentation.py`** — `CellposeSegmenter` segments the fused image → cell instance mask.

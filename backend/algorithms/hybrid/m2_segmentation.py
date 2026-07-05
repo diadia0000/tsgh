@@ -205,44 +205,40 @@ def _dedup_instances(
 
     for area, iy, ix, patch in order:
         ph, pw = patch.shape
-        iy1, ix1 = iy + ph, ix + pw
-        gy0, gy1 = iy // grid, (iy1 - 1) // grid
-        gx0, gx1 = ix // grid, (ix1 - 1) // grid
-
-        is_dup = False
-        seen_ids: set = set()
-        for gy in range(gy0, gy1 + 1):
-            for gx in range(gx0, gx1 + 1):
-                for rec in buckets.get((gy, gx), ()):  # noqa: WPS526
-                    if id(rec) in seen_ids:
-                        continue
-                    seen_ids.add(id(rec))
-                    oy0 = max(iy, rec["y0"]); ox0 = max(ix, rec["x0"])
-                    oy1 = min(iy1, rec["y1"]); ox1 = min(ix1, rec["x1"])
-                    if oy0 >= oy1 or ox0 >= ox1:
-                        continue
-                    inter = int(np.logical_and(
-                        patch[oy0 - iy:oy1 - iy, ox0 - ix:ox1 - ix],
-                        rec["patch"][oy0 - rec["y0"]:oy1 - rec["y0"],
-                                     ox0 - rec["x0"]:ox1 - rec["x0"]],
-                    ).sum())
-                    if inter and inter / min(area, rec["area"]) >= iomin_threshold:
-                        is_dup = True
-                        break
-                if is_dup:
-                    break
-            if is_dup:
-                break
-
-        if is_dup:
+        rec = {"area": area, "y0": iy, "x0": ix, "y1": iy + ph, "x1": ix + pw, "patch": patch}
+        cells = [
+            (gy, gx)
+            for gy in range(iy // grid, (iy + ph - 1) // grid + 1)
+            for gx in range(ix // grid, (ix + pw - 1) // grid + 1)
+        ]
+        if _has_overlap_dup(rec, cells, buckets, iomin_threshold):
             continue
         accepted.append((area, iy, ix, patch))
-        rec = {"area": area, "y0": iy, "x0": ix, "y1": iy1, "x1": ix1, "patch": patch}
-        for gy in range(gy0, gy1 + 1):
-            for gx in range(gx0, gx1 + 1):
-                buckets[(gy, gx)].append(rec)
-
+        for key in cells:
+            buckets[key].append(rec)
     return accepted
+
+
+def _has_overlap_dup(
+    rec: dict,
+    cells: List[Tuple[int, int]],
+    buckets: Dict[Tuple[int, int], List[dict]],
+    iomin_threshold: float,
+) -> bool:
+    """rec 是否與 buckets 內某顆已接受 instance 交集/min(面積) ≥ 門檻（找到即真）。"""
+    candidates = {id(o): o for key in cells for o in buckets.get(key, ())}
+    for other in candidates.values():
+        oy0 = max(rec["y0"], other["y0"]); ox0 = max(rec["x0"], other["x0"])
+        oy1 = min(rec["y1"], other["y1"]); ox1 = min(rec["x1"], other["x1"])
+        if oy0 >= oy1 or ox0 >= ox1:
+            continue
+        inter = int(np.logical_and(
+            rec["patch"][oy0 - rec["y0"]:oy1 - rec["y0"], ox0 - rec["x0"]:ox1 - rec["x0"]],
+            other["patch"][oy0 - other["y0"]:oy1 - other["y0"], ox0 - other["x0"]:ox1 - other["x0"]],
+        ).sum())
+        if inter and inter / min(rec["area"], other["area"]) >= iomin_threshold:
+            return True
+    return False
 
 
 # ------------------------------------------------------------------

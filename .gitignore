@@ -10,6 +10,8 @@ build/
 __pycache__/
 minconda
 output/
+output_baseline_*/
+output_baseline_*.sha256sum.txt
 *.npy
 *.pt
 *.pth

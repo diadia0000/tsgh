@@ -11,34 +11,13 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks
 
 from backend.algorithms.hybrid.config import config
-from backend.algorithms.hybrid.hybrid_pipeline import (
-    compute_config_hash,
-    process_single_tile,
-    run_batch,
-)
+from backend.algorithms.hybrid.hybrid_pipeline import run_batch
+from backend.algorithms.hybrid.m0_reader import precut_paired_tiles
 from backend.api.jobs import submit_job
 from backend.schemas.common import JobAccepted
 from backend.schemas.hybrid import HybridBatchIn, HybridTileIn
 
 router = APIRouter(prefix="/api/hybrid")
-
-_unet = None
-_cellpose = None
-_dish_cellpose = None
-
-
-def _get_models():
-    global _unet, _cellpose, _dish_cellpose
-    if _unet is None:
-        from backend.algorithms.hybrid.hybrid_pipeline import (
-            _init_cellpose_segmenter,
-            _init_dish_cellpose_segmenter,
-            _init_unet_inferencer,
-        )
-        _unet = _init_unet_inferencer()
-        _cellpose = _init_cellpose_segmenter()
-        _dish_cellpose = _init_dish_cellpose_segmenter()
-    return _unet, _cellpose, _dish_cellpose
 
 
 @router.post("/batch", response_model=JobAccepted)
@@ -65,13 +44,15 @@ def run_hybrid_tile(body: HybridTileIn, background_tasks: BackgroundTasks) -> Jo
     merge_dir = Path(body.merge_dir) if body.merge_dir else None
 
     def _run():
-        unet, cellpose, dish_cellpose = _get_models()
-        result = process_single_tile(
-            ihc_path, dish_path, unet, cellpose, dish_cellpose, output_dir,
-            compute_config_hash(config), merge_dir=merge_dir,
+        scratch = output_dir / "_precut_scratch"
+        ihc_out = scratch / "ihc"
+        dish_out = scratch / "dish"
+        precut_paired_tiles(
+            ihc_path, dish_path, ihc_out, dish_out,
+            tile_size=config.default_tile_size,
+            overlap=config.window_overlap_px,
         )
-        return str(output_dir / dish_path.stem), {
-            "cell_count": len(result) if result is not None else 0
-        }
+        stats = run_batch(ihc_out, dish_out, output_dir, merge_dir=merge_dir)
+        return str(output_dir), stats
 
     return JobAccepted(job_id=submit_job(background_tasks, _run))
