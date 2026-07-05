@@ -20,3 +20,4 @@ tile/*
 uv.lock
 skills-lock.json
 .codegraph/
+.claude/worktrees/
