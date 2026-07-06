@@ -40,25 +40,17 @@ class Config:
     dish_tile_dir: Path = field(
         default_factory=lambda: Path(__file__).parent / "tile" / "dish"
     )
-    # IHC 測試圖片目錄
-    ihc_test_dir: Path = field(
-        default_factory=lambda: Path(__file__).parent / "test_picture" / "her2"
+    # IHC 測試 ROI 路徑（單一影像檔，走完整 precut+分析流程）
+    ihc_test_path: Path = field(
+        default_factory=lambda: Path(__file__).parent / "test_picture" / "her2" / "tile_x61440_y36864.tiff"
     )
-    # DISH 測試圖片目錄
-    dish_test_dir: Path = field(
-        default_factory=lambda: Path(__file__).parent / "test_picture" / "dish"
+    # DISH 測試 ROI 路徑（單一影像檔，走完整 precut+分析流程）
+    dish_test_path: Path = field(
+        default_factory=lambda: Path(__file__).parent / "test_picture" / "dish" / "tile_x61440_y36864.tiff"
     )
     # 輸出根目錄
     output_dir: Path = field(
         default_factory=lambda: Path(__file__).parent / "output"
-    )
-    # 合併結果目錄（批次 tile）
-    merge_tile_dir: Path = field(
-        default_factory=lambda: Path(__file__).parent / "tile" / "merge"
-    )
-    # 合併結果目錄（test_picture）
-    merge_test_dir: Path = field(
-        default_factory=lambda: Path(__file__).parent / "test_picture" / "merge"
     )
     # ========== 模型路徑 ==========
     # UNet++ 細胞膜分割模型

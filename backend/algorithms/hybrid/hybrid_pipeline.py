@@ -12,14 +12,11 @@ IHC-DISH Overlay & Analysis Pipeline — 主入口
 
 Usage:
     # 單一 ROI/WSI 影像對：先預切成重疊 tile 檔（暫存於 output/_precut_scratch），
-    # 再走與 --batch 相同的逐塊分析 + slide 級縫合流程。
+    # 再走逐塊分析 + slide 級縫合流程。
     python hybrid_pipeline.py --ihc roi_ihc.tiff --dish roi_dish.tiff
 
-    # 批次：ihc_dir / dish_dir 為「已預切」的 tile 檔目錄（tile_x{int}_y{int}）。
-    python hybrid_pipeline.py --batch
-
-    # 使用 test_picture 資料夾（同為已預切 tile 目錄）
-    python hybrid_pipeline.py --batch --test
+    # 使用內建 test_picture ROI 範例（走完整 precut+分析流程）
+    python hybrid_pipeline.py --test
 """
 
 import argparse
@@ -221,8 +218,9 @@ def process_precut_tile(
       - 5 張非 overlay 陣列（原樣、局部 ID、未過濾、未重編號）:
         ``core_mask/`` ``masked_ihc/`` ``dish_mask_overlay/``（PNG）、
         ``instance_mask/`` ``dish_nucleus_mask/``（int32 TIFF，保留 label）。
-      - ``overlay_annotated/``: 以 ``overlay_image`` 為底繪細胞邊界/標籤/dots，核心裁切後
-        存 TIFF，供後續 pyvips arrayjoin 拼成 slide 級 QuPath 影像（另一支任務負責）。
+      - ``overlay_annotated/``: 以 ``dish_mask_overlay`` 為底繪 dish 核輪廓/細胞邊界/飄移箭頭/
+        標籤/dots，核心裁切後存 TIFF，供後續 pyvips arrayjoin 拼成 slide 級 QuPath 影像
+        （另一支任務負責）。
       - ``cell_crops/tile_x{x}_y{y}/cells/``: 核心擁有細胞的固定尺寸裁切。
       - ``merge_overlay/``（可選）: 若 ``merge_dir`` 有同名 tile，畫邊界後核心裁切存 TIFF。
 
@@ -297,11 +295,14 @@ def process_precut_tile(
         cr.dish_nucleus_mask.astype(np.int32, copy=False),
     )
 
-    # (b) 標註 overlay（醫師 / slide 級 QuPath），以 overlay_image 為底畫全塊、核心裁切。
-    #     以全塊 results/instance_mask/all_dots 繪製後裁核心：核心區彼此無重疊、無縫隙，
-    #     故每個標註像素在拼回的整片中恰出現一次。
+    # (b) 標註 overlay（醫師 / slide 級 QuPath），以 dish_mask_overlay 為底畫全塊、核心裁切。
+    #     以全塊 results/instance_mask/all_dots/dish_nucleus_mask/per_cell_dots 繪製後裁核心：
+    #     核心區彼此無重疊、無縫隙，故每個標註像素在拼回的整片中恰出現一次。
     annotated = render_overlay_image(
-        cr.overlay_image, cr.instance_mask, cr.results, all_dots=cr.all_dots
+        cr.dish_mask_overlay, cr.instance_mask, cr.results,
+        all_dots=cr.all_dots,
+        dish_nucleus_mask=cr.dish_nucleus_mask,
+        per_cell_dots=cr.per_cell_dots,
     )
     _save_tile_array(
         output_dir / "overlay_annotated" / f"{tile_name}.tiff",
@@ -596,8 +597,8 @@ def run_batch(
         merge_dir: 合併影像目錄 (可選)，用於產出 merge overlay。
 
     Returns:
-        ``{"success": int, "failed": int, "skipped": int}`` 統計
-        （``failed`` 於 fail-fast 下恆為 0——真正失敗會 raise）。
+        ``{"success": int, "skipped": int}`` 統計。批次內任一塊真實失敗即
+        raise 中止整批（見上），故統計裡不設 ``failed`` 計數。
     """
     run_id = uuid.uuid4().hex[:8]
     cfg_hash = compute_config_hash(config)
@@ -612,7 +613,7 @@ def run_batch(
 
     if not paired_tiles:
         logger.warning("未找到任何配對 tile")
-        return {"success": 0, "failed": 0, "skipped": 0}
+        return {"success": 0, "skipped": 0}
 
     # 由檔名解析每塊 (abs_x, abs_y)；IHC/DISH 同名同座標，防禦性地兩路都解析並比對。
     positions: List[Tuple[int, int]] = []
@@ -636,7 +637,7 @@ def run_batch(
     cellpose = _init_cellpose_segmenter()
     dish_cellpose = _init_dish_cellpose_segmenter()
 
-    stats = {"success": 0, "failed": 0, "skipped": 0}
+    stats = {"success": 0, "skipped": 0}
     total = len(paired_tiles)
     # 每塊回傳 (abs_x, abs_y, owned_results)，供迴圈後全域排序 / 重編號。
     per_tile_owned: List[Tuple[int, int, List[CellAnalysisResult]]] = []
@@ -769,12 +770,11 @@ def _log_batch_summary(
 ) -> None:
     """輸出批次處理摘要。"""
     logger.info(
-        "批次完成 — run_id=%s | 總計=%d | 成功=%d | 跳過=%d | 失敗=%d",
+        "批次完成 — run_id=%s | 總計=%d | 成功=%d | 跳過=%d",
         run_id,
         total,
         stats["success"],
         stats["skipped"],
-        stats["failed"],
     )
 
 
@@ -788,14 +788,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="IHC-DISH Overlay & Analysis Pipeline",
     )
     parser.add_argument(
-        "--batch",
-        action="store_true",
-        help="啟用批次掃描模式",
-    )
-    parser.add_argument(
         "--test",
         action="store_true",
-        help="使用 test_picture 目錄 (搭配 --batch)",
+        help="跑內建 test_picture ROI 範例（走完整 precut+分析流程）",
     )
     parser.add_argument(
         "--ihc",
@@ -825,11 +820,10 @@ def main() -> None:
 
     output_dir = Path(args.output) if args.output else config.output_dir
 
-    if args.batch:
-        ihc_dir = config.ihc_test_dir if args.test else config.ihc_tile_dir
-        dish_dir = config.dish_test_dir if args.test else config.dish_tile_dir
-        merge_dir = config.merge_test_dir if args.test else config.merge_tile_dir
-        run_batch(ihc_dir, dish_dir, output_dir, merge_dir=merge_dir)
+    if args.test:
+        _run_single_tile_cli(
+            str(config.ihc_test_path), str(config.dish_test_path), output_dir
+        )
     elif args.ihc and args.dish:
         _run_single_tile_cli(args.ihc, args.dish, output_dir)
     else:

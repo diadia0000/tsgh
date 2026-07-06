@@ -13,10 +13,3 @@ class HybridTileIn(BaseModel):
     dish_path: str
     output_dir: Optional[str] = None
     merge_dir: Optional[str] = None
-
-
-class HybridBatchIn(BaseModel):
-    ihc_dir: str
-    dish_dir: str
-    output_dir: Optional[str] = None
-    merge_dir: Optional[str] = None
