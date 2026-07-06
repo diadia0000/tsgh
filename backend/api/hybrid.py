@@ -15,25 +15,9 @@ from backend.algorithms.hybrid.hybrid_pipeline import run_batch
 from backend.algorithms.hybrid.m0_reader import precut_paired_tiles
 from backend.api.jobs import submit_job
 from backend.schemas.common import JobAccepted
-from backend.schemas.hybrid import HybridBatchIn, HybridTileIn
+from backend.schemas.hybrid import HybridTileIn
 
 router = APIRouter(prefix="/api/hybrid")
-
-
-@router.post("/batch", response_model=JobAccepted)
-def run_hybrid_batch(body: HybridBatchIn, background_tasks: BackgroundTasks) -> JobAccepted:
-    ihc_dir = Path(body.ihc_dir)
-    dish_dir = Path(body.dish_dir)
-    output_dir = Path(body.output_dir) if body.output_dir else config.output_dir
-    merge_dir = Path(body.merge_dir) if body.merge_dir else None
-
-    def _run():
-        stats = run_batch(
-            ihc_dir=ihc_dir, dish_dir=dish_dir, output_dir=output_dir, merge_dir=merge_dir
-        )
-        return str(output_dir), stats
-
-    return JobAccepted(job_id=submit_job(background_tasks, _run))
 
 
 @router.post("/tile", response_model=JobAccepted)

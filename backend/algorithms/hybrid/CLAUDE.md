@@ -11,15 +11,16 @@ Models are initialized once before the batch loop and reused.
 
 ```bash
 python hybrid_pipeline.py --ihc roi_ihc.tiff --dish roi_dish.tiff   # single ROI/WSI pair: precut then batch
-python hybrid_pipeline.py --batch [--test] [--output DIR]           # batch: dirs are already-precut tile folders
+python hybrid_pipeline.py --test [--output DIR]                     # smoke-test: bundled test_picture ROI pair, same precut+batch path
 ```
 
 Tile pairing is by filename coordinate parsing `tile_x{int}_y{int}`.
 Key imports in `hybrid_pipeline.py`: all local-style — `m0_reader`, `m0_stitch`, `m1_overlay`, `m2_segmentation`, `m3_cell_detection`, `m4_export`.
 `--ihc`/`--dish` accepts a single tile, an arbitrary ROI, or a WSI of any size — `_run_single_tile_cli()` calls
 `precut_paired_tiles()` (M0 reader) to cut it into `default_tile_size` tile files under `output_dir/_precut_scratch/`
-first, then runs the same `run_batch()` path as `--batch`, so memory stays bounded on both read and analysis sides.
-`backend/api/hybrid.py`'s `/api/hybrid/tile` and `/api/hybrid/batch` endpoints mirror this same split.
+first, then runs the `run_batch()` analysis path, so memory stays bounded on both read and analysis sides.
+`--test` routes a bundled `test_picture` smoke-test ROI pair through this exact same precut+`run_batch()` path (not a
+separate pretiled-dir path). `backend/api/hybrid.py`'s `/api/hybrid/tile` endpoint mirrors this precut+batch flow.
 
 ## Configuration
 
@@ -55,7 +56,8 @@ tile dirs, `output_dir`, `slide_id`/`model_version`. `compute_config_hash()` is 
     1024px — only `report.csv` + `summary.txt` (global, via `export_tile_csv`/`export_summary_statistics` on
     the renumbered cell list) and the **annotated** slide-level overlay are assembled globally. The overlay is
     built per-tile as `overlay_annotated/tile_x{x}_y{y}.tiff` (core-cropped via `core_crop_bounds()`, drawn with
-    `render_overlay_image()` — cell boundaries + HER2/CEP17 dot markers) then `_stitch_overlay_slide()` joins
+    `render_overlay_image()` on `dish_mask_overlay` — DISH nucleus contours + cell boundaries + drift arrows
+    + labels + HER2/CEP17 dot markers) then `_stitch_overlay_slide()` joins
     them into `overlay_slide.tiff`, a pyramidal (`tile=True, pyramid=True`) TIFF QuPath can open directly.
     `pyvips.Image.arrayjoin()` cannot be used here — it assumes a uniform per-cell grid size and silently
     mis-pads when row/column tile sizes differ (as they do at slide edges); the fix is a manual row-then-column
