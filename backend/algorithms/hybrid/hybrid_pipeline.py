@@ -25,6 +25,7 @@ import logging
 import sys
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -142,13 +143,38 @@ class M1StageArtifacts:
 
 
 @dataclass
-class M3StageArtifacts:
-    """M3 點位偵測與逐細胞分析輸出。"""
+class _ChunkGpuState:
+    """單塊『三個 GPU 前向已跑完、CPU 後段（detect_all_dots）尚未跑』的中繼狀態。
 
-    results: List[CellAnalysisResult]
-    all_dots: list
-    per_cell_dots: dict
-    dish_nucleus_mask: np.ndarray
+    這是把單塊分析從中間切開的交接資料：M1 UNet / M2 Cellpose / M3b DISH Cellpose
+    三個前向都已在主執行緒 / 單一 CUDA context 跑完，剩下的 detect_all_dots + merge
+    是純 CPU（joblib threads），可丟到背景執行緒與『下一塊的 GPU 前向』重疊。座標為分塊局部。
+    """
+
+    abs_x: int
+    abs_y: int
+    core_mask: np.ndarray
+    masked_ihc: np.ndarray
+    dish_mask_overlay: np.ndarray
+    overlay_image: np.ndarray
+    instance_mask: np.ndarray
+    matching_mask: np.ndarray
+    dish_nucleus_mask: np.ndarray            # segment_windowed 產出，尚未經 detect_all_dots 過濾
+    results_pre: List[CellAnalysisResult]    # build_all_positive_results，尚未 merge 點位
+
+
+@dataclass
+class _TileGpuResult:
+    """單一 precut tile 的 GPU 前段結果，交給背景執行緒跑 CPU 後段 + 落地寫檔。"""
+
+    tile_name: str
+    abs_x: int
+    abs_y: int
+    th: int
+    tw: int
+    crop: Tuple[int, int, int, int]          # (lx0, lx1, ly0, ly1) 核心裁切界
+    start_time: float
+    chunk: Optional[_ChunkGpuState]          # None = 背景塊（核心遮罩全空）
 
 
 # ------------------------------------------------------------------
@@ -232,6 +258,34 @@ def process_precut_tile(
         - 核心遮罩全空的背景塊 → 仍寫空白 placeholder（維持 arrayjoin 每格一檔），回傳 ``[]``。
         - 讀檔 / 維度等真實錯誤 → ``None``。
     """
+    tg = _process_precut_tile_gpu(
+        ihc_tile_path, dish_tile_path, abs_x, abs_y, geometry,
+        unet_inferencer, cellpose_segmenter, dish_cellpose_segmenter, output_dir,
+    )
+    if tg is None:
+        return None
+    return _process_precut_tile_cpu(tg, geometry, output_dir, merge_dir=merge_dir)
+
+
+def _process_precut_tile_gpu(
+    ihc_tile_path: Path,
+    dish_tile_path: Path,
+    abs_x: int,
+    abs_y: int,
+    geometry: TileGeometry,
+    unet_inferencer: object,
+    cellpose_segmenter: CellposeSegmenter,
+    dish_cellpose_segmenter: CellposeSegmenter,
+    output_dir: Path,
+) -> Optional[_TileGpuResult]:
+    """單塊的 **GPU 前段**：讀檔 → M1→M2→M3b 三個前向，回傳交接狀態。
+
+    只做需 GPU / 需序列於單一 CUDA context 的工作；``detect_all_dots`` + 落地寫檔等純 CPU
+    後段留給 ``_process_precut_tile_cpu`` 在背景執行緒跑。回傳：
+      - ``None``：讀檔 / 維度等真實錯誤（呼叫端據此 fail-fast）。
+      - ``chunk is None`` 的 ``_TileGpuResult``：背景塊（核心遮罩全空）。
+      - 完整 ``_TileGpuResult``：待跑 CPU 後段。
+    """
     tile_name = f"tile_x{abs_x}_y{abs_y}"
     start_time = time.perf_counter()
 
@@ -255,7 +309,7 @@ def process_precut_tile(
     )
 
     try:
-        cr = _process_one_chunk(
+        chunk = _process_one_chunk_gpu(
             ihc, dish, abs_x, abs_y,
             geometry.edge_flags(abs_x, abs_y),
             unet_inferencer, cellpose_segmenter, dish_cellpose_segmenter,
@@ -267,13 +321,43 @@ def process_precut_tile(
         logger.error("Tile %s 處理失敗: %s", tile_name, exc, exc_info=True)
         return None
 
-    if cr is None:
+    return _TileGpuResult(
+        tile_name=tile_name,
+        abs_x=abs_x,
+        abs_y=abs_y,
+        th=th,
+        tw=tw,
+        crop=(lx0, lx1, ly0, ly1),
+        start_time=start_time,
+        chunk=chunk,
+    )
+
+
+def _process_precut_tile_cpu(
+    tg: _TileGpuResult,
+    geometry: TileGeometry,
+    output_dir: Path,
+    merge_dir: Optional[Path] = None,
+) -> List[CellAnalysisResult]:
+    """單塊的 **CPU 後段**：detect_all_dots + merge → 核心去重 → 逐塊落地寫檔。
+
+    完全不碰 torch / CUDA，設計為可在背景執行緒執行，與主執行緒『下一塊的 GPU 前向』重疊。
+    回傳核心區擁有、質心已絕對化（``cell_id`` 仍為分塊局部）的細胞清單。
+    """
+    tile_name = tg.tile_name
+    lx0, lx1, ly0, ly1 = tg.crop
+
+    if tg.chunk is None:
         # 背景塊（核心遮罩全空）：仍寫空白 placeholder，讓 arrayjoin 每格恰有一檔。
-        _write_blank_tile(output_dir, tile_name, th, tw, (ly1 - ly0, lx1 - lx0))
+        _write_blank_tile(
+            output_dir, tile_name, tg.th, tg.tw, (ly1 - ly0, lx1 - lx0)
+        )
         logger.info("Tile %s: 核心遮罩全空 → 空白 placeholder", tile_name)
         return []
 
-    owned = filter_and_absolutize(cr, geometry, abs_x, abs_y)
+    cr = _finish_chunk_cpu(tg.chunk)
+
+    owned = filter_and_absolutize(cr, geometry, tg.abs_x, tg.abs_y)
     owned_ids = {r.cell_id for r in owned}
     local_owned = [r for r in cr.results if r.cell_id in owned_ids]
 
@@ -326,7 +410,7 @@ def process_precut_tile(
             merge_dir, output_dir, tile_name, cr, (lx0, lx1, ly0, ly1)
         )
 
-    elapsed = time.perf_counter() - start_time
+    elapsed = time.perf_counter() - tg.start_time
     pos_count = sum(1 for r in owned if r.is_her2_positive)
     logger.info(
         "Tile %s 完成: 核心擁有 %d 細胞 (%d 陽性), %.2f 秒",
@@ -410,7 +494,7 @@ def _export_chunk_merge_overlay(
     logger.info("Merge overlay 匯出完成: %s", tile_name)
 
 
-def _process_one_chunk(
+def _process_one_chunk_gpu(
     ihc: np.ndarray,
     dish: np.ndarray,
     abs_x: int,
@@ -419,8 +503,12 @@ def _process_one_chunk(
     unet_inferencer: object,
     cellpose_segmenter: CellposeSegmenter,
     dish_cellpose_segmenter: CellposeSegmenter,
-) -> Optional[ChunkResult]:
-    """單一分塊 M1→M2→M3；回傳帶絕對座標左上角的 ``ChunkResult``，核心遮罩全空則 None。
+) -> Optional[_ChunkGpuState]:
+    """單塊的 GPU 前段：M1→M2→M3b 三個前向 + M3 的純幾何前處理，核心遮罩全空回 None。
+
+    只跑到 M3b 的 ``segment_windowed`` 為止（含 ``build_all_positive_results`` /
+    ``enlarge_cell_instances`` 兩步廉價 CPU 前處理，維持與拆分前相同的呼叫順序）；
+    ``detect_all_dots`` + merge 這段純 CPU 後段留給 ``_finish_chunk_cpu``。
 
     ``edge_flags`` = ``(clear_top, clear_bottom, clear_left, clear_right)``（由
     ``TileGeometry.edge_flags`` 提供）：M2 不在分塊內部接縫清邊（``remove_border=False``），
@@ -455,27 +543,87 @@ def _process_one_chunk(
             clear_right=clear_right,
         )
 
-    m3 = _run_m3_analysis_stage(
+    # M3 前處理中屬「需序列 / 含 GPU 前向」的部分（順序與拆分前一致）：逐細胞結果表 →
+    # 放大 mask（供配對）→ M3b DISH 核 Cellpose 前向。detect_all_dots 之後才做（CPU 後段）。
+    results_pre = build_all_positive_results(instance_mask)
+    # M3 配對前處理：把綠色細胞 mask 實際放大（面積 ×cell_enlarge_area_factor），讓細胞
+    # 蓋到更多 DISH 核以提高配對成功率。放大版僅供配對 / 點偵測；原始 instance_mask 仍
+    # 用於 M4 視覺化與裁切，醫師看到的綠框維持不變。
+    matching_mask = enlarge_cell_instances(instance_mask, config)
+    dish_nucleus_mask = segment_windowed(
         dish,
-        m1.dish_mask_overlay,
-        instance_mask,
-        m1.core_mask,
         dish_cellpose_segmenter,
+        tile_size=config.default_tile_size,
+        overlap=config.window_overlap_px,
+        dedup_iomin=config.window_dedup_iomin,
     )
 
-    return ChunkResult(
+    return _ChunkGpuState(
         abs_x=abs_x,
         abs_y=abs_y,
-        instance_mask=instance_mask,
-        dish_nucleus_mask=m3.dish_nucleus_mask,
         core_mask=core_mask,
         masked_ihc=m1.masked_ihc,
         dish_mask_overlay=m1.dish_mask_overlay,
         overlay_image=m1.overlay_image,
-        results=m3.results,
-        all_dots=m3.all_dots,
-        per_cell_dots=m3.per_cell_dots,
+        instance_mask=instance_mask,
+        matching_mask=matching_mask,
+        dish_nucleus_mask=dish_nucleus_mask,
+        results_pre=results_pre,
     )
+
+
+def _finish_chunk_cpu(gs: _ChunkGpuState) -> ChunkResult:
+    """單塊的 CPU 後段：``detect_all_dots`` + merge → 完整 ``ChunkResult``（純 CPU，無 torch）。
+
+    對應拆分前 ``_run_m3_analysis_stage`` 的 ``detect_all_dots`` 之後兩步，計算完全相同。
+    """
+    all_dots, per_cell_dots, dish_nucleus_mask = detect_all_dots(
+        gs.dish_mask_overlay,
+        gs.matching_mask,
+        config,
+        dish_nucleus_mask=gs.dish_nucleus_mask,
+        core_mask=gs.core_mask,
+    )
+    results = merge_dot_results_to_cell_analysis(gs.results_pre, per_cell_dots)
+
+    return ChunkResult(
+        abs_x=gs.abs_x,
+        abs_y=gs.abs_y,
+        instance_mask=gs.instance_mask,
+        dish_nucleus_mask=dish_nucleus_mask,
+        core_mask=gs.core_mask,
+        masked_ihc=gs.masked_ihc,
+        dish_mask_overlay=gs.dish_mask_overlay,
+        overlay_image=gs.overlay_image,
+        results=results,
+        all_dots=all_dots,
+        per_cell_dots=per_cell_dots,
+    )
+
+
+def _process_one_chunk(
+    ihc: np.ndarray,
+    dish: np.ndarray,
+    abs_x: int,
+    abs_y: int,
+    edge_flags: tuple,
+    unet_inferencer: object,
+    cellpose_segmenter: CellposeSegmenter,
+    dish_cellpose_segmenter: CellposeSegmenter,
+) -> Optional[ChunkResult]:
+    """單一分塊 M1→M2→M3（同步版）；回傳 ``ChunkResult``，核心遮罩全空則 None。
+
+    行為與拆分前一致：GPU 前段（``_process_one_chunk_gpu``）接 CPU 後段
+    （``_finish_chunk_cpu``）。批次管線改走兩段式重疊調度、不經此函式；此函式保留給
+    單塊 / 回歸測試等同步呼叫路徑。
+    """
+    gs = _process_one_chunk_gpu(
+        ihc, dish, abs_x, abs_y, edge_flags,
+        unet_inferencer, cellpose_segmenter, dish_cellpose_segmenter,
+    )
+    if gs is None:
+        return None
+    return _finish_chunk_cpu(gs)
 
 
 def _run_m1_overlay_stage(
@@ -508,42 +656,6 @@ def _run_m1_overlay_stage(
         dish_mask_overlay=dish_mask_overlay,
         overlay_image=overlay_image,
         m2_input_overlay=overlay_image,
-    )
-
-
-def _run_m3_analysis_stage(
-    dish_image: np.ndarray,
-    dish_mask_overlay: np.ndarray,
-    instance_mask: np.ndarray,
-    core_mask: np.ndarray,
-    dish_cellpose_segmenter: CellposeSegmenter,
-) -> M3StageArtifacts:
-    """執行 M3：逐細胞結果、DISH 核偵測、紅黑點偵測與結果合併。"""
-    results = build_all_positive_results(instance_mask)
-    # M3 配對前處理：把綠色細胞 mask 實際放大（面積 ×cell_enlarge_area_factor），讓細胞
-    # 蓋到更多 DISH 核以提高配對成功率。放大版僅供配對 / 點偵測；原始 instance_mask 仍
-    # 用於 M4 視覺化與裁切，醫師看到的綠框維持不變。
-    matching_mask = enlarge_cell_instances(instance_mask, config)
-    dish_nucleus_mask = segment_windowed(
-        dish_image,
-        dish_cellpose_segmenter,
-        tile_size=config.default_tile_size,
-        overlap=config.window_overlap_px,
-        dedup_iomin=config.window_dedup_iomin,
-    )
-    all_dots, per_cell_dots, dish_nucleus_mask = detect_all_dots(
-        dish_mask_overlay,
-        matching_mask,
-        config,
-        dish_nucleus_mask=dish_nucleus_mask,
-        core_mask=core_mask,
-    )
-    results = merge_dot_results_to_cell_analysis(results, per_cell_dots)
-    return M3StageArtifacts(
-        results=results,
-        all_dots=all_dots,
-        per_cell_dots=per_cell_dots,
-        dish_nucleus_mask=dish_nucleus_mask,
     )
 
 
@@ -642,45 +754,67 @@ def run_batch(
     # 每塊回傳 (abs_x, abs_y, owned_results)，供迴圈後全域排序 / 重編號。
     per_tile_owned: List[Tuple[int, int, List[CellAnalysisResult]]] = []
 
-    # 序列（非平行）迴圈：三個 GPU 模型只在主行程 / CUDA context 載入一次並重用，
-    # 真正的加速要靠跨 tile 批次化 GPU 推論——那是另案追蹤、刻意延後的優化，不在本輪
-    # （本輪只求新架構的正確性，不碰吞吐）。tile 間保留 empty_cache + gc.collect 清理。
-    for idx, ((ihc_path, dish_path), (ax, ay)) in enumerate(
-        zip(paired_tiles, positions), start=1
-    ):
-        logger.info(
-            "[%d/%d] 處理 tile: %s", idx, total, dish_path.stem
-        )
-        result = process_precut_tile(
-            ihc_path, dish_path, ax, ay, geometry,
-            unet, cellpose, dish_cellpose, output_dir, merge_dir=merge_dir,
-        )
-        if result is None:
-            # 真實錯誤：此塊是單一玻片之一，任一塊失敗即整片不可信 → fail-fast 中止整批。
-            logger.error(
-                "Tile %s 發生真實錯誤（讀檔 / 維度不符），且該格未寫任何檔——"
-                "此為單一玻片之一塊，整批中止以免產出有未記載破洞的玻片。",
-                dish_path.stem,
-            )
-            raise RuntimeError(
-                f"process_precut_tile 於 {dish_path.stem} 失敗（見上方日誌）；"
-                f"整批 fail-fast 中止。"
-            )
-        per_tile_owned.append((ax, ay, result))
-        if len(result) == 0:
+    def _collect(entry: Tuple[int, int, Future]) -> None:
+        """收一塊已提交的 CPU 後段結果並累計統計；其真實錯誤在此 raise → fail-fast。"""
+        e_ax, e_ay, fut = entry
+        owned = fut.result()
+        per_tile_owned.append((e_ax, e_ay, owned))
+        if len(owned) == 0:
             stats["skipped"] += 1
         else:
             stats["success"] += 1
 
-        # Release GPU allocator cache and run Python GC between tiles to
-        # prevent monotonic memory growth across a long batch.
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except ImportError:
-            pass
-        gc.collect()
+    # 兩段式管線（單一背景執行緒，管線深度 1）：三個 GPU 模型仍只在主行程 / 單一 CUDA
+    # context 載入一次並重用，且**所有 GPU 前向仍只在主執行緒序列執行**（背景執行緒完全
+    # 不碰 torch），故不觸犯跨行程 fork-under-CUDA 限制。差別只在把每塊的 CPU 後段
+    # （detect_all_dots + 落地寫檔，原本讓 GPU 整段閒置）丟到背景執行緒，與『下一塊的 GPU
+    # 前向』重疊執行，藉此填補 GPU 閒置。fail-fast 與 empty_cache/gc 清理語意皆保留（見下）。
+    pending: Optional[Tuple[int, int, Future]] = None
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="tile-cpu") as pool:
+        for idx, ((ihc_path, dish_path), (ax, ay)) in enumerate(
+            zip(paired_tiles, positions), start=1
+        ):
+            logger.info(
+                "[%d/%d] 處理 tile: %s", idx, total, dish_path.stem
+            )
+            tg = _process_precut_tile_gpu(
+                ihc_path, dish_path, ax, ay, geometry,
+                unet, cellpose, dish_cellpose, output_dir,
+            )
+            if tg is None:
+                # 真實錯誤：此塊是單一玻片之一，任一塊失敗即整片不可信 → fail-fast 中止整批。
+                logger.error(
+                    "Tile %s 發生真實錯誤（讀檔 / 維度不符），且該格未寫任何檔——"
+                    "此為單一玻片之一塊，整批中止以免產出有未記載破洞的玻片。",
+                    dish_path.stem,
+                )
+                raise RuntimeError(
+                    f"process_precut_tile 於 {dish_path.stem} 失敗（見上方日誌）；"
+                    f"整批 fail-fast 中止。"
+                )
+
+            # tile 間釋放 GPU allocator cache 並跑一次 Python GC（主執行緒持有 CUDA），
+            # 防止長批次記憶體單調成長。此時背景執行緒可能仍在跑前一塊的 CPU 後段——它只
+            # 持有 numpy 陣列（該塊 GPU 前向早已在主執行緒跑完），故此清理不影響其正確性。
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
+            gc.collect()
+
+            # 收前一塊的 CPU 後段（剛與本塊 GPU 前向重疊執行）；其真實錯誤在此 raise → fail-fast。
+            # 先收再提交本塊：同時最多只有兩塊在飛（本塊 GPU 狀態 + 前一塊 CPU 後段），記憶體有界。
+            if pending is not None:
+                _collect(pending)
+            pending = (ax, ay, pool.submit(
+                _process_precut_tile_cpu, tg, geometry, output_dir, merge_dir,
+            ))
+
+        # 收最後一塊的 CPU 後段。
+        if pending is not None:
+            _collect(pending)
 
     # 全域合併：攤平所有塊的 owned 結果，依正典幾何序 (abs_y, abs_x, cell_id) 排序後
     # 重新編號成 1..N。這是唯一發生全域 cell 編號的地方；質心等其他欄位保留。
