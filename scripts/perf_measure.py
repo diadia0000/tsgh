@@ -1,0 +1,341 @@
+"""Non-invasive performance measurement harness for the hybrid pipeline.
+
+Executes the plan in docs/hybrid-pipeline/09-measurement-analysis-plan.md.
+Does NOT modify pipeline code: it wraps pipeline functions with timing/counter
+shims at runtime (monkeypatch on the hybrid_pipeline module namespace) and runs
+resource monitors (RAM/VRAM sampler thread + optional nvidia-smi dmon) around the
+run. Emits a JSON of per-function/per-phase wall time + call counts + I/O bytes.
+
+Phases (see plan sec 3):
+  A  precut_paired_tiles            (I/O bound tiler)
+  B1 GPU forward   : generate_ihc_core_mask, segment_masked_dish, segment_windowed
+  B2 file I/O out  : _save_tile_array (split PNG vs TIFF), export_per_cell_images,
+                     render_overlay_image
+  B2r tile read    : _read_rgb
+  B3 M3 analysis   : build_all_positive_results, enlarge_cell_instances,
+                     detect_all_dots, merge_dot_results_to_cell_analysis
+  B4 tile-boundary : gc.collect + torch.cuda.empty_cache
+  B-M1 overlay     : apply_mask_to_ihc_image, overlay_ihc_mask_on_dish,
+                     fuse_masked_ihc_with_dish
+  B-stitch/tile    : filter_and_absolutize, clear_slide_edge_cells
+  C  global merge  : export_tile_csv, export_summary_statistics
+  D  overlay stitch: _stitch_overlay_slide
+  init             : the 3 model _init_* calls
+
+Usage:
+  python scripts/perf_measure.py --ihc <path> --dish <path> --output <dir> \
+      --label <name> [--workers 8] [--cprofile] [--gpu-dmon]
+"""
+from __future__ import annotations
+
+import argparse
+import functools
+import gc
+import json
+import logging
+import os
+
+logging.getLogger("pyvips").setLevel(logging.WARNING)
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+# --- import pipeline ---
+HYBRID = Path(__file__).resolve().parent.parent / "backend" / "algorithms" / "hybrid"
+sys.path.insert(0, str(HYBRID))
+sys.path.insert(0, str(HYBRID.parent.parent.parent))
+
+import hybrid_pipeline as HP  # noqa: E402
+import torch  # noqa: E402
+import psutil  # noqa: E402
+
+# ------------------------------------------------------------------
+# timing registry
+# ------------------------------------------------------------------
+TIMINGS: dict[str, dict] = {}
+
+
+def _rec(bucket: str, dt: float, extra: dict | None = None):
+    b = TIMINGS.setdefault(bucket, {"n": 0, "t": 0.0})
+    b["n"] += 1
+    b["t"] += dt
+    if extra:
+        for k, v in extra.items():
+            b[k] = b.get(k, 0) + v
+
+
+def wrap(module, name: str, bucket: str, bytes_of=None):
+    """Wrap module.name with a perf_counter timer accumulating into bucket."""
+    orig = getattr(module, name)
+
+    @functools.wraps(orig)
+    def shim(*a, **k):
+        t0 = time.perf_counter()
+        out = orig(*a, **k)
+        dt = time.perf_counter() - t0
+        extra = None
+        if bytes_of is not None:
+            try:
+                extra = {"bytes": bytes_of(a, k, out)}
+            except Exception:
+                extra = None
+        _rec(bucket, dt, extra)
+        return out
+
+    setattr(module, name, shim)
+    return orig
+
+
+def wrap_save_tile_array():
+    """_save_tile_array: split by suffix into PNG-encode vs TIFF-encode buckets,
+    and count output bytes after write."""
+    orig = HP._save_tile_array
+
+    @functools.wraps(orig)
+    def shim(path, array):
+        suffix = str(path).lower().rsplit(".", 1)[-1]
+        bucket = "B2_png_encode" if suffix == "png" else "B2_tiff_encode"
+        t0 = time.perf_counter()
+        out = orig(path, array)
+        dt = time.perf_counter() - t0
+        try:
+            nbytes = Path(path).stat().st_size
+        except Exception:
+            nbytes = 0
+        _rec(bucket, dt, {"bytes": nbytes})
+        return out
+
+    HP._save_tile_array = shim
+
+
+# ------------------------------------------------------------------
+# resource sampler
+# ------------------------------------------------------------------
+class ResourceSampler(threading.Thread):
+    def __init__(self, out_path: Path, interval: float = 0.5):
+        super().__init__(daemon=True)
+        self.out_path = out_path
+        self.interval = interval
+        self._stopev = threading.Event()
+        self.proc = psutil.Process(os.getpid())
+        self.rows = []
+        self.t0 = time.perf_counter()
+
+    def run(self):
+        while not self._stopev.is_set():
+            t = time.perf_counter() - self.t0
+            try:
+                rss = self.proc.memory_info().rss / 1e9
+                # include children (thread pool doesn't fork, but be safe)
+                for ch in self.proc.children(recursive=True):
+                    try:
+                        rss += ch.memory_info().rss / 1e9
+                    except Exception:
+                        pass
+            except Exception:
+                rss = 0.0
+            try:
+                alloc = torch.cuda.memory_allocated() / 1e9
+                reserved = torch.cuda.memory_reserved() / 1e9
+            except Exception:
+                alloc = reserved = 0.0
+            self.rows.append((round(t, 2), round(rss, 3), round(alloc, 3), round(reserved, 3)))
+            self._stopev.wait(self.interval)
+
+    def stop(self):
+        self._stopev.set()
+        self.join(timeout=5)
+        with open(self.out_path, "w") as f:
+            f.write("t_s,rss_gb,cuda_alloc_gb,cuda_reserved_gb\n")
+            for r in self.rows:
+                f.write(",".join(str(x) for x in r) + "\n")
+
+
+def start_dmon(out_path: Path):
+    try:
+        f = open(out_path, "w")
+        p = subprocess.Popen(
+            ["nvidia-smi", "dmon", "-s", "um", "-d", "1", "-o", "DT"],
+            stdout=f, stderr=subprocess.STDOUT,
+        )
+        return p, f
+    except Exception:
+        return None, None
+
+
+# ------------------------------------------------------------------
+# install all wrappers on the hybrid_pipeline namespace
+# ------------------------------------------------------------------
+def install_wrappers():
+    # B1 GPU forward
+    wrap(HP, "generate_ihc_core_mask", "B1_unet_coremask")
+    wrap(HP, "segment_masked_dish", "B1_m2_cellpose")
+    wrap(HP, "segment_windowed", "B1_m3b_cellpose")
+    # B2 file I/O out
+    wrap_save_tile_array()
+    wrap(HP, "export_per_cell_images", "B2_percell_crops")
+    wrap(HP, "render_overlay_image", "B2_render_overlay")
+    # B2r read
+    wrap(HP, "_read_rgb", "B2r_tile_read")
+    # B3 M3
+    wrap(HP, "build_all_positive_results", "B3_build_results")
+    wrap(HP, "enlarge_cell_instances", "B3_enlarge_cells")
+    wrap(HP, "detect_all_dots", "B3_detect_dots")
+    wrap(HP, "merge_dot_results_to_cell_analysis", "B3_merge_dots")
+    # B-M1 overlay
+    wrap(HP, "apply_mask_to_ihc_image", "BM1_apply_mask")
+    wrap(HP, "overlay_ihc_mask_on_dish", "BM1_overlay_dish")
+    wrap(HP, "fuse_masked_ihc_with_dish", "BM1_fuse")
+    # B-stitch per tile
+    wrap(HP, "filter_and_absolutize", "Bs_filter_absolutize")
+    wrap(HP, "clear_slide_edge_cells", "Bs_clear_edge")
+    # C global merge
+    wrap(HP, "export_tile_csv", "C_export_csv")
+    wrap(HP, "export_summary_statistics", "C_export_summary")
+    # D stitch
+    wrap(HP, "_stitch_overlay_slide", "D_stitch_overlay")
+    # init
+    wrap(HP, "_init_unet_inferencer", "init_unet")
+    wrap(HP, "_init_cellpose_segmenter", "init_cellpose_m2")
+    wrap(HP, "_init_dish_cellpose_segmenter", "init_cellpose_m3b")
+    # B4 tile-boundary cleanup: patch gc.collect + torch.cuda.empty_cache
+    _orig_gc = gc.collect
+
+    def gc_shim(*a, **k):
+        t0 = time.perf_counter()
+        r = _orig_gc(*a, **k)
+        _rec("B4_gc_collect", time.perf_counter() - t0)
+        return r
+
+    gc.collect = gc_shim
+    _orig_ec = torch.cuda.empty_cache
+
+    def ec_shim(*a, **k):
+        t0 = time.perf_counter()
+        r = _orig_ec(*a, **k)
+        _rec("B4_empty_cache", time.perf_counter() - t0)
+        return r
+
+    torch.cuda.empty_cache = ec_shim
+    # per-tile total
+    wrap(HP, "process_precut_tile", "B_process_precut_tile_TOTAL")
+
+
+# ------------------------------------------------------------------
+def dir_bytes(p: Path) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(p):
+        for fn in files:
+            try:
+                total += os.path.getsize(os.path.join(root, fn))
+            except OSError:
+                pass
+    return total
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ihc", required=True)
+    ap.add_argument("--dish", required=True)
+    ap.add_argument("--output", required=True)
+    ap.add_argument("--label", required=True)
+    ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--cprofile", action="store_true")
+    ap.add_argument("--gpu-dmon", action="store_true")
+    ap.add_argument("--metrics-dir", default=None)
+    args = ap.parse_args()
+
+    out = Path(args.output)
+    out.mkdir(parents=True, exist_ok=True)
+    metrics_dir = Path(args.metrics_dir) if args.metrics_dir else out.parent / "_metrics"
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    install_wrappers()
+
+    from config import config as CFG, compute_config_hash  # noqa
+
+    sampler = ResourceSampler(metrics_dir / f"{args.label}_resource.csv", interval=0.5)
+    dmon_p = dmon_f = None
+    if args.gpu_dmon:
+        dmon_p, dmon_f = start_dmon(metrics_dir / f"{args.label}_gpu_dmon.txt")
+    sampler.start()
+
+    scratch = out / "_precut_scratch"
+    ihc_out = scratch / "ihc"
+    dish_out = scratch / "dish"
+
+    prof = None
+    if args.cprofile:
+        import cProfile
+        prof = cProfile.Profile()
+
+    t_start = time.perf_counter()
+
+    # Phase A: precut
+    tA0 = time.perf_counter()
+    positions = HP.precut_paired_tiles(
+        Path(args.ihc), Path(args.dish), ihc_out, dish_out,
+        tile_size=CFG.default_tile_size, overlap=CFG.window_overlap_px,
+        workers=args.workers,
+    )
+    tA = time.perf_counter() - tA0
+    n_tiles = len(positions)
+    precut_bytes = dir_bytes(scratch)
+
+    # Phase B+C+D: run_batch
+    tB0 = time.perf_counter()
+    if prof:
+        prof.enable()
+    stats = HP.run_batch(ihc_out, dish_out, out)
+    if prof:
+        prof.disable()
+    tBCD = time.perf_counter() - tB0
+
+    total = time.perf_counter() - t_start
+    sampler.stop()
+    if dmon_p:
+        dmon_p.terminate()
+        if dmon_f:
+            dmon_f.close()
+
+    out_bytes = dir_bytes(out) - precut_bytes
+
+    result = {
+        "label": args.label,
+        "n_tiles": n_tiles,
+        "grid": {"cols": len(set(x for x, _ in positions)),
+                 "rows": len(set(y for _, y in positions))},
+        "wall": {
+            "end_to_end_total_s": round(total, 3),
+            "phaseA_precut_s": round(tA, 3),
+            "runbatch_BCD_s": round(tBCD, 3),
+        },
+        "disk_bytes": {
+            "precut_scratch": precut_bytes,
+            "analysis_output": out_bytes,
+        },
+        "stats": stats,
+        "timings": TIMINGS,
+        "config_hash": compute_config_hash(CFG),
+        "peak_cuda_reserved_gb": round(max((r[3] for r in sampler.rows), default=0), 3),
+        "peak_rss_gb": round(max((r[1] for r in sampler.rows), default=0), 3),
+    }
+    with open(metrics_dir / f"{args.label}_timings.json", "w") as f:
+        json.dump(result, f, indent=2, default=str)
+
+    if prof:
+        import pstats
+        st = pstats.Stats(prof)
+        st.dump_stats(str(metrics_dir / f"{args.label}_cprofile.prof"))
+        with open(metrics_dir / f"{args.label}_cprofile_top.txt", "w") as f:
+            st.stream = f
+            st.sort_stats("cumulative").print_stats(40)
+            st.sort_stats("tottime").print_stats(40)
+
+    print(json.dumps(result, indent=2, default=str))
+
+
+if __name__ == "__main__":
+    main()
