@@ -114,4 +114,4 @@ if __name__ == "__main__":
         try:
             slide_io.kill_jvm()
         except:
-            pass
+            raise RuntimeError("無法關閉 Java 虛擬機，請確認 JVM 是否已啟動。")

@@ -58,7 +58,6 @@ try:
     )
     from .m2_segmentation import (
         CellposeSegmenter,
-        segment_masked_dish,
         segment_windowed,
     )
     from .m3_cell_detection import (
@@ -95,7 +94,6 @@ except ImportError:
     )
     from m2_segmentation import (
         CellposeSegmenter,
-        segment_masked_dish,
         segment_windowed,
     )
     from m3_cell_detection import (
@@ -138,7 +136,6 @@ class M1StageArtifacts:
     core_mask: np.ndarray
     masked_ihc: np.ndarray
     dish_mask_overlay: np.ndarray
-    overlay_image: np.ndarray
     m2_input_overlay: np.ndarray
 
 
@@ -525,10 +522,9 @@ def _process_one_chunk_gpu(
 
     m1 = _run_m1_overlay_stage(ihc, dish, core_mask)
 
-    instance_mask = segment_masked_dish(
+    instance_mask = segment_windowed(
         m1.m2_input_overlay,
         cellpose_segmenter,
-        remove_border=False,
         tile_size=config.default_tile_size,
         overlap=config.window_overlap_px,
         dedup_iomin=config.window_dedup_iomin,
@@ -654,7 +650,6 @@ def _run_m1_overlay_stage(
         core_mask=core_mask,
         masked_ihc=masked_ihc,
         dish_mask_overlay=dish_mask_overlay,
-        overlay_image=overlay_image,
         m2_input_overlay=overlay_image,
     )
 

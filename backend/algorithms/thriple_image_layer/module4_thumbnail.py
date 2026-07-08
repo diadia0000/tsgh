@@ -23,7 +23,7 @@ def generate_thumbnail(
     try:
         slide_io.init_jvm()
     except Exception:
-        pass
+        raise RuntimeError("無法啟動 Java 虛擬機，請確認已安裝 Java 並設定環境變數。")
 
     output_dir = config.output_dir
     level = config.thumbnail.level

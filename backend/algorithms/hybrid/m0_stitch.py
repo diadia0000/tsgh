@@ -61,7 +61,6 @@ class ChunkResult:
     core_mask: np.ndarray            # (th, tw) uint8{0,1}
     masked_ihc: np.ndarray           # (th, tw, 3) uint8
     dish_mask_overlay: np.ndarray    # (th, tw, 3) uint8
-    overlay_image: np.ndarray        # (th, tw, 3) uint8
     results: List[CellAnalysisResult]
     all_dots: List[DetectedDot]
     per_cell_dots: Dict[int, CellDotResult]
