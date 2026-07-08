@@ -68,6 +68,7 @@ try:
         merge_dot_results_to_cell_analysis,
     )
     from .m4_export import (
+        draw_tile_seam_edges,
         export_per_cell_images,
         export_summary_statistics,
         export_tile_csv,
@@ -104,6 +105,7 @@ except ImportError:
         merge_dot_results_to_cell_analysis,
     )
     from m4_export import (
+        draw_tile_seam_edges,
         export_per_cell_images,
         export_summary_statistics,
         export_tile_csv,
@@ -153,7 +155,6 @@ class _ChunkGpuState:
     core_mask: np.ndarray
     masked_ihc: np.ndarray
     dish_mask_overlay: np.ndarray
-    overlay_image: np.ndarray
     instance_mask: np.ndarray
     matching_mask: np.ndarray
     dish_nucleus_mask: np.ndarray            # segment_windowed 產出，尚未經 detect_all_dots 過濾
@@ -344,10 +345,20 @@ def _process_precut_tile_cpu(
     tile_name = tg.tile_name
     lx0, lx1, ly0, ly1 = tg.crop
 
+    # tile 內部接縫（拼回 overlay_slide 後的相鄰 tile 邊界）畫藍色虛線參考：只在
+    # 「非真實 slide 邊」的右 / 下邊畫，碰真實 slide 邊者不畫（該邊不是接縫）。
+    # config.draw_window_grid 關閉時 → (False, False) → 不畫。
+    _ct, clear_bottom, _cl, clear_right = geometry.edge_flags(tg.abs_x, tg.abs_y)
+    seam_edges = (
+        (not clear_right, not clear_bottom)
+        if config.draw_window_grid else (False, False)
+    )
+
     if tg.chunk is None:
         # 背景塊（核心遮罩全空）：仍寫空白 placeholder，讓 arrayjoin 每格恰有一檔。
         _write_blank_tile(
-            output_dir, tile_name, tg.th, tg.tw, (ly1 - ly0, lx1 - lx0)
+            output_dir, tile_name, tg.th, tg.tw, (ly1 - ly0, lx1 - lx0),
+            seam_edges=seam_edges,
         )
         logger.info("Tile %s: 核心遮罩全空 → 空白 placeholder", tile_name)
         return []
@@ -385,9 +396,14 @@ def _process_precut_tile_cpu(
         dish_nucleus_mask=cr.dish_nucleus_mask,
         per_cell_dots=cr.per_cell_dots,
     )
+    # ascontiguousarray：crop 為非連續 view，cv2 畫線需連續緩衝。
+    overlay_crop = np.ascontiguousarray(annotated[ly0:ly1, lx0:lx1])
+    draw_tile_seam_edges(
+        overlay_crop, right=seam_edges[0], bottom=seam_edges[1]
+    )
     _save_tile_array(
         output_dir / "overlay_annotated" / f"{tile_name}.tiff",
-        annotated[ly0:ly1, lx0:lx1],
+        overlay_crop,
     )
 
     # (c) per-cell crop：核心擁有子集（局部座標）；per-chunk 子夾避免 cell_id 撞名。
@@ -428,8 +444,13 @@ def _write_blank_tile(
     th: int,
     tw: int,
     crop_hw: tuple,
+    seam_edges: tuple = (False, False),
 ) -> None:
-    """核心遮罩全空的背景塊：為每項輸出寫一張空白 placeholder，維持每格一檔。"""
+    """核心遮罩全空的背景塊：為每項輸出寫一張空白 placeholder，維持每格一檔。
+
+    ``seam_edges`` = ``(right, bottom)``：空白塊的 overlay 仍畫 tile 接縫虛線，讓拼回
+    overlay_slide 後的接縫格線在空白區域維持連續、不留缺口。
+    """
     fill = config.background_fill_value
     ch, cw = crop_hw
     _save_tile_array(
@@ -452,9 +473,13 @@ def _write_blank_tile(
         output_dir / "dish_nucleus_mask" / f"{tile_name}.tiff",
         np.zeros((th, tw), dtype=np.int32),
     )
+    blank_overlay = np.full((ch, cw, 3), fill, dtype=np.uint8)
+    draw_tile_seam_edges(
+        blank_overlay, right=seam_edges[0], bottom=seam_edges[1]
+    )
     _save_tile_array(
         output_dir / "overlay_annotated" / f"{tile_name}.tiff",
-        np.full((ch, cw, 3), fill, dtype=np.uint8),
+        blank_overlay,
     )
 
 
@@ -560,7 +585,6 @@ def _process_one_chunk_gpu(
         core_mask=core_mask,
         masked_ihc=m1.masked_ihc,
         dish_mask_overlay=m1.dish_mask_overlay,
-        overlay_image=m1.overlay_image,
         instance_mask=instance_mask,
         matching_mask=matching_mask,
         dish_nucleus_mask=dish_nucleus_mask,
@@ -590,7 +614,6 @@ def _finish_chunk_cpu(gs: _ChunkGpuState) -> ChunkResult:
         core_mask=gs.core_mask,
         masked_ihc=gs.masked_ihc,
         dish_mask_overlay=gs.dish_mask_overlay,
-        overlay_image=gs.overlay_image,
         results=results,
         all_dots=all_dots,
         per_cell_dots=per_cell_dots,

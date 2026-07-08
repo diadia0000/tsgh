@@ -313,6 +313,35 @@ def _dashed_segment(
             cv2.line(canvas, (x, y1), (min(x + dash, x2), y1), color, thickness)
 
 
+# tile 核心裁切已由 render_overlay_image 轉回 RGB，故此接縫色為 RGB（藍），
+# 與檔案上方 BGR 顏色常數不同色序。
+_COLOR_TILE_SEAM = (0, 0, 255)
+
+
+def draw_tile_seam_edges(
+    crop: np.ndarray,
+    *,
+    right: bool,
+    bottom: bool,
+    color: Tuple[int, int, int] = _COLOR_TILE_SEAM,
+    thickness: int = 2,
+    dash: int = 22,
+    gap: int = 14,
+) -> None:
+    """在 tile 核心裁切（RGB）的內部接縫邊就地畫藍色虛線。
+
+    只畫右 / 下邊（接縫的左 / 上側 owner）：拼回 overlay_slide 後，這些邊恰落在相鄰
+    tile 的接縫（``geometry.cuts_x`` / ``cuts_y``）上，成為 tile 邊界的視覺參考。
+    ``right`` / ``bottom`` 由 caller 依 ``edge_flags`` 判定——碰觸真實 slide 邊的邊不畫；
+    左 / 上邊交由相鄰 tile 的右 / 下邊負責，避免同一接縫重畫。
+    """
+    h, w = crop.shape[:2]
+    if right:
+        _dashed_segment(crop, (w - 1, 0), (w - 1, h), color, thickness, dash, gap)
+    if bottom:
+        _dashed_segment(crop, (0, h - 1), (w, h - 1), color, thickness, dash, gap)
+
+
 def stamp_grid_on_overlays(
     output_dir: Path,
     tile_size: int,
