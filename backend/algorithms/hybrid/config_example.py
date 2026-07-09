@@ -199,7 +199,7 @@ class Config:
     window_overlap_px: int = 256
     # 重疊去重門檻：兩 instance 交集 / min(面積) ≥ 此值即視為同一顆（保留較大者）。
     window_dedup_iomin: float = 0.5
-    # 在所有 overlay tiff 上畫出 1k 視窗虛線格（視覺參考用；重疊視窗下非單一接縫線）。
+    # 在 overlay_slide 的 tile 接縫（core-crop 邊界）畫藍色虛線，作為 tile 邊界視覺參考。
     draw_window_grid: bool = True
 
     # ========== 追溯性欄位 ==========

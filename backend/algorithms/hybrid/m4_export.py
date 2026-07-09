@@ -7,6 +7,7 @@ Available:
   export_overlay_visualization  → m4_module.overlay
   render_overlay_image          → m4_module.overlay
   export_dot_only_visualization → m4_module.overlay
+  draw_tile_seam_edges          → m4_module.overlay
   stamp_grid_on_overlays        → m4_module.overlay
   export_tile_csv               → m4_module.csv
   export_summary_statistics     → m4_module.csv
@@ -25,6 +26,7 @@ try:
         write_summary_csv,
     )
     from .m4_module.overlay import (
+        draw_tile_seam_edges,
         export_dot_only_visualization,
         export_overlay_visualization,
         render_overlay_image,
@@ -42,6 +44,7 @@ except ImportError:
         write_summary_csv,
     )
     from m4_module.overlay import (
+        draw_tile_seam_edges,
         export_dot_only_visualization,
         export_overlay_visualization,
         render_overlay_image,
@@ -50,6 +53,7 @@ except ImportError:
 
 __all__ = [
     "DotStatsSummary",
+    "draw_tile_seam_edges",
     "export_cell_dot_annotations",
     "export_dot_only_visualization",
     "export_overlay_visualization",

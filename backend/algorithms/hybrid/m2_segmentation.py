@@ -245,52 +245,6 @@ def _has_overlap_dup(
 # 分割入口
 # ------------------------------------------------------------------
 
-def segment_masked_dish(
-    masked_overlay_image: np.ndarray,
-    segmenter: CellposeSegmenter,
-    remove_border: bool = True,
-    tile_size: int = 1024,
-    overlap: int = 256,
-    dedup_iomin: float = 0.5,
-) -> np.ndarray:
-    """在 IHC-DISH 疊合影像上以重疊視窗 Cellpose 分割 + 去重。
-
-    傳入的應為經 ``fuse_masked_ihc_with_dish`` 產生的
-    IHC-DISH 50/50 alpha blending 疊合影像，
-    非 ROI 區域已填充為背景值。
-
-    分割以 ``tile_size`` 重疊視窗逐塊推論後去重（見 ``segment_windowed``）；
-    ``remove_border`` 在去重完成的全域 mask 上清邊，因此只會移除碰觸 patch
-    「真實外緣」的細胞，跨視窗邊界的細胞已在重疊視窗內完整偵測、不受影響。
-
-    Args:
-        masked_overlay_image: shape ``(H, W, 3)``、``uint8``。
-            IHC-DISH 疊合影像。
-        segmenter: 已初始化的 ``CellposeSegmenter``。
-        remove_border: 是否移除碰觸 patch 外緣的細胞。
-        tile_size: 視窗邊長（pixels）。
-        overlap: 相鄰視窗重疊寬度（pixels）。
-        dedup_iomin: 重疊去重門檻（交集/min(面積)）。
-
-    Returns:
-        shape ``(H, W)``、``int32`` 實例遮罩 (背景=0)。
-    """
-    instance_mask = segment_windowed(
-        masked_overlay_image,
-        segmenter,
-        tile_size=tile_size,
-        overlap=overlap,
-        dedup_iomin=dedup_iomin,
-    )
-
-    if remove_border:
-        instance_mask = _remove_border_cells(instance_mask)
-
-    num_cells = len(np.unique(instance_mask)) - 1  # 扣除背景 0
-    logger.info("Cellpose 分割完成: %d 個有效細胞", num_cells)
-    return instance_mask
-
-
 def _remove_border_cells(instance_mask: np.ndarray) -> np.ndarray:
     """移除碰觸影像邊界的細胞，並重新編號。
 
