@@ -8,8 +8,8 @@ dependencies = [
     "cellpose",
     "segmentation-models-pytorch",
     "timm",
-    "torch",
-    "torchvision",
+    "torch==2.11.0",
+    "torchvision==0.26.0",
     "albumentations",
     "opencv-contrib-python-headless<4.9",
     "scikit-image",
@@ -53,3 +53,15 @@ override-dependencies = [
     "opencv-contrib-python<4.9",
     "opencv-python<4.9",
 ]
+
+# Pin torch/torchvision to the CUDA 13.0 wheels (matches the validated venv:
+# torch 2.11.0+cu130 / torchvision 0.26.0+cu130). explicit = true means this
+# index is used ONLY for the packages mapped below; everything else stays on PyPI.
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
