@@ -68,7 +68,11 @@ def _rec(bucket: str, dt: float, extra: dict | None = None):
 
 def wrap(module, name: str, bucket: str, bytes_of=None):
     """Wrap module.name with a perf_counter timer accumulating into bucket."""
-    orig = getattr(module, name)
+    orig = getattr(module, name, None)
+    if orig is None:
+        # Namespace moved (pipeline refactor): skip rather than crash the run.
+        print(f"[perf_measure] skip wrap: {module.__name__}.{name} not found")
+        return None
 
     @functools.wraps(orig)
     def shim(*a, **k):
