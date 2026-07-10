@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
+from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -27,6 +28,19 @@ except ImportError:
     from hybrid_data_types import DetectedDot  # noqa: F401 (re-exported)
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=None)
+def _disk_footprint(radius: int) -> np.ndarray:
+    """Cached morphology disk footprint. ``disk(r)`` is a pure function of ``r``;
+    every caller here uses the result read-only as a ``binary_dilation`` footprint,
+    so one shared (read-only) array per radius is bit-exact and avoids reallocating
+    the structuring element for every cell / candidate blob inside one
+    ``detect_all_dots`` call (``seed_dilate`` / ``ring_gap`` / ``ring_width`` are all
+    config constants for the whole call)."""
+    fp = disk(radius)
+    fp.setflags(write=False)
+    return fp
 
 
 # ------------------------------------------------------------------
@@ -69,7 +83,7 @@ def _detect_red_dots(
     if not peak_mask.any():
         return []
 
-    dot_region = binary_dilation(peak_mask, disk(seed_dilate))
+    dot_region = binary_dilation(peak_mask, _disk_footprint(seed_dilate))
     dot_region &= (a_masked >= a_min) & cell_roi
 
     if not dot_region.any():
@@ -172,7 +186,7 @@ def _detect_black_dots(
     if not pit_mask.any():
         return []
 
-    dot_region = binary_dilation(pit_mask, disk(seed_dilate))
+    dot_region = binary_dilation(pit_mask, _disk_footprint(seed_dilate))
     dot_region &= (L_masked <= l_max) & cell_roi
 
     if not dot_region.any():
@@ -325,8 +339,8 @@ def _compute_ring_stats(
     rows_abs, cols_abs = blob_pixels_rc
     local_blob[rows_abs - lr0, cols_abs - lc0] = True
 
-    inner = binary_dilation(local_blob, disk(max(ring_gap, 0)))
-    outer = binary_dilation(local_blob, disk(max(ring_gap + ring_width, 1)))
+    inner = binary_dilation(local_blob, _disk_footprint(max(ring_gap, 0)))
+    outer = binary_dilation(local_blob, _disk_footprint(max(ring_gap + ring_width, 1)))
     ring = outer & (~inner)
     ring &= cell_roi[lr0:lr1, lc0:lc1]
     ring &= ~bg_mask[lr0:lr1, lc0:lc1]
