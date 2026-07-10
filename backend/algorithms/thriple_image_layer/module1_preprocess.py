@@ -319,7 +319,6 @@ class CziPreprocessor:
                     pyramid=True,        # 生成金字塔層級
                     subifd=True,         # 使用 SubIFD 格式存放金字塔層級 (VALIS 相容)
                     Q=100
-
                 )
                 
                 size_gb = os.path.getsize(out_path) / (1024**3)

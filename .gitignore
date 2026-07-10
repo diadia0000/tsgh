@@ -19,7 +19,6 @@ models/
 dish_cellpose_v*
 config.py
 tile/*
-uv.lock
 skills-lock.json
 .codegraph/
 .claude/worktrees/
