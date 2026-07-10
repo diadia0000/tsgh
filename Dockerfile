@@ -12,31 +12,31 @@
 #     runtime hook 與系統 CUDA；若要縮小體積可改用 -runtime 版。
 FROM nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04
 
+# uv：在 build cache 掛載下用 copy 避免 hardlink 警告，並預先編譯 bytecode
+# 將 venv 放在 /app 之外，避免 docker-compose 的 .:/app 掛載把它蓋掉
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     TZ=Asia/Taipei \
-    # uv：在 build cache 掛載下用 copy 避免 hardlink 警告，並預先編譯 bytecode
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
-    # 將 venv 放在 /app 之外，避免 docker-compose 的 .:/app 掛載把它蓋掉
     UV_PROJECT_ENVIRONMENT=/opt/venv
 
 # ============================================================
 # 系統依賴（影像處理 / WSI / bioformats 的 Java）
 # 這些是 pip wheel 在執行期動態載入的原生函式庫。
 # ============================================================
+# OpenCV / OpenGL runtime（Ubuntu 24.04：libgl1-mesa-glx 已移除）
+# libvips（Ubuntu 24.04 為 t64 ABI）— pyvips 執行期需要
+# OpenSlide（openslide-bin 已內含 binary，這裡保留系統版本較保險）
+# Java 17：scyjava / bioformats（valis-wsi、wsireg）
+# 少數套件可能需由 sdist 編譯
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates git curl \
-      # OpenCV / OpenGL runtime（Ubuntu 24.04：libgl1-mesa-glx 已移除）
       libgl1 libglx-mesa0 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 \
-      # libvips（Ubuntu 24.04 為 t64 ABI）— pyvips 執行期需要
       libvips42t64 libvips-dev \
-      # OpenSlide（openslide-bin 已內含 binary，這裡保留系統版本較保險）
       libopenslide0 \
-      # Java 17：scyjava / bioformats（valis-wsi、wsireg）
       openjdk-17-jre-headless \
-      # 少數套件可能需由 sdist 編譯
       build-essential \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
