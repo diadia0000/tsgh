@@ -620,31 +620,6 @@ def _finish_chunk_cpu(gs: _ChunkGpuState) -> ChunkResult:
     )
 
 
-def _process_one_chunk(
-    ihc: np.ndarray,
-    dish: np.ndarray,
-    abs_x: int,
-    abs_y: int,
-    edge_flags: tuple,
-    unet_inferencer: object,
-    cellpose_segmenter: CellposeSegmenter,
-    dish_cellpose_segmenter: CellposeSegmenter,
-) -> Optional[ChunkResult]:
-    """單一分塊 M1→M2→M3（同步版）；回傳 ``ChunkResult``，核心遮罩全空則 None。
-
-    行為與拆分前一致：GPU 前段（``_process_one_chunk_gpu``）接 CPU 後段
-    （``_finish_chunk_cpu``）。批次管線改走兩段式重疊調度、不經此函式；此函式保留給
-    單塊 / 回歸測試等同步呼叫路徑。
-    """
-    gs = _process_one_chunk_gpu(
-        ihc, dish, abs_x, abs_y, edge_flags,
-        unet_inferencer, cellpose_segmenter, dish_cellpose_segmenter,
-    )
-    if gs is None:
-        return None
-    return _finish_chunk_cpu(gs)
-
-
 def _run_m1_overlay_stage(
     ihc_image: np.ndarray,
     dish_image: np.ndarray,
@@ -905,8 +880,6 @@ def _stitch_overlay_slide(output_dir: Path, geometry: TileGeometry) -> None:
         str(output_dir / "overlay_slide.tiff"),
         tile=True,
         pyramid=True,
-        tile_width=256,
-        tile_height=256,
         compression="lzw",
         bigtiff=True,
     )
