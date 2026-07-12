@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+/* Honest indeterminate progress: a bar that slides across, signalling "working"
+   without claiming a percentage we don't have (see PipelinePanel). */
+@keyframes indeterminate-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+.animate-indeterminate {
+  animation: indeterminate-slide 1.4s ease-in-out infinite;
+}
