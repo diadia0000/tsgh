@@ -11,10 +11,15 @@ import shutil
 import logging
 import numpy as np
 import albumentations as A
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from pathlib import Path
 from skimage.io import imread
 from cellpose import models, train
-
+from torch import cuda
+device = 'cuda' if cuda.is_available() else 'cpu'
+print(device)
 # 設定 logging 讓訓練進度可見
 logging.basicConfig(
     level=logging.INFO,
@@ -31,18 +36,18 @@ logging.getLogger('cellpose').setLevel(logging.INFO)
 BASE_DIR = Path(__file__).resolve().parent
 
 # 訓練資料目錄
-TRAIN_DATA_DIR = BASE_DIR / "train" / "train_data"      # npy 標註檔
-TRAIN_IMAGE_DIR = BASE_DIR / "train" / "train_picture"   # tiff 圖片檔
+TRAIN_DATA_DIR = BASE_DIR / "train" / "dish_mask_tile"      # npy 標註檔
+TRAIN_IMAGE_DIR = BASE_DIR / "train" / "dish_mask_tile"   # png 圖片檔
 MODEL_DIR = str(BASE_DIR / "models")                     # 模型輸出目錄
 
 # 訓練參數
-MODEL_NAME = "cellpose_ihc_dish"   # 模型名稱
+MODEL_NAME = "cellpose_dish"   # 模型名稱
 # 使用之前訓練的模型繼續訓練 (設為 None 或 "cyto3" 則從頭開始)
-INITIAL_MODEL = "cyto3"  # 繼續訓練
-N_EPOCHS = 250 # 訓練輪數
-LEARNING_RATE = 2e-4  
+INITIAL_MODEL = "cpdino-vitb"  # 繼續訓練
+N_EPOCHS = 120 # 訓練輪數
+LEARNING_RATE = 1e-4  
 WEIGHT_DECAY = 1e-4 # 或是 1e-4
-BATCH_SIZE = 8 # 批次大小
+BATCH_SIZE = 3 # 批次大小
 MIN_TRAIN_MASKS = 4 # 最少訓練 mask 數量
 
 # 資料增強參數
@@ -175,13 +180,19 @@ def prepare_training_data() -> tuple[list, list, list]:
 # ==================== Best Model 選擇 ====================
 
 def select_best_model(model_dir: str, model_name: str,
-                      train_losses: np.ndarray) -> tuple[str, int, float]:
-    """從所有 checkpoint 中選出 training loss 最低的作為 best model。
+                      train_losses: np.ndarray,
+                      test_losses: np.ndarray) -> tuple[str, int, float]:
+    """從所有 checkpoint 中選出 validation loss 最低的作為 best model。
+
+    Cellpose 只在 epoch 5 及每 10 個 epoch 評估驗證集，未評估的 epoch
+    test_losses 為 0，這些 checkpoint 不列入挑選 (含最後一個 epoch)。
+    若完全沒有驗證資料則退回用 training loss 挑選。
 
     Args:
         model_dir: 模型儲存目錄。
         model_name: 模型名稱前綴。
         train_losses: 每個 epoch 的 training loss 陣列。
+        test_losses: 每個 epoch 的 validation loss 陣列 (未評估的為 0)。
 
     Returns:
         (best_model_path, best_epoch, best_loss) 三元組。
@@ -211,16 +222,26 @@ def select_best_model(model_dir: str, model_name: str,
         print("  未找到任何 checkpoint")
         return str(final_model), len(train_losses) - 1, train_losses[-1]
 
-    # 找最低 loss 的 epoch
-    best_epoch = min(candidates, key=lambda e: train_losses[e])
-    best_loss = train_losses[best_epoch]
+    # 只從有評估過驗證集的 epoch 中挑選 (test_losses > 0)
+    scored = [e for e in candidates if test_losses[e] > 0]
+    if scored:
+        losses = test_losses
+        loss_name = "val loss"
+    else:
+        print("  無驗證 loss 可用，退回以 train loss 挑選")
+        scored = list(candidates)
+        losses = train_losses
+        loss_name = "train loss"
+
+    best_epoch = min(scored, key=lambda e: losses[e])
+    best_loss = losses[best_epoch]
     best_src = candidates[best_epoch]
 
     # 複製為 best model
     best_dst = str(model_path / f"{model_name}_best")
     shutil.copy2(best_src, best_dst)
 
-    print(f"\n  Best model: epoch {best_epoch + 1}, loss = {best_loss:.4f}")
+    print(f"\n  Best model: epoch {best_epoch + 1}, {loss_name} = {best_loss:.4f}")
     print(f"  來源: {Path(best_src).name}")
     print(f"  儲存: {best_dst}")
 
@@ -233,6 +254,42 @@ def select_best_model(model_dir: str, model_name: str,
     print(f"  已清除 {removed} 個非最佳 checkpoint")
 
     return best_dst, best_epoch, best_loss
+
+
+# ==================== Loss 曲線 ====================
+
+def plot_losses(train_losses: np.ndarray, test_losses: np.ndarray,
+                out_path: Path) -> None:
+    """繪製 train / validation loss 曲線並存檔。
+
+    Cellpose 只在 epoch 5 及每 10 個 epoch 評估驗證集，其餘 epoch 的
+    test_losses 保持為 0，因此驗證曲線只取非 0 的點。
+
+    Args:
+        train_losses: 每個 epoch 的 training loss。
+        test_losses: 每個 epoch 的 validation loss (未評估的 epoch 為 0)。
+        out_path: 圖檔輸出路徑。
+    """
+    epochs = np.arange(1, len(train_losses) + 1)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(epochs, train_losses, label="train loss", color="tab:blue")
+
+    val_mask = test_losses > 0
+    if val_mask.any():
+        ax.plot(epochs[val_mask], test_losses[val_mask], label="val loss",
+                color="tab:orange", marker="o", markersize=4)
+
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.set_title(f"{MODEL_NAME} training curve")
+    ax.legend()
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+    print(f"  Loss 曲線: {out_path}")
 
 
 # ==================== 訓練函數 ====================
@@ -308,11 +365,13 @@ def train_cellpose_model(
     print(f"\n訓練 Loss 範圍: {train_losses.min():.4f} ~ {train_losses.max():.4f}")
     print(f"最終 Loss (epoch {N_EPOCHS}): {train_losses[-1]:.4f}")
 
+    plot_losses(train_losses, test_losses, Path(MODEL_DIR) / f"{MODEL_NAME}_loss.png")
+
     # 選出 best model
     print("\n" + "-" * 40)
     print("選擇最佳模型...")
     best_path, best_epoch, best_loss = select_best_model(
-        MODEL_DIR, MODEL_NAME, train_losses
+        MODEL_DIR, MODEL_NAME, train_losses, test_losses
     )
 
     print("\n" + "=" * 60)
