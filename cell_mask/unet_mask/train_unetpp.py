@@ -25,33 +25,13 @@ from tqdm import tqdm
 import matplotlib
 matplotlib.use('Agg')  # headless 環境只存檔,不開 GUI 視窗
 import matplotlib.pyplot as plt
-
+from .config import Config
 # 設定 logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-
-def load_config():
-    """
-    載入配置檔案
-    
-    Returns:
-        Config: 配置物件
-    
-    Raises:
-        ImportError: 若 config.py 不存在
-    """
-    try:
-        from config import config
-        return config
-    except ImportError:
-        raise ImportError(
-            "找不到 config.py！\n"
-            "請複製 config_example.py 為 config.py 並設定參數"
-        )
 
 
 class HER2MembraneDataset(Dataset):
@@ -584,7 +564,7 @@ def plot_training_history(history: Dict[str, List[float]], save_path: Path) -> N
 def main() -> None:
     """主程式入口"""
     # 載入配置
-    config = load_config()
+    config = Config()
     
     logger.info("=" * 60)
     logger.info("UNet++ HER2 細胞膜分割訓練")
