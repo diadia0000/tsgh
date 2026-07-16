@@ -2,9 +2,8 @@
   "mcpServers": {
     "codegraph": {
       "type": "stdio",
-      "command": "/home/sec312/.nvm/versions/node/v22.23.1/bin/node",
+      "command": "codegraph",
       "args": [
-        "/home/sec312/.nvm/versions/node/v22.23.1/lib/node_modules/@colbymchenry/codegraph/node_modules/@colbymchenry/codegraph-linux-x64/lib/dist/bin/codegraph.js",
         "serve",
         "--mcp"
       ]

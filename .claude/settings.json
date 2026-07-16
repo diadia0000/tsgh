@@ -27,7 +27,8 @@
       "Bash(PATH=/home/sec312/.nvm/versions/node/v22.23.1/bin:__TRACKED_VAR__ /home/sec312/.nvm/versions/node/v22.23.1/bin/codegraph status)",
       "Bash(timeout 5 /home/sec312/.nvm/versions/node/v22.23.1/bin/codegraph serve --mcp)",
       "Bash(/home/sec312/.nvm/versions/node/v22.23.1/bin/codegraph status *)",
-      "Bash(npm rebuild *)"
+      "Bash(npm rebuild *)",
+      "mcp__codegraph__*"
     ],
     "additionalDirectories": [
       "/home/sec312/project/tsgh/thriple_image_layer",
@@ -40,5 +41,17 @@
   "enabledPlugins": {
     "felo-search@felo-ai": true,
     "felo-livedoc@felo-ai": true
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "codegraph prompt-hook"
+          }
+        ]
+      }
+    ]
   }
 }

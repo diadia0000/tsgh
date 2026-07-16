@@ -6,6 +6,7 @@ Don't jump straight into edits, and don't reach for grep. Query *before*
 coding, not while coding.
 
 ## Intent → tool
+- Sync the repository first `codegraph sync`
 - Find a symbol by name → `codegraph_search`
 - Understand a feature/area as a whole → `codegraph_context` (primary; one call
   composes search + node + callers + callees)
@@ -26,3 +27,12 @@ Symbols, definitions, and callers always go through codegraph.
   for the next turn.
 - Unsure of a symbol's name? Start with `codegraph_search`, then `codegraph_node`
   / `codegraph_context` as needed.
+
+## CodeGraph
+
+In repositories indexed by CodeGraph (a `.codegraph/` directory exists at the repo root), reach for it BEFORE grep/find or reading files when you need to understand or locate code:
+
+- **MCP tool** (when available): `codegraph_explore` answers most code questions in one call — the relevant symbols' verbatim source plus the call paths between them, including dynamic-dispatch hops grep can't follow. Name a file or symbol in the query to read its current line-numbered source. If it's listed but deferred, load it by name via tool search.
+- **Shell** (always works): `codegraph explore "<symbol names or question>"` prints the same output.
+
+If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is the user's decision.

@@ -42,12 +42,12 @@ MODEL_DIR = str(BASE_DIR / "models")                     # 模型輸出目錄
 
 # 訓練參數
 MODEL_NAME = "cellpose_dish"   # 模型名稱
-# 使用之前訓練的模型繼續訓練 (設為 None 或 "cyto3" 則從頭開始)
+# 使用之前訓練的模型繼續訓練 (設為 None 或 "內建模型" 則從頭開始)
 INITIAL_MODEL = "cpdino-vitb"  # 繼續訓練
 N_EPOCHS = 120 # 訓練輪數
 LEARNING_RATE = 1e-4  
 WEIGHT_DECAY = 1e-4 # 或是 1e-4
-BATCH_SIZE = 3 # 批次大小
+BATCH_SIZE = 8 # 批次大小
 MIN_TRAIN_MASKS = 4 # 最少訓練 mask 數量
 
 # 資料增強參數
@@ -324,8 +324,8 @@ def train_cellpose_model(
         pretrained_model=INITIAL_MODEL
     )
 
-    # 切分 train / test (90% / 10%)
-    split_idx = int(len(images) * 0.9)
+    # 切分 train / test (80% / 20%)
+    split_idx = int(len(images) * 0.8)
     train_images = images[:split_idx]
     train_masks = masks[:split_idx]
     test_images = images[split_idx:]
