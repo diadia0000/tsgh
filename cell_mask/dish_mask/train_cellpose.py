@@ -64,7 +64,7 @@ COLOR_AUGMENTATION = A.Compose([
         contrast=0.15,            # 對比度變化 ±15%
         saturation=0.1,           # 飽和度變化 ±10%
         hue=0.05,                 # 色調變化 ±5%
-        p=0.5                     # 50% 機率套用
+        p=0.4                     # 50% 機率套用
     ),
     A.GaussNoise(
         std_range=(0.02, 0.1),    # 高斯雜訊 (正規化範圍 0-1)
@@ -150,20 +150,14 @@ def prepare_training_data() -> tuple[list, list, list]:
     for seg_file in seg_files:
         base_name = seg_file.stem.replace("_seg", "")
         # 支援 tiff 和 png 格式
-        image_file = TRAIN_IMAGE_DIR / f"{base_name}.tiff"
-        if not image_file.exists():
-            image_file = TRAIN_IMAGE_DIR / f"{base_name}.png"
+        image_file = TRAIN_IMAGE_DIR / f"{base_name}.png"
         if not image_file.exists():
             print(f"  跳過 (無對應圖片): {base_name}")
             continue
 
         img = imread(str(image_file))
         seg_data = np.load(str(seg_file), allow_pickle=True).item()
-        mask = seg_data.get('masks', None)
-
-        if mask is None:
-            continue
-
+        mask = seg_data.get('masks')
         n_objects = len(np.unique(mask)) - 1
         if n_objects < MIN_TRAIN_MASKS:
             continue
@@ -186,7 +180,6 @@ def select_best_model(model_dir: str, model_name: str,
 
     Cellpose 只在 epoch 5 及每 10 個 epoch 評估驗證集，未評估的 epoch
     test_losses 為 0，這些 checkpoint 不列入挑選 (含最後一個 epoch)。
-    若完全沒有驗證資料則退回用 training loss 挑選。
 
     Args:
         model_dir: 模型儲存目錄。
@@ -212,15 +205,9 @@ def select_best_model(model_dir: str, model_name: str,
 
     # 各 checkpoint
     for ckpt in model_path.glob(f"{model_name}_epoch_*"):
-        try:
-            epoch = int(ckpt.stem.split("_epoch_")[-1])
-            candidates[epoch] = str(ckpt)
-        except ValueError:
-            continue
+        epoch = int(ckpt.stem.split("_epoch_")[-1])
+        candidates[epoch] = str(ckpt)
 
-    if not candidates:
-        print("  未找到任何 checkpoint")
-        return str(final_model), len(train_losses) - 1, train_losses[-1]
 
     # 只從有評估過驗證集的 epoch 中挑選 (test_losses > 0)
     scored = [e for e in candidates if test_losses[e] > 0]
@@ -228,10 +215,7 @@ def select_best_model(model_dir: str, model_name: str,
         losses = test_losses
         loss_name = "val loss"
     else:
-        print("  無驗證 loss 可用，退回以 train loss 挑選")
-        scored = list(candidates)
-        losses = train_losses
-        loss_name = "train loss"
+        raise ValueError("沒有可用的驗證資料，無法選擇最佳模型。")
 
     best_epoch = min(scored, key=lambda e: losses[e])
     best_loss = losses[best_epoch]
@@ -323,6 +307,12 @@ def train_cellpose_model(
         gpu=True,
         pretrained_model=INITIAL_MODEL
     )
+
+    # 切分前先打亂，避免 val set 只是檔名排序的最後 20%（分佈偏差）
+    # 固定 seed：每次 run 都是同一份 val set，實驗才可比、best model 的 val loss 才有意義
+    perm = np.random.default_rng(42).permutation(len(images))
+    images = [images[i] for i in perm]
+    masks = [masks[i] for i in perm]
 
     # 切分 train / test (80% / 20%)
     split_idx = int(len(images) * 0.8)
