@@ -10,7 +10,7 @@ URL layout is the DeepZoom convention OpenSeadragon expects out of the box:
 """
 from fastapi import APIRouter, HTTPException, Response
 
-from backend.io import pyramid
+from backend import pyramid
 
 router = APIRouter(prefix="/api/tiles")
 
