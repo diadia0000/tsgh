@@ -28,7 +28,31 @@ def _patch_valis_pickle():
     registration.Valis.__getstate__ = _safe_getstate
 
 
+def _patch_transformix_moving_image():
+    """Attach a blank MovingImage before transformix computes a deformation field.
+
+    SimpleElastix 3.0.0a1 requires TransformixImageFilter to have a MovingImage set
+    even when only computing a deformation field. valis 1.2.0's run_elastix targets
+    older builds and never sets one before Execute (non_rigid_registrars.py:868), so
+    non-rigid registration crashes with "Input MovingImage is required but not set".
+    Auto-attach a blank image sized from the transform parameter map whenever the map
+    is set; valis's own later SetMovingImage (grid warp) overrides it.
+    """
+    import SimpleITK as sitk
+
+    _orig_set = sitk.TransformixImageFilter.SetTransformParameterMap
+
+    def _set_with_blank_moving(self, pmap):
+        _orig_set(self, pmap)
+        last = pmap[-1] if isinstance(pmap, (tuple, list)) else pmap
+        size = [int(s) for s in last["Size"]]
+        self.SetMovingImage(sitk.Image(size, sitk.sitkFloat32))
+
+    sitk.TransformixImageFilter.SetTransformParameterMap = _set_with_blank_moving
+
+
 _patch_valis_pickle()
+_patch_transformix_moving_image()
 
 
 def _build_elastix_params(max_image_dim_px: int):
