@@ -47,8 +47,8 @@ def generate_triple_tiles(config: RegistrationConfig, level: int = 0) -> None:
     temp_dir = config.temp_dir
     tile_config = config.tile
 
-    her2_tiff = temp_dir / f"her2_warped_lv{level}.ome.tiff"
-    dish_tiff = temp_dir / f"dish_warped_lv{level}.ome.tiff"
+    her2_tiff = temp_dir / f"her2_warped_lv{level}.tiff"
+    dish_tiff = temp_dir / f"dish_warped_lv{level}.tiff"
     merged_tiff = output_dir / f"Merged_Aligned_lv{level}.tiff"
     tile_output_dir = output_dir / f"tiles_lv{level}-{tile_config.tile_width}"
 

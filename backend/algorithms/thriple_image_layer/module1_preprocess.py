@@ -20,18 +20,6 @@ from typing import List, Dict, Any, Tuple
 import numpy as np
 import pyvips
 import aicspylibczi
-
-# 動態設定 concurrency（不同 pyvips 版本 API 不一樣，逐一嘗試）
-for _setter in (
-    lambda n: pyvips.base.concurrency_set(n),
-    lambda n: pyvips.voperation.concurrency_set(n),
-    lambda n: pyvips.concurrency_set(n),
-):
-    try:
-        _setter(_VIPS_THREADS)
-        break
-    except AttributeError:
-        continue
 from tqdm import tqdm
 import gc
 try:
@@ -318,7 +306,7 @@ class CziPreprocessor:
                     bigtiff=True,        # 支援大於 4GB 檔案
                     pyramid=True,        # 生成金字塔層級
                     subifd=True,         # 使用 SubIFD 格式存放金字塔層級 (VALIS 相容)
-                    Q=100
+                    Q=95,
                 )
                 
                 size_gb = os.path.getsize(out_path) / (1024**3)

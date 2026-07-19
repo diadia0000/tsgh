@@ -88,20 +88,6 @@ def main() -> None:
         print(f"✗ Module 4 失敗: {e}")
         sys.exit(1)
 
-    # Module 5: Tile Generation (optional)
-    if args.tiles:
-        print("\n[Module 5] 切割 Tiles...")
-        try:
-            try:
-                from .module5_tile_generator import generate_triple_tiles
-            except ImportError:
-                from module5_tile_generator import generate_triple_tiles
-            generate_triple_tiles(config, level=0)
-            print("✓ Module 5 完成")
-        except Exception as e:
-            print(f"✗ Module 5 失敗: {e}")
-            sys.exit(1)
-
     print("\n" + "=" * 60)
     print("完整流程執行完畢")
     print(f"結果儲存於: {config.output_dir}")

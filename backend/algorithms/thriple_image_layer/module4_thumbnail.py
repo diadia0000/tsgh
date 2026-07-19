@@ -45,48 +45,60 @@ def generate_thumbnail(
     dish_obj = registrar.slide_dict[dish_key]
     her2_obj = registrar.slide_dict[her2_key]
 
-    # 使用 warp_and_save_slide 直接儲存到暫存檔案，避免大型陣列佔用記憶體
+    # 使用 warp_slide + tiffsave(subifd=False) 直接儲存到暫存檔案，避免大型陣列佔用記憶體。
+    # 不走 warp_and_save_slide：它內部的 valis.slide_io.save_ome_tiff 把 subifd 綁死等於
+    # pyramid（見 <venv>/valis/slide_io.py:3685），OpenSlide 讀不到金字塔，OSD 開圖會把後端讀爆
+    # （docs/UI/09-viewer-tiff-subifd.md 的事故）。這兩份暫存檔只會被下面的 pyvips 直讀，不會再
+    # 餵回 VALIS，所以不需要 OME-TIFF/subifd，直接存成 OpenSlide 看得懂的一般金字塔 TIFF。
     temp_dir = config.temp_dir
     temp_dir.mkdir(exist_ok=True)
 
-    # VALIS 會自動將檔名改為 .ome.tiff
-    dish_temp_ome = temp_dir / f"dish_warped_lv{level}.ome.tiff"
-    her2_temp_ome = temp_dir / f"her2_warped_lv{level}.ome.tiff"
+    dish_temp = temp_dir / f"dish_warped_lv{level}.tiff"
+    her2_temp = temp_dir / f"her2_warped_lv{level}.tiff"
 
     # 檢查 DISH 暫存檔案是否存在
-    if dish_temp_ome.exists():
-        print(f"找到現有的 DISH 暫存檔案，跳過重新生成: {dish_temp_ome.name}")
+    if dish_temp.exists():
+        print(f"找到現有的 DISH 暫存檔案，跳過重新生成: {dish_temp.name}")
     else:
         print(f"對齊並儲存 DISH 影像 (non_rigid={use_non_rigid})...")
-        dish_temp = temp_dir / f"dish_warped_lv{level}.tiff"
-        dish_obj.warp_and_save_slide(
+        dish_warped = dish_obj.warp_slide(level=level, non_rigid=True, crop="overlap")
+        dish_warped.tiffsave(
             str(dish_temp),
-            level=level,
-            non_rigid=True,
-            crop="overlap",
             compression='jpeg',
+            Q=95,
+            rgbjpeg=True,
+            tile=True,
+            tile_width=512,
+            tile_height=512,
             pyramid=True,
+            subifd=False,
+            bigtiff=True,
         )
 
     # 檢查 HER2 暫存檔案是否存在
-    if her2_temp_ome.exists():
-        print(f"找到現有的 HER2 暫存檔案，跳過重新生成: {her2_temp_ome.name}")
+    if her2_temp.exists():
+        print(f"找到現有的 HER2 暫存檔案，跳過重新生成: {her2_temp.name}")
     else:
-        print("對齊並儲存 HER2 影像 (non_rigid=True)...")
-        her2_temp = temp_dir / f"her2_warped_lv{level}.tiff"
-        her2_obj.warp_and_save_slide(
+        print("對齊並儲存 HER2 影像 (non_rigid=False)...")
+        her2_warped = her2_obj.warp_slide(level=level, non_rigid=False, crop="overlap")
+        her2_warped.tiffsave(
             str(her2_temp),
-            level=level,
-            non_rigid=False,
-            crop="overlap",
             compression='jpeg',
+            Q=95,
+            lossless=True,
+            rgbjpeg=True,
+            tile=True,
+            tile_width=512,
+            tile_height=512,
             pyramid=True,
+            subifd=False,
+            bigtiff=True,
         )
-    
+
     # 使用 pyvips 讀取並合併（串流處理，不會一次載入全部記憶體）
     print(f"合併影像中 (使用一般 0.5/0.5 融合)...")
-    dish_vips = pyvips.Image.new_from_file(str(dish_temp_ome), access='random')
-    her2_vips = pyvips.Image.new_from_file(str(her2_temp_ome), access='random')
+    dish_vips = pyvips.Image.new_from_file(str(dish_temp), access='random')
+    her2_vips = pyvips.Image.new_from_file(str(her2_temp), access='random')
     
     # 記錄原始尺寸（用於最終裁剪）
     target_width = dish_vips.width

@@ -17,9 +17,6 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from skimage.io import imread
 from cellpose import models, train
-from torch import cuda
-device = 'cuda' if cuda.is_available() else 'cpu'
-print(device)
 # 設定 logging 讓訓練進度可見
 logging.basicConfig(
     level=logging.INFO,
@@ -36,19 +33,19 @@ logging.getLogger('cellpose').setLevel(logging.INFO)
 BASE_DIR = Path(__file__).resolve().parent
 
 # 訓練資料目錄
-TRAIN_DATA_DIR = BASE_DIR / "train" / "dish_mask_tile"      # npy 標註檔
-TRAIN_IMAGE_DIR = BASE_DIR / "train" / "dish_mask_tile"   # png 圖片檔
+TRAIN_DATA_DIR = BASE_DIR / "train" / "her2-dish" /"train_data"      # npy 標註檔
+TRAIN_IMAGE_DIR = BASE_DIR / "train"/ "her2-dish" / "train_picture"   # png 圖片檔
 MODEL_DIR = str(BASE_DIR / "models")                     # 模型輸出目錄
 
 # 訓練參數
-MODEL_NAME = "cellpose_dish"   # 模型名稱
+MODEL_NAME = "cellpose_ihc_dish"   # 模型名稱
 # 使用之前訓練的模型繼續訓練 (設為 None 或 "內建模型" 則從頭開始)
 INITIAL_MODEL = "cpdino-vitb"  # 繼續訓練
 N_EPOCHS = 120 # 訓練輪數
 LEARNING_RATE = 1e-4  
 WEIGHT_DECAY = 1e-4 # 或是 1e-4
 BATCH_SIZE = 8 # 批次大小
-MIN_TRAIN_MASKS = 4 # 最少訓練 mask 數量
+
 
 # 資料增強參數
 SCALE_RANGE = 1.0                 # 縮放範圍: 圖片會縮放 (1-range/2) ~ (1+range/2)，即 0.5x ~ 1.5x
@@ -64,7 +61,7 @@ COLOR_AUGMENTATION = A.Compose([
         contrast=0.15,            # 對比度變化 ±15%
         saturation=0.1,           # 飽和度變化 ±10%
         hue=0.05,                 # 色調變化 ±5%
-        p=0.4                     # 50% 機率套用
+        p=0.4                     # 40% 機率套用
     ),
     A.GaussNoise(
         std_range=(0.02, 0.1),    # 高斯雜訊 (正規化範圍 0-1)
@@ -149,7 +146,7 @@ def prepare_training_data() -> tuple[list, list, list]:
 
     for seg_file in seg_files:
         base_name = seg_file.stem.replace("_seg", "")
-        # 支援 tiff 和 png 格式
+        # png 格式
         image_file = TRAIN_IMAGE_DIR / f"{base_name}.png"
         if not image_file.exists():
             print(f"  跳過 (無對應圖片): {base_name}")
@@ -159,9 +156,6 @@ def prepare_training_data() -> tuple[list, list, list]:
         seg_data = np.load(str(seg_file), allow_pickle=True).item()
         mask = seg_data.get('masks')
         n_objects = len(np.unique(mask)) - 1
-        if n_objects < MIN_TRAIN_MASKS:
-            continue
-
         images.append(img)
         masks.append(mask)
         file_names.append(base_name)
@@ -344,7 +338,6 @@ def train_cellpose_model(
         weight_decay=WEIGHT_DECAY,
         batch_size=BATCH_SIZE,
         model_name=MODEL_NAME,
-        min_train_masks=MIN_TRAIN_MASKS,
         save_every=SAVE_EVERY,
         save_each=True,             # 每個 checkpoint 存為獨立檔案
         scale_range=SCALE_RANGE,

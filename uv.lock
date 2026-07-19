@@ -2546,7 +2546,7 @@ wheels = [
 [[package]]
 name = "valis-wsi"
 version = "1.2.0"
-source = { git = "https://github.com/diadia0000/valis.git#187e3ead680656f062f971c4ae7d3e4116032240" }
+source = { git = "https://github.com/diadia0000/valis.git#3aaa0d4d5b514eaf762a4f1ef409b5f3bf54d9dc" }
 dependencies = [
     { name = "aicspylibczi" },
     { name = "beautifulsoup4" },
