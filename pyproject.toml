@@ -50,6 +50,8 @@ dependencies = [
     # cp311/win_amd64; its version sorts below 3.0.0 so it still satisfies
     # valis-wsi's `simpleitk<3.0.0` constraint conceptually.
     "simpleitk-simpleelastix==3.0.0a1.post183",
+    "python-multipart>=0.0.32",
+    "tuspyserver>=4.2.12",
 ]
 
 [tool.uv]

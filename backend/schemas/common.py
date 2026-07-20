@@ -11,6 +11,10 @@ class JobAccepted(BaseModel):
     job_id: str
 
 
+class OkResponse(BaseModel):
+    ok: bool = True
+
+
 class JobStatus(BaseModel):
     job_id: str
     status: str

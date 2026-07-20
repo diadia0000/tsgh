@@ -14,7 +14,8 @@
     "openapi-fetch": "^0.17.0",
     "openseadragon": "^6.0.2",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "tus-js-client": "^4.3.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.2",

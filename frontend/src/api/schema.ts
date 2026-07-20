@@ -195,6 +195,8 @@ export interface components {
          *     fields that differ from the CLI default.
          */
         AlignmentConfigIn: {
+            /** Run Id */
+            run_id?: string | null;
             /** Project Name */
             project_name?: string | null;
             /** Czi Input Dir */

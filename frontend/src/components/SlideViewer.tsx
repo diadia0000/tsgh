@@ -38,6 +38,12 @@ export function SlideViewer({ slideId }: { slideId: string }) {
   return (
     <div className="relative h-full w-full bg-neutral-900">
       <div ref={containerRef} className="h-full w-full" />
+      {slideId === 'aligned_result' && (
+        <div className="absolute left-3 top-3 rounded-md bg-neutral-950/80 px-3 py-2 text-xs text-neutral-200 shadow">
+          <p className="font-medium">aligned_result.tiff</p>
+          <p className="mt-0.5 text-neutral-400">對齊流程輸出 · TIFF</p>
+        </div>
+      )}
       {error && (
         <div className="absolute inset-0 flex items-center justify-center p-6">
           <p className="max-w-md rounded-lg bg-red-950/80 px-4 py-3 text-center text-sm text-red-200">

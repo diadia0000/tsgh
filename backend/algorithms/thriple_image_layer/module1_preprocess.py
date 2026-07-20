@@ -153,9 +153,8 @@ class CziPreprocessor:
             output_path = self.output_dir / output_filename
             
             if not input_path.exists():
-                print(f"跳過 {modality.name}: 找不到 {input_path}")
-                continue
-            
+                raise FileNotFoundError(f"{modality.name}: 找不到 CZI 輸入 {input_path}")
+
             try:
                 czi = aicspylibczi.CziFile(str(input_path))
                 bbox = czi.get_mosaic_bounding_box()
@@ -201,8 +200,8 @@ class CziPreprocessor:
                 })
                 
             except Exception as e:
-                print(f"讀取 {input_path} 失敗: {e}")
-                
+                raise RuntimeError(f"讀取 {input_path} 失敗: {e}") from e
+
         return file_plans
 
     def run(self):
@@ -210,8 +209,7 @@ class CziPreprocessor:
         file_plans = self.get_conversion_tasks()
         
         if not file_plans:
-            print("沒有任務需要執行")
-            return
+            raise RuntimeError("預處理失敗：沒有可處理的模態（找不到 CZI 輸入或設定錯誤）")
 
         # 收集所有條狀區塊任務
         all_strip_tasks = []
@@ -240,9 +238,10 @@ class CziPreprocessor:
                 failed_strips.append(idx)
         
         if failed_strips:
-            print(f"\n{len(failed_strips)} 個區塊處理失敗，中止組裝")
-            return
-            
+            raise RuntimeError(
+                f"預處理失敗：{len(failed_strips)} 個區塊處理失敗 (strip index: {sorted(failed_strips)})，中止組裝"
+            )
+
         # 組裝最終影像
         print("\n組裝 BigTIFF 影像...")
         
@@ -313,9 +312,9 @@ class CziPreprocessor:
                 print(f"✓ 完成: {out_path} ({size_gb:.2f} GB)")
                 
             except Exception as e:
-                print(f"✗ 組裝 {modality} 失敗: {e}")
                 import traceback
                 traceback.print_exc()
+                raise RuntimeError(f"預處理失敗：組裝 {modality} 失敗: {e}") from e
 
         # 清理暫存檔
         print("\n清理暫存檔...")

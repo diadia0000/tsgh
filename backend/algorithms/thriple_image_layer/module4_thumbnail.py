@@ -56,43 +56,41 @@ def generate_thumbnail(
     dish_temp = temp_dir / f"dish_warped_lv{level}.tiff"
     her2_temp = temp_dir / f"her2_warped_lv{level}.tiff"
 
-    # 檢查 DISH 暫存檔案是否存在
-    if dish_temp.exists():
-        print(f"找到現有的 DISH 暫存檔案，跳過重新生成: {dish_temp.name}")
-    else:
-        print(f"對齊並儲存 DISH 影像 (non_rigid={use_non_rigid})...")
-        dish_warped = dish_obj.warp_slide(level=level, non_rigid=True, crop="overlap")
-        dish_warped.tiffsave(
-            str(dish_temp),
-            compression='jpeg',
-            Q=95,
-            rgbjpeg=True,
-            tile=True,
-            tile_width=1024,
-            tile_height=1024,
-            pyramid=True,
-            subifd=False,
-            bigtiff=True,
-        )
+    # 每次都從最新的對齊結果重新 warp，不復用舊暫存檔：復用只以 level 為 key，
+    # 無法辨別 registrar 是否已重跑，會把上一次對齊的 warped 影像混進新縮圖。
+    # tiffsave 會覆寫既有檔案，這裡先刪除以防殘留半寫入的檔案。
+    for temp_file in (dish_temp, her2_temp):
+        temp_file.unlink(missing_ok=True)
 
-    # 檢查 HER2 暫存檔案是否存在
-    if her2_temp.exists():
-        print(f"找到現有的 HER2 暫存檔案，跳過重新生成: {her2_temp.name}")
-    else:
-        print("對齊並儲存 HER2 影像 (non_rigid=False)...")
-        her2_warped = her2_obj.warp_slide(level=level, non_rigid=False, crop="overlap")
-        her2_warped.tiffsave(
-            str(her2_temp),
-            compression='jpeg',
-            Q=95,
-            rgbjpeg=True,
-            tile=True,
-            tile_width=1024,
-            tile_height=1024,
-            pyramid=True,
-            subifd=False,
-            bigtiff=True,
-        )
+    print(f"對齊並儲存 DISH 影像 (non_rigid={use_non_rigid})...")
+    dish_warped = dish_obj.warp_slide(level=level, non_rigid=True, crop="overlap")
+    dish_warped.tiffsave(
+        str(dish_temp),
+        compression='jpeg',
+        Q=95,
+        rgbjpeg=True,
+        tile=True,
+        tile_width=1024,
+        tile_height=1024,
+        pyramid=True,
+        subifd=False,
+        bigtiff=True,
+    )
+
+    print("對齊並儲存 HER2 影像 (non_rigid=False)...")
+    her2_warped = her2_obj.warp_slide(level=level, non_rigid=False, crop="overlap")
+    her2_warped.tiffsave(
+        str(her2_temp),
+        compression='jpeg',
+        Q=95,
+        rgbjpeg=True,
+        tile=True,
+        tile_width=1024,
+        tile_height=1024,
+        pyramid=True,
+        subifd=False,
+        bigtiff=True,
+    )
 
     # 使用 pyvips 讀取並合併（串流處理，不會一次載入全部記憶體）
     print(f"合併影像中 (使用一般 0.5/0.5 融合)...")
