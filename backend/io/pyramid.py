@@ -69,6 +69,14 @@ def _get_dz(slide_id: str) -> DeepZoomGenerator:
         return dz
 
 
+def invalidate(slide_id: str) -> None:
+    """Drop a cached DeepZoomGenerator so the next request re-reads the file
+    from disk -- needed when a slide_id's underlying file is replaced in place
+    (e.g. a pipeline re-run overwriting a fixed result filename)."""
+    with _lock:
+        _cache.pop(slide_id, None)
+
+
 def list_slides() -> list[str]:
     """Every readable slide under SLIDES_DIR, addressed by slide_id (guardrail 2:
     the frontend picks from ids, never filesystem paths). Sorted for a stable

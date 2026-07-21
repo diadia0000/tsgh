@@ -6,10 +6,11 @@ Only this module is allowed to know about Pydantic; algorithms/ stays framework-
 Generic job types (JobAccepted/JobStatus) live in backend/schemas/common.py since
 they're shared with any future pipeline (e.g. hybrid), not alignment-specific.
 """
+import uuid
 from pathlib import Path
 from typing import List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from backend.algorithms.thriple_image_layer.config import (
     ModalityConfig,
@@ -20,6 +21,18 @@ from backend.algorithms.thriple_image_layer.config import (
     TileConfig,
     ValisConfig,
 )
+
+# Root for per-upload isolated run directories. Each upload gets its own
+# {STORAGE_DIR}/{run_id}/ subtree so concurrent users never share czi_input /
+# output paths (fixes the shared-storage race).
+STORAGE_DIR = Path("/home/sec312/project/storge_tsgh")
+
+
+def run_base(run_id: str) -> Path:
+    """Filesystem base for a run. Validates run_id is a UUID so a client-supplied
+    value can never escape STORAGE_DIR via path traversal."""
+    uuid.UUID(run_id)  # raises ValueError on anything that isn't a UUID
+    return STORAGE_DIR / run_id
 
 
 class ModalityConfigIn(BaseModel):
@@ -66,6 +79,7 @@ class AlignmentConfigIn(BaseModel):
     fields that differ from the CLI default.
     """
 
+    run_id: Optional[str] = None
     project_name: Optional[str] = None
     czi_input_dir: Optional[str] = None
     input_dir: Optional[str] = None
@@ -78,6 +92,13 @@ class AlignmentConfigIn(BaseModel):
     thumbnail: Optional[ThumbnailConfigIn] = None
     tile: Optional[TileConfigIn] = None
 
+    @field_validator("run_id")
+    @classmethod
+    def _validate_run_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            uuid.UUID(v)  # 422 if not a UUID -> blocks path traversal
+        return v
+
     def to_registration_config(self) -> RegistrationConfig:
         """Translate the request body into the algorithms-layer RegistrationConfig.
 
@@ -85,6 +106,13 @@ class AlignmentConfigIn(BaseModel):
         defaults; this is the one place JSON meets the algorithm's own types.
         """
         kwargs = {}
+        if self.run_id is not None:
+            # Run-isolated paths derived from run_id: czi_input holds the upload,
+            # output holds every step's intermediate + final artifacts.
+            base = run_base(self.run_id)
+            kwargs["czi_input_dir"] = base / "czi_input"
+            kwargs["input_dir"] = base / "output"
+            kwargs["output_dir"] = base / "output"
         if self.project_name is not None:
             kwargs["project_name"] = self.project_name
         if self.czi_input_dir is not None:

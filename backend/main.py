@@ -6,6 +6,7 @@ from backend.api import alignment, hybrid, jobs, tiles
 
 app = FastAPI(title="tsgh backend")
 app.include_router(alignment.router)
+app.include_router(alignment.tus_router)
 app.include_router(hybrid.router)
 app.include_router(jobs.router)
 app.include_router(tiles.router)
@@ -14,4 +15,4 @@ app.include_router(tiles.router)
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run("backend.main:app", host="127.0.0.1", port=8000, workers=4)
