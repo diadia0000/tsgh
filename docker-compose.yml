@@ -29,15 +29,23 @@ services:
     volumes:
       # 掛載專案目錄（開發模式）
       - .:/app
-      # 掛載資料目錄（如果需要）
-      # - /path/to/your/data:/app/data
-      # - /path/to/wsi/images:/app/wsi
-    
+      # CZI 上傳 / pipeline 輸出的儲存位置，先綁在 host 上原本用的路徑
+      # (~/project/storge_tsgh，實際是 /data/nvmessd/storge_tsgh 的 symlink)
+      - ${HOME}/project/storge_tsgh:/data/storge_tsgh
+
     # 環境變數
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    
+      # backend/schemas/alignment.py 的 STORAGE_DIR 讀這個，對應上面的掛載點
+      - TSGH_STORAGE_DIR=/data/storge_tsgh
+      # backend/main.py 讀這個；容器內一定要 0.0.0.0，127.0.0.1 從外面連不到
+      - TSGH_HOST=0.0.0.0
+
+    # 讓 host 能連到容器內跑起來的後端（backend/main.py 監聽 8000）
+    ports:
+      - "8000:8000"
+
     # 保持容器運行
     stdin_open: true
     tty: true

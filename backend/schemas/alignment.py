@@ -6,6 +6,7 @@ Only this module is allowed to know about Pydantic; algorithms/ stays framework-
 Generic job types (JobAccepted/JobStatus) live in backend/schemas/common.py since
 they're shared with any future pipeline (e.g. hybrid), not alignment-specific.
 """
+import os
 import re
 from pathlib import Path
 from typing import List, Optional
@@ -23,8 +24,12 @@ from backend.algorithms.thriple_image_layer.config import (
 
 # Root for per-upload isolated run directories. Each upload gets its own
 # {STORAGE_DIR}/{run_id}/ subtree so concurrent users never share czi_input /
-# output paths (fixes the shared-storage race).
-STORAGE_DIR = Path("/home/sec312/project/storge_tsgh")
+# output paths (fixes the shared-storage race). Set TSGH_STORAGE_DIR to point
+# elsewhere (e.g. a fast disk); defaults to `<repo>/storage`, mirroring
+# SLIDES_DIR's TSGH_SLIDES_DIR (backend/io/pyramid.py).
+STORAGE_DIR = Path(
+    os.environ.get("TSGH_STORAGE_DIR", Path(__file__).resolve().parents[2] / "storage")
+)
 
 # A run_id is a user-chosen folder name. Restricting it to letters/digits/-/_
 # is what stops a client-supplied value escaping STORAGE_DIR (no "/", no ".."),
