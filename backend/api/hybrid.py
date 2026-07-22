@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks
 
 from backend.algorithms.hybrid.config import config
 from backend.algorithms.hybrid.hybrid_pipeline import run_batch
-from backend.algorithms.hybrid.m0_reader import precut_paired_tiles
+from backend.algorithms.hybrid.m0_reader import PrecutStream
 from backend.api.jobs import submit_job
 from backend.schemas.common import JobAccepted
 from backend.schemas.hybrid import HybridTileIn
@@ -31,12 +31,14 @@ def run_hybrid_tile(body: HybridTileIn, background_tasks: BackgroundTasks) -> Jo
         scratch = output_dir / "_precut_scratch"
         ihc_out = scratch / "ihc"
         dish_out = scratch / "dish"
-        precut_paired_tiles(
+        # 預切與分析迴圈重疊：格線先算出，tile 檔隨切隨送進 run_batch。
+        stream = PrecutStream(
             ihc_path, dish_path, ihc_out, dish_out,
             tile_size=config.default_tile_size,
             overlap=config.window_overlap_px,
         )
-        stats = run_batch(ihc_out, dish_out, output_dir, merge_dir=merge_dir)
+        stats = run_batch(ihc_out, dish_out, output_dir, merge_dir=merge_dir,
+                          tile_stream=stream)
         return str(output_dir), stats
 
     return JobAccepted(job_id=submit_job(background_tasks, _run))
