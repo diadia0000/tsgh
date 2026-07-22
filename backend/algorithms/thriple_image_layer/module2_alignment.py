@@ -1,4 +1,6 @@
 """Module 2: VALIS Alignment Pipeline"""
+import contextlib
+
 from valis import registration, feature_detectors, feature_matcher, non_rigid_registrars
 
 try:
@@ -128,7 +130,13 @@ def align_images(
 
     # 執行配準
     print("開始執行配準...")
-    registrar.register()
+    # elastix/transformix 的 OutputDirectory 預設是 "."，valis 沒設過，所以
+    # result.0.nii / deformationField.nii 會掉在啟動 uvicorn 的目錄（repo 根目錄）。
+    # 切到 output_dir 讓這些中間檔跟著各自的 run 走。
+    # ponytail: chdir 是 process-global；若日後多個 run 同時對準，改成對
+    # sitk.ElastixImageFilter/TransformixImageFilter SetOutputDirectory。
+    with contextlib.chdir(output_dir):
+        registrar.register()
     print("✓ 配準完成")
 
     return registrar

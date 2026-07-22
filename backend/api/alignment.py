@@ -204,7 +204,6 @@ def run_preprocess(body: AlignmentConfigIn, background_tasks: BackgroundTasks) -
 
     return JobAccepted(job_id=submit_job(background_tasks, _run, key=body.run_id))
 
-
 @router.post("/align", response_model=JobAccepted)
 def run_align(body: AlignmentConfigIn, background_tasks: BackgroundTasks) -> JobAccepted:
     config = body.to_registration_config()
