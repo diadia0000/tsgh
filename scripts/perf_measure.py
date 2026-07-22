@@ -92,6 +92,105 @@ def wrap(module, name: str, bucket: str, bytes_of=None):
     return orig
 
 
+# ------------------------------------------------------------------
+# GPU-timeline (cuda Event) instrumentation -- doc 17 §3/§4-3
+# ------------------------------------------------------------------
+# A Python perf_counter around a forward also counts time the GPU was still draining
+# queued work, so it cannot answer "how long was the device actually idle while this
+# CPU-only segment ran". Events recorded on the default stream can: between two
+# consecutive forwards no kernels are enqueued, so the device time from forward k's
+# trailing event to forward k+1's leading event *is* the idle window.
+#
+# Per tile the marker sequence is
+#   unet.b unet.a  [M1 overlay glue]  m2.b m2.a  [clear_edge+build+enlarge]  m3b.b m3b.a
+# (background tiles stop after unet), and the gap from tile N-1's last marker to tile
+# N's first covers _read_rgb + gc.collect + empty_cache + the background-thread join.
+CUDA_EVENTS = False
+_ev_pending: list = []      # [(label, "b"|"a", event)] for the tile in progress
+_ev_prev_tail = None        # ("<label>", event) -- previous tile's trailing marker
+_ev_seg_calls = 0           # segment_windowed calls this tile: 1st = M2, 2nd = M3b
+
+
+def _ev_mark(label: str, phase: str) -> None:
+    if not CUDA_EVENTS:
+        return
+    ev = torch.cuda.Event(enable_timing=True)
+    ev.record()
+    _ev_pending.append((label, phase, ev))
+
+
+def _ev_flush() -> None:
+    """Synchronize, reduce this tile's markers into buckets, then drop them."""
+    global _ev_prev_tail
+    if not CUDA_EVENTS or not _ev_pending:
+        return
+    torch.cuda.synchronize()
+
+    if _ev_prev_tail is not None:
+        _pn, pev = _ev_prev_tail
+        fname, fphase, fev = _ev_pending[0]
+        if fphase == "b":
+            _rec("E_gap_tile_boundary", pev.elapsed_time(fev) / 1000.0)
+
+    for i in range(len(_ev_pending) - 1):
+        n0, p0, e0 = _ev_pending[i]
+        n1, p1, e1 = _ev_pending[i + 1]
+        dt = e0.elapsed_time(e1) / 1000.0
+        if p0 == "b" and p1 == "a":
+            _rec(f"E_busy_{n0}", dt)
+        elif p0 == "a" and p1 == "b":
+            _rec(f"E_gap_{n0}__{n1}", dt)
+
+    tail = _ev_pending[-1]
+    _ev_prev_tail = (tail[0], tail[2]) if tail[1] == "a" else None
+    _ev_pending.clear()
+
+
+def wrap_gpu(module, name: str, bucket: str, label_of=None):
+    """Like wrap(), plus cuda Event markers bracketing the call."""
+    orig = getattr(module, name, None)
+    if orig is None:
+        print(f"[perf_measure] skip wrap_gpu: {module.__name__}.{name} not found")
+        return None
+
+    @functools.wraps(orig)
+    def shim(*a, **k):
+        label = label_of() if label_of else name
+        _ev_mark(label, "b")
+        t0 = time.perf_counter()
+        out = orig(*a, **k)
+        dt = time.perf_counter() - t0
+        _ev_mark(label, "a")
+        _rec(bucket, dt)
+        return out
+
+    setattr(module, name, shim)
+    return orig
+
+
+def wrap_tile_boundary():
+    """Reset the per-tile segment counter on entry, flush markers on exit."""
+    orig = HP._process_precut_tile_gpu
+
+    @functools.wraps(orig)
+    def shim(*a, **k):
+        global _ev_seg_calls
+        _ev_seg_calls = 0
+        try:
+            return orig(*a, **k)
+        finally:
+            _ev_flush()
+
+    HP._process_precut_tile_gpu = shim
+
+
+def _seg_label() -> str:
+    """segment_windowed is called twice per tile; name them by order of call."""
+    global _ev_seg_calls
+    _ev_seg_calls += 1
+    return "m2_cellpose" if _ev_seg_calls == 1 else "m3b_cellpose"
+
+
 def wrap_save_tile_array():
     """_save_tile_array: split by suffix into PNG-encode vs TIFF-encode buckets,
     and count output bytes after write."""
@@ -174,9 +273,15 @@ def start_dmon(out_path: Path):
 # ------------------------------------------------------------------
 def install_wrappers():
     # B1 GPU forward
-    wrap(HP, "generate_ihc_core_mask", "B1_unet_coremask")
+    if CUDA_EVENTS:
+        wrap_gpu(HP, "generate_ihc_core_mask", "B1_unet_coremask",
+                 label_of=lambda: "unet_coremask")
+        wrap_gpu(HP, "segment_windowed", "B1_m3b_cellpose", label_of=_seg_label)
+        wrap_tile_boundary()
+    else:
+        wrap(HP, "generate_ihc_core_mask", "B1_unet_coremask")
+        wrap(HP, "segment_windowed", "B1_m3b_cellpose")
     wrap(HP, "segment_masked_dish", "B1_m2_cellpose")
-    wrap(HP, "segment_windowed", "B1_m3b_cellpose")
     # B2 file I/O out
     wrap_save_tile_array()
     wrap(HP, "export_per_cell_images", "B2_percell_crops")
@@ -248,8 +353,21 @@ def main():
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--cprofile", action="store_true")
     ap.add_argument("--gpu-dmon", action="store_true")
+    ap.add_argument("--cuda-events", action="store_true",
+                    help="measure device-side idle gaps between GPU forwards "
+                         "(doc 17 §3); adds a per-tile torch.cuda.synchronize, so use "
+                         "these runs for bubble sizing, not for wall-clock comparison")
+    ap.add_argument("--cellpose-batch-size", type=int, default=None,
+                    help="override config.cellpose_batch_size for a sweep (doc 13 P4); "
+                         "omit to use the config default")
+    ap.add_argument("--stream-precut", action="store_true",
+                    help="overlap phase A precut with the analysis loop (doc 17 §4-4); "
+                         "phaseA_precut_s then measures only the grid computation")
     ap.add_argument("--metrics-dir", default=None)
     args = ap.parse_args()
+
+    global CUDA_EVENTS
+    CUDA_EVENTS = args.cuda_events
 
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
@@ -259,6 +377,12 @@ def main():
     install_wrappers()
 
     from config import config as CFG, compute_config_hash  # noqa
+
+    # Mutating the shared singleton before the models are built is what makes the sweep
+    # take effect: hybrid_pipeline's _init_*_segmenter reads config.cellpose_batch_size
+    # at init time, and both modules hold the same Config object.
+    if args.cellpose_batch_size is not None:
+        CFG.cellpose_batch_size = args.cellpose_batch_size
 
     sampler = ResourceSampler(metrics_dir / f"{args.label}_resource.csv", interval=0.5)
     dmon_p = dmon_f = None
@@ -277,13 +401,25 @@ def main():
 
     t_start = time.perf_counter()
 
-    # Phase A: precut
+    # Phase A: precut. With --stream-precut the cutting is overlapped with the analysis
+    # loop instead of preceding it, so phaseA here only covers the header read + grid
+    # computation and the cutting cost lands inside runbatch. End-to-end wall is then
+    # the only honest comparison between the two modes.
+    stream = None
     tA0 = time.perf_counter()
-    positions = HP.precut_paired_tiles(
-        Path(args.ihc), Path(args.dish), ihc_out, dish_out,
-        tile_size=CFG.default_tile_size, overlap=CFG.window_overlap_px,
-        workers=args.workers,
-    )
+    if args.stream_precut:
+        stream = HP.PrecutStream(
+            Path(args.ihc), Path(args.dish), ihc_out, dish_out,
+            tile_size=CFG.default_tile_size, overlap=CFG.window_overlap_px,
+            workers=args.workers,
+        )
+        positions = stream.positions
+    else:
+        positions = HP.precut_paired_tiles(
+            Path(args.ihc), Path(args.dish), ihc_out, dish_out,
+            tile_size=CFG.default_tile_size, overlap=CFG.window_overlap_px,
+            workers=args.workers,
+        )
     tA = time.perf_counter() - tA0
     n_tiles = len(positions)
     precut_bytes = dir_bytes(scratch)
@@ -292,7 +428,7 @@ def main():
     tB0 = time.perf_counter()
     if prof:
         prof.enable()
-    stats = HP.run_batch(ihc_out, dish_out, out)
+    stats = HP.run_batch(ihc_out, dish_out, out, tile_stream=stream)
     if prof:
         prof.disable()
     tBCD = time.perf_counter() - tB0
