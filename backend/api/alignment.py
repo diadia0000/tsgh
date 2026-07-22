@@ -10,6 +10,7 @@ Resumable CZI upload is delegated to the `tuspyserver` tus implementation
 (mounted as `tus_router`); this module only maps a finished upload into the
 run's czi_input/ directory the pipeline reads from.
 """
+import os
 import shutil
 from pathlib import Path
 from typing import List
@@ -70,8 +71,13 @@ tus_router = create_tus_router(
 
 
 # Dev shortcut: CZIs that already sit on the server, so a developer doesn't wait
-# out a multi-GB upload over Tailscale just to exercise the pipeline.
-_DEV_CZI_DIR = Path("/home/sec312/project/tsgh/picture/czi/40X")
+# out a multi-GB upload over Tailscale just to exercise the pipeline. Set
+# TSGH_DEV_CZI_DIR to point at them; defaults to `<repo>/dev_data/czi/40X`.
+_DEV_CZI_DIR = Path(
+    os.environ.get(
+        "TSGH_DEV_CZI_DIR", Path(__file__).resolve().parents[2] / "dev_data" / "czi" / "40X"
+    )
+)
 
 
 @router.post("/dev-run")

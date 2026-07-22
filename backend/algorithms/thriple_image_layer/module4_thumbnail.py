@@ -28,7 +28,6 @@ def generate_thumbnail(
     output_dir = config.output_dir
     level = config.thumbnail.level
     use_non_rigid = config.thumbnail.use_non_rigid
-    laplacian_levels = config.thumbnail.laplacian_levels
     
     print(f"載入變換參數: {config.pickle_path}")
     registrar = registration.load_registrar(str(config.pickle_path))
@@ -46,10 +45,7 @@ def generate_thumbnail(
     her2_obj = registrar.slide_dict[her2_key]
 
     # 使用 warp_slide + tiffsave(subifd=False) 直接儲存到暫存檔案，避免大型陣列佔用記憶體。
-    # 不走 warp_and_save_slide：它內部的 valis.slide_io.save_ome_tiff 把 subifd 綁死等於
-    # pyramid（見 <venv>/valis/slide_io.py:3685），OpenSlide 讀不到金字塔，OSD 開圖會把後端讀爆
-    # （docs/UI/09-viewer-tiff-subifd.md 的事故）。這兩份暫存檔只會被下面的 pyvips 直讀，不會再
-    # 餵回 VALIS，所以不需要 OME-TIFF/subifd，直接存成 OpenSlide 看得懂的一般金字塔 TIFF。
+
     temp_dir = config.temp_dir
     temp_dir.mkdir(exist_ok=True)
 
