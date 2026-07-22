@@ -26,6 +26,7 @@ import sys
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -218,6 +219,33 @@ def _init_dish_cellpose_segmenter() -> CellposeSegmenter:
         batch_size=getattr(config, "cellpose_batch_size", 16),
         gpu=config.cellpose_gpu,
     )
+
+
+@contextmanager
+def _frozen_gc_generation():
+    """把當下已存在的受追蹤物件移進 GC 永久世代，離開時還原。
+
+    三個 GPU 模型（UNet++ / 兩個 Cellpose）在整批期間都活著且可達，generational GC
+    每次 full collect 都要重新掃描這整張物件圖一遍。``gc.freeze()`` 把它們移進
+    「收集器不再掃描」的永久世代，**不改變 collect 的呼叫頻率**，只砍掉每次的掃描量。
+
+    實測（docs/hybrid-pipeline/16-gc-collect-frequency-result.md，441 tile，各 n=3）：
+    每次 ``gc.collect()`` 83.2 ms → 1.2 ms，整批 36.71 s → 0.52 s；扣掉 GPU 前段
+    （B1，與本改動無關但有 ±3% 抖動）後的主執行緒殘量 109.7 s → 72.7 s，即
+    **−37.0 s（±1.5 s）**，端到端 571.5 s → 530.4 s（約 1.07x）。因為每塊仍照常
+    collect，記憶體有界性不受影響（peak RSS 3.88 → 3.93 GB，鋸齒形狀維持）。
+
+    離開時**務必** ``unfreeze``：``run_batch`` 會在長駐的 API server 行程中被反覆
+    呼叫（``backend/api/hybrid.py``），只 freeze 不 unfreeze 會讓每次呼叫都把當下
+    所有受追蹤物件永久凍結、之後再也不回收 → 跨請求的無界記憶體成長，正是本專案
+    memory-bounded 不變量要擋的失效模式。此處無其他呼叫端會 freeze，故 unfreeze
+    （會解凍全部）不會誤傷別人凍結的物件。
+    """
+    gc.freeze()
+    try:
+        yield
+    finally:
+        gc.unfreeze()
 
 
 # ------------------------------------------------------------------
@@ -763,7 +791,8 @@ def run_batch(
     # （detect_all_dots + 落地寫檔，原本讓 GPU 整段閒置）丟到背景執行緒，與『下一塊的 GPU
     # 前向』重疊執行，藉此填補 GPU 閒置。fail-fast 與 empty_cache/gc 清理語意皆保留（見下）。
     pending: Optional[Tuple[int, int, Future]] = None
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="tile-cpu") as pool:
+    with _frozen_gc_generation(), \
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="tile-cpu") as pool:
         for idx, ((ihc_path, dish_path), (ax, ay)) in enumerate(
             zip(paired_tiles, positions), start=1
         ):
@@ -789,6 +818,9 @@ def run_batch(
             # tile 間釋放 GPU allocator cache 並跑一次 Python GC（主執行緒持有 CUDA），
             # 防止長批次記憶體單調成長。此時背景執行緒可能仍在跑前一塊的 CPU 後段——它只
             # 持有 numpy 陣列（該塊 GPU 前向早已在主執行緒跑完），故此清理不影響其正確性。
+            # 兩者都維持「每塊一次」。改成每 N 塊掃一次（N=4/8/16）已實測並否決：在
+            # gc.freeze() 之後整批 gc 只剩 0.52 s，最多再省 0.36 s（<0.1% wall，遠在雜訊內），
+            # 卻讓 peak RSS 變成所有配置中最高的一個。零收益的層一律砍掉。見 doc 16 §4.2。
             try:
                 import torch
                 if torch.cuda.is_available():
