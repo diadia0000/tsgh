@@ -8,14 +8,14 @@ M0: 預切塊器 (pre-cut tiler)
 設計重點
 --------
 - 後端：``pyvips.Image.new_from_file(access="random")`` —— 已在
-  ``thriple_image_layer/module5_tile_generator.py`` 的已配準 LZW/JPEG 檔上跑通。
+  ``scripts/tile_generator.py`` 的已配準 LZW/JPEG 檔上跑通。
 - 視窗格線直接沿用 ``m2_segmentation._overlap_window_coords``（邊長 = ``tile_size``、
   ``stride = tile_size - overlap``，最後一格貼齊邊界覆蓋全圖），與既有「重疊視窗 +
   IoMin 去重」語義一致，不另造一套切塊規則。
 - IHC / DISH 兩路以**相同** ``(abs_x, abs_y)`` 對齊切割，檔名同為
   ``tile_x{x}_y{y}.tiff``，供 ``m1_overlay.find_paired_tiles`` 依同名配對。
-- 邊界不足整塊時以白底補滿（沿用 ``module5_tile_generator._crop_tile`` 的
-  gravity/extend 範式），與 M1 ``background_fill_value = 255`` 一致。
+- 邊界不足整塊時以白底補滿（gravity/extend 範式），與 M1
+  ``background_fill_value = 255`` 一致。
 
 回歸基準
 --------
@@ -58,7 +58,7 @@ def _open_rgb(path: Path) -> pyvips.Image:
 
 
 def _crop_to_tile(img: pyvips.Image, x: int, y: int, tile: int) -> pyvips.Image:
-    """裁出 ``(tile, tile)`` 子塊；越界部分以白底補滿（mirror module5 _crop_tile）。"""
+    """裁出 ``(tile, tile)`` 子塊；越界部分以白底補滿。"""
     w = min(tile, img.width - x)
     h = min(tile, img.height - y)
     crop = img.crop(x, y, w, h)

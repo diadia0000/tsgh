@@ -9,103 +9,56 @@ import os
 import sys
 
 # 必須在 import pyvips 之前設定，libvips 啟動時才會讀
-_VIPS_THREADS = max(1, (os.cpu_count() or 4) - 4)
+_VIPS_THREADS = os.cpu_count()
 os.environ["VIPS_CONCURRENCY"] = str(_VIPS_THREADS)
 
 import shutil
-from pathlib import Path
 from multiprocessing import Pool, cpu_count
+from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
 import numpy as np
 import pyvips
 import aicspylibczi
 from tqdm import tqdm
-import gc
 try:
-    from .config import create_default_config, ModalityConfig
+    from .config import create_default_config
 except ImportError:
-    from config import create_default_config, ModalityConfig
-
+    from backend.algorithms.thriple_image_layer.config import create_default_config
 
 def process_strip_worker(task: Dict[str, Any]) -> Tuple[bool, str, int]:
     """
-    多進程 Worker 函數 - 在獨立進程中執行
-    讀取 CZI 區域並轉換為 VIPS 格式暫存檔
-    
-    這個函數會在獨立的 Python 進程中執行，
-    每個進程使用獨立的記憶體空間和 CPU 核心
-    
-    Args:
-        task: 包含以下鍵值的字典
-            - input_path: CZI 檔案路徑
-            - region: (x, y, w, h) 區域座標 (pixels)
-            - scale_factor: 縮放比例
-            - output_vips_path: 輸出暫存檔路徑
-            - strip_index: 條狀區塊索引
-            - modality: 影像模態名稱
-    
+    多進程 Worker - 讀取 CZI 區域，寫成 VIPS 暫存檔 (.v)
+
+    task 鍵值: input_path / region (x,y,w,h) / scale_factor /
+               output_vips_path / strip_index / modality
+
     Returns:
         Tuple[bool, str, int]: (成功與否, 訊息或路徑, 區塊索引)
     """
-    # 從 task 字典解構參數
-    input_path: str = task["input_path"]
-    region: Tuple[int, int, int, int] = task["region"]
-    scale: float = task["scale_factor"]
-    out_path: str = task["output_vips_path"]
-    strip_idx: int = task["strip_index"]
-    modality: str = task["modality"]
-    
+    idx, out_path = task["strip_index"], task["output_vips_path"]
     if os.path.exists(out_path):
-        return (True, out_path, strip_idx)
+        return (True, out_path, idx)
 
     try:
-        # 開啟 CZI 檔案
-        czi = aicspylibczi.CziFile(input_path)
-        
-        # 讀取指定區域的馬賽克影像
-        # C=0 指定通道 (RGB brightfield 通常是 channel 0)
-        chunk_data = czi.read_mosaic(region=region, scale_factor=scale, C=0)
-        
-        # 移除多餘的維度 (1, H, W, 3) -> (H, W, 3)
-        chunk_data = np.squeeze(chunk_data)
-        
-        # 處理維度順序
-        if chunk_data.ndim == 3:
-            # 檢查是否需要轉置 (C, H, W) -> (H, W, C)
-            if chunk_data.shape[0] < 5 and chunk_data.shape[2] > 5:
-                chunk_data = chunk_data.transpose(1, 2, 0)
-            
-            # 關鍵修正：CZI 通常是 BGR 順序，需要轉換為 RGB
-            # 否則顏色會錯（棕色變藍色）
-            if chunk_data.shape[2] == 3:
-                chunk_data = chunk_data[:, :, ::-1].copy()  # BGR -> RGB
-        
-        # 確保資料型別正確
-        if chunk_data.dtype != np.uint8:
-            chunk_data = chunk_data.astype(np.uint8)
-        
-        # 轉換為 pyvips 影像
-        height, width = chunk_data.shape[:2]
-        bands = chunk_data.shape[2] if chunk_data.ndim == 3 else 1
-        
-        # 使用 new_from_memory 更有效率
-        vimg = pyvips.Image.new_from_memory(
-            chunk_data.tobytes(),
-            width, height, bands,
-            'uchar'
-        )
-        
-        # 寫入 VIPS 格式檔案 (記憶體映射，速度快)
-        vimg.write_to_file(out_path)
-        
-        # 明確釋放記憶體
-        del chunk_data, vimg, czi
-        gc.collect()
-        return (True, out_path, strip_idx)
-        
+        czi = aicspylibczi.CziFile(task["input_path"])
+        # C=0: RGB brightfield 通常在 channel 0；squeeze 掉 (1,H,W,3) 的前導維度
+        data = np.squeeze(czi.read_mosaic(
+            region=task["region"], scale_factor=task["scale_factor"], C=0))
+
+        if data.ndim == 3:
+            if data.shape[0] < 5 < data.shape[2]:   # (C,H,W) -> (H,W,C)
+                data = data.transpose(1, 2, 0)
+            if data.shape[2] == 3:
+                data = data[:, :, ::-1]             # CZI 是 BGR，不轉顏色會錯（棕變藍）
+
+        # new_from_array 自行推導 width/height/bands 並處理非連續記憶體
+        img = pyvips.Image.new_from_array(data.astype(np.uint8, copy=False))
+        img.write_to_file(out_path)
+        return (True, out_path, idx)
+
     except Exception as e:
-        return (False, f"Strip {strip_idx} ({modality}) error: {e}", strip_idx)
+        raise RuntimeError(f"處理 {task['modality']} 區塊 {idx} 失敗: {e}") from e
 
 
 class CziPreprocessor:
@@ -119,88 +72,56 @@ class CziPreprocessor:
     - 使用 pyvips 記憶體映射減少 RAM 使用
     """
 
-    def __init__(self, config, num_processes: int = None):
+    def __init__(self, config):
         self.config = config
         # Module 1: 從 czi_input_dir 讀取 CZI，輸出到 input_dir (作為 Module 2 的輸入)
         self.czi_input_dir = self.config.czi_input_dir
         self.output_dir = self.config.input_dir  # Module 1 輸出 = Module 2 輸入
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # 暫存目錄
-        self.temp_dir = self.output_dir / "temp_strips"
+        self.temp_dir = self.output_dir / "temp_vips"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         
         self.num_processes = config.preprocess.num_processes
         print(f"將使用 {self.num_processes} 個獨立進程 (記憶體安全模式)")
 
     def get_conversion_tasks(self) -> List[Dict[str, Any]]:
-        """準備轉換任務列表"""
-        # 條狀區塊高度 (原始座標系)
-        # 注意：這是在原始解析度下的像素數
-        # read_mosaic 會根據 scale_factor 自動縮放輸出
+        """準備轉換任務列表 (每個模態一組條狀區塊)"""
+        # strip_height 是原始座標系的像素數；read_mosaic 會依 scale_factor 縮放輸出
         strip_height = self.config.preprocess.strip_height
-        
         file_plans = []
-        
-        for modality in self.config.modalities:
-            # 使用 czi_filename 作為輸入
-            if not modality.czi_filename:
-                print(f"跳過 {modality.name}: 未設定 czi_filename")
+
+        for m in self.config.modalities:
+            if not m.czi_filename:
+                print(f"跳過 {m.name}: 未設定 czi_filename")
                 continue
-            
-            input_path = self.czi_input_dir / modality.czi_filename
-            output_filename = modality.filename  # 使用 config 中定義的輸出檔名
-            output_path = self.output_dir / output_filename
-            
+
+            input_path = self.czi_input_dir / m.czi_filename
             if not input_path.exists():
-                raise FileNotFoundError(f"{modality.name}: 找不到 CZI 輸入 {input_path}")
+                raise FileNotFoundError(f"{m.name}: 找不到 CZI 輸入 {input_path}")
 
             try:
-                czi = aicspylibczi.CziFile(str(input_path))
-                bbox = czi.get_mosaic_bounding_box()
-                x, y, w, h = bbox.x, bbox.y, bbox.w, bbox.h
-                
-                # 直接使用 config 中的 scale_factor
-                # 1.0 = 不縮放 (40X 原始解析度), 0.5 = 縮小一半 (20X)
-                scale_factor = modality.scale_factor
-                
-                # 估算每個區塊的記憶體使用量
-                output_width = int(w * scale_factor)
-                output_strip_h = int(strip_height * scale_factor)
-                mem_per_strip_gb = (output_width * output_strip_h * 3) / (1024**3)
-                print(f"準備 {modality.name}: {w}x{h} px -> 輸出 {output_width}x{int(h*scale_factor)} px")
-                print(f"  scale_factor={scale_factor:.2f}, 每個區塊約 {mem_per_strip_gb:.2f} GB")
-
-
-                # 產生條狀區塊任務
-                strips = []
-                num_strips = (h + strip_height - 1) // strip_height
-                
-                for i in range(num_strips):
-                    current_y = y + i * strip_height
-                    current_h = min(strip_height, y + h - current_y)
-                    
-                    strip_vips_path = self.temp_dir / f"{modality.name}_strip_{i:04d}.v"
-                    
-                    strips.append({
-                        "input_path": str(input_path),
-                        "region": (x, current_y, w, current_h),
-                        "scale_factor": scale_factor,
-                        "output_vips_path": str(strip_vips_path),
-                        "strip_index": i,
-                        "modality": modality.name
-                    })
-
-                del czi
-
-                file_plans.append({
-                    "modality": modality.name,
-                    "output_path": str(output_path),
-                    "strips": strips
-                })
-                
+                bbox = aicspylibczi.CziFile(str(input_path)).get_mosaic_bounding_box()
             except Exception as e:
                 raise RuntimeError(f"讀取 {input_path} 失敗: {e}") from e
+
+            x, y, w, h = bbox.x, bbox.y, bbox.w, bbox.h
+            s = m.scale_factor  # 1.0 = 40X 原始解析度, 0.5 = 縮小一半 (20X)
+            mem_gb = int(w * s) * int(strip_height * s) * 3 / 1024**3
+            print(f"準備 {m.name}: {w}x{h} px -> 輸出 {int(w * s)}x{int(h * s)} px")
+            print(f"  scale_factor={s:.2f}, 每個區塊約 {mem_gb:.2f} GB")
+
+            file_plans.append({
+                "modality": m.name,
+                "output_path": str(self.output_dir / m.filename),
+                "strips": [{
+                    "input_path": str(input_path),
+                    "region": (x, top, w, min(strip_height, y + h - top)),
+                    "scale_factor": s,
+                    "output_vips_path": str(self.temp_dir / f"{m.name}_strip_{i:04d}.v"),
+                    "strip_index": i,
+                    "modality": m.name,
+                } for i, top in enumerate(range(y, y + h, strip_height))],
+            })
 
         return file_plans
 

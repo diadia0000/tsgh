@@ -6,6 +6,11 @@ body,
   height: 100%;
 }
 
+/* Enlarge everything 30%: Tailwind text/spacing is rem-based off this root. */
+html {
+  font-size: 110%;
+}
+
 body {
   margin: 0;
 }

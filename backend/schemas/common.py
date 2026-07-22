@@ -11,13 +11,11 @@ class JobAccepted(BaseModel):
     job_id: str
 
 
-class OkResponse(BaseModel):
-    ok: bool = True
-
-
 class JobStatus(BaseModel):
     job_id: str
     status: str
     result_path: Optional[str] = None
     metadata: Optional[dict] = None
     error: Optional[str] = None
+    # Idempotency key the job was submitted under (alignment sends the run_id).
+    key: Optional[str] = None

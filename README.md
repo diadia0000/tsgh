@@ -89,7 +89,6 @@ tsgh/
 │   ├── module2_alignment.py         # VALIS image alignment
 │   ├── module3_roi_evaluation.py    # ROI quality evaluation
 │   ├── module4_thumbnail.py         # Thumbnail generation
-│   ├── module5_tile_generator.py    # Tile cutting
 │   ├── config_example.py
 │   └── artifacts/                   # Intermediate alignment artifacts
 │
@@ -301,15 +300,11 @@ python run_full_pipeline.py
 # With CZI preprocessing
 python run_full_pipeline.py --preprocess
 
-# With tile cutting
-python run_full_pipeline.py --tiles
-
 # Or run individual modules
 python module1_preprocess.py   # CZI → BigTIFF
 python module2_alignment.py    # VALIS registration
 python module3_roi_evaluation.py
 python module4_thumbnail.py
-python module5_tile_generator.py
 ```
 
 ### Standalone Scripts
@@ -389,8 +384,7 @@ CZI files → Module 1 (BigTIFF conversion)
           → Module 2 (VALIS alignment)
           → Module 3 (ROI evaluation)
           → Module 4 (thumbnail)
-          → Module 5 (tile cutting)
-          → IHC + DISH tile pairs  →  Hybrid Pipeline
+          → Aligned BigTIFF  →  Hybrid Pipeline (M0 precuts the IHC + DISH tile pairs)
 ```
 
 ---

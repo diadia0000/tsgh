@@ -79,25 +79,6 @@ class ThumbnailConfig:
 
 
 @dataclass
-class TileConfig:
-    """Tile 切割參數配置
-    
-    控制 Module 5 的 Tile 生成
-    
-    Attributes:
-        tile_width: Tile 寬度 (pixels)
-        tile_height: Tile 高度 (pixels)
-        workers: 並行執行緒數量
-        compression: 壓縮格式
-    """
-    
-    tile_width: int = 4096
-    tile_height: int = 4096
-    workers: int = 16
-    compression: str = "jpeg"
-
-
-@dataclass
 class RegistrationConfig:
     """完整配準流程配置
     
@@ -114,7 +95,6 @@ class RegistrationConfig:
         valis: VALIS 配準參數
         roi: ROI 評估參數
         thumbnail: 縮圖生成參數
-        tile: Tile 切割參數
     """
     
     # 專案名稱
@@ -152,10 +132,7 @@ class RegistrationConfig:
     
     # 縮圖生成參數
     thumbnail: ThumbnailConfig = field(default_factory=ThumbnailConfig)
-    
-    # Tile 切割參數
-    tile: TileConfig = field(default_factory=TileConfig)
-    
+
     def __post_init__(self) -> None:
         """初始化後設定預設模態"""
         if not self.modalities:
