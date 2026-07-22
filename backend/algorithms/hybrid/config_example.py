@@ -86,6 +86,11 @@ class Config:
     cellpose_cellprob_threshold: float = -0.8
     cellpose_gpu: bool = True
     clear_border_cells: bool = True
+    # 兩個 Cellpose 分割器共用。至此為止只有 hybrid_pipeline 的 getattr fallback 值 16
+    # 曾實際生效（本欄位不存在），故預設維持 16 以保持行為不變。注意它控制的是**單張
+    # 1024² 影像內部的 patch 批次大小**（Cellpose 自己把影像切成 bsize patch），不是
+    # 跨 tile 批次——在目前的 tile 尺寸下 segment_windowed 每次呼叫只跑一個視窗。
+    cellpose_batch_size: int = 16
 
     # ========== Cellpose 參數 (M3b: DISH 細胞核偵測，多核排除用) ==========
     cellpose_dish_diameter: Optional[float] = None
