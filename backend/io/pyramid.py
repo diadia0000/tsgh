@@ -22,9 +22,9 @@ from openslide import OpenSlide
 from openslide.deepzoom import DeepZoomGenerator
 
 # OpenSeadragon-friendly defaults; overlap=1 avoids seams between tiles.
-TILE_SIZE = 256
+TILE_SIZE = 1024
 OVERLAP = 1
-JPEG_QUALITY = 80
+JPEG_QUALITY = 95
 
 SLIDES_DIR = Path(
     os.environ.get("TSGH_SLIDES_DIR", Path(__file__).resolve().parents[2] / "slides")

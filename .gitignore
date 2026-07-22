@@ -23,3 +23,5 @@ skills-lock.json
 .codegraph/
 .claude/worktrees/
 .uv-cache/
+.csv
+.log

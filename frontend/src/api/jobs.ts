@@ -17,7 +17,7 @@ export function useJob(jobId: string | null) {
     enabled: jobId !== null,
     refetchInterval: (query) => {
       const status = query.state.data?.status
-      return status && TERMINAL.has(status) ? false : 1500
+      return status && TERMINAL.has(status) ? false : 6000
     },
     queryFn: async () => {
       const { data, error } = await api.GET('/api/jobs/{job_id}', {
