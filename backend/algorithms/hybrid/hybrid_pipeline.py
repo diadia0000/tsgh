@@ -83,7 +83,7 @@ try:
         core_crop_bounds,
         filter_and_absolutize,
     )
-    from .m0_reader import precut_paired_tiles
+    from .m0_reader import PrecutStream, precut_paired_tiles
 except ImportError:
     from config import config, compute_config_hash
     from m1_overlay import (
@@ -120,7 +120,7 @@ except ImportError:
         core_crop_bounds,
         filter_and_absolutize,
     )
-    from m0_reader import precut_paired_tiles
+    from m0_reader import PrecutStream, precut_paired_tiles
 
 # ------------------------------------------------------------------
 # Logging 設定
@@ -147,8 +147,9 @@ class _ChunkGpuState:
     """單塊『三個 GPU 前向已跑完、CPU 後段（detect_all_dots）尚未跑』的中繼狀態。
 
     這是把單塊分析從中間切開的交接資料：M1 UNet / M2 Cellpose / M3b DISH Cellpose
-    三個前向都已在主執行緒 / 單一 CUDA context 跑完，剩下的 detect_all_dots + merge
-    是純 CPU（joblib threads），可丟到背景執行緒與『下一塊的 GPU 前向』重疊。座標為分塊局部。
+    三個前向都已在主執行緒 / 單一 CUDA context 跑完，剩下的 build_all_positive_results /
+    enlarge_cell_instances / detect_all_dots + merge 是純 CPU（joblib threads），可丟到
+    背景執行緒與『下一塊的 GPU 前向』重疊。座標為分塊局部。
     """
 
     abs_x: int
@@ -157,9 +158,7 @@ class _ChunkGpuState:
     masked_ihc: np.ndarray
     dish_mask_overlay: np.ndarray
     instance_mask: np.ndarray
-    matching_mask: np.ndarray
     dish_nucleus_mask: np.ndarray            # segment_windowed 產出，尚未經 detect_all_dots 過濾
-    results_pre: List[CellAnalysisResult]    # build_all_positive_results，尚未 merge 點位
 
 
 @dataclass
@@ -204,7 +203,7 @@ def _init_cellpose_segmenter() -> CellposeSegmenter:
         diameter=config.cellpose_diameter,
         flow_threshold=config.cellpose_flow_threshold,
         cellprob_threshold=config.cellpose_cellprob_threshold,
-        batch_size=getattr(config, "cellpose_batch_size", 16),
+        batch_size=config.cellpose_batch_size,
         gpu=config.cellpose_gpu,
     )
 
@@ -216,7 +215,7 @@ def _init_dish_cellpose_segmenter() -> CellposeSegmenter:
         diameter=config.cellpose_dish_diameter,
         flow_threshold=config.cellpose_dish_flow_threshold,
         cellprob_threshold=config.cellpose_dish_cellprob_threshold,
-        batch_size=getattr(config, "cellpose_batch_size", 16),
+        batch_size=config.cellpose_batch_size,
         gpu=config.cellpose_gpu,
     )
 
@@ -554,11 +553,15 @@ def _process_one_chunk_gpu(
     cellpose_segmenter: CellposeSegmenter,
     dish_cellpose_segmenter: CellposeSegmenter,
 ) -> Optional[_ChunkGpuState]:
-    """單塊的 GPU 前段：M1→M2→M3b 三個前向 + M3 的純幾何前處理，核心遮罩全空回 None。
+    """單塊的 GPU 前段：M1→M2→M3b 三個前向，核心遮罩全空回 None。
 
-    只跑到 M3b 的 ``segment_windowed`` 為止（含 ``build_all_positive_results`` /
-    ``enlarge_cell_instances`` 兩步廉價 CPU 前處理，維持與拆分前相同的呼叫順序）；
-    ``detect_all_dots`` + merge 這段純 CPU 後段留給 ``_finish_chunk_cpu``。
+    只跑到 M3b 的 ``segment_windowed`` 為止；``build_all_positive_results`` /
+    ``enlarge_cell_instances`` / ``detect_all_dots`` + merge 這整段純 CPU 後段都留給
+    ``_finish_chunk_cpu``。前兩者原本夾在 M2 與 M3b 兩個前向之間跑在**主執行緒**上，
+    以 ``torch.cuda.Event`` 實測每塊會撐開一段 GPU 完全閒置的空窗（medium 錨點 84.5
+    ms/塊，其中這兩支佔 8.4 s / 121 塊）；而主執行緒這條 arm 才是關鍵路徑（BG/MAIN
+    ≈ 0.74，背景 arm 尚有餘裕）。兩者皆為純 NumPy/skimage、不碰 torch/CUDA，且其產物
+    只有 ``_finish_chunk_cpu`` 會讀，故移到背景執行緒不改變任何計算結果。
 
     ``edge_flags`` = ``(clear_top, clear_bottom, clear_left, clear_right)``（由
     ``TileGeometry.edge_flags`` 提供）：M2 不在分塊內部接縫清邊（``remove_border=False``），
@@ -592,13 +595,6 @@ def _process_one_chunk_gpu(
             clear_right=clear_right,
         )
 
-    # M3 前處理中屬「需序列 / 含 GPU 前向」的部分（順序與拆分前一致）：逐細胞結果表 →
-    # 放大 mask（供配對）→ M3b DISH 核 Cellpose 前向。detect_all_dots 之後才做（CPU 後段）。
-    results_pre = build_all_positive_results(instance_mask)
-    # M3 配對前處理：把綠色細胞 mask 實際放大（面積 ×cell_enlarge_area_factor），讓細胞
-    # 蓋到更多 DISH 核以提高配對成功率。放大版僅供配對 / 點偵測；原始 instance_mask 仍
-    # 用於 M4 視覺化與裁切，醫師看到的綠框維持不變。
-    matching_mask = enlarge_cell_instances(instance_mask, config)
     dish_nucleus_mask = segment_windowed(
         dish,
         dish_cellpose_segmenter,
@@ -614,25 +610,31 @@ def _process_one_chunk_gpu(
         masked_ihc=m1.masked_ihc,
         dish_mask_overlay=m1.dish_mask_overlay,
         instance_mask=instance_mask,
-        matching_mask=matching_mask,
         dish_nucleus_mask=dish_nucleus_mask,
-        results_pre=results_pre,
     )
 
 
 def _finish_chunk_cpu(gs: _ChunkGpuState) -> ChunkResult:
-    """單塊的 CPU 後段：``detect_all_dots`` + merge → 完整 ``ChunkResult``（純 CPU，無 torch）。
+    """單塊的 CPU 後段：M3 前處理 + ``detect_all_dots`` + merge → 完整 ``ChunkResult``。
 
-    對應拆分前 ``_run_m3_analysis_stage`` 的 ``detect_all_dots`` 之後兩步，計算完全相同。
+    純 CPU、無 torch，設計為在背景執行緒執行。計算與拆分前完全相同（同樣的輸入、同樣的
+    先後順序），只是 ``build_all_positive_results`` / ``enlarge_cell_instances`` 這兩步
+    改由本執行緒算，而不再佔用主執行緒的 GPU arm——見 ``_process_one_chunk_gpu`` docstring。
     """
+    results_pre = build_all_positive_results(gs.instance_mask)
+    # M3 配對前處理：把綠色細胞 mask 實際放大（面積 ×cell_enlarge_area_factor），讓細胞
+    # 蓋到更多 DISH 核以提高配對成功率。放大版僅供配對 / 點偵測；原始 instance_mask 仍
+    # 用於 M4 視覺化與裁切，醫師看到的綠框維持不變。
+    matching_mask = enlarge_cell_instances(gs.instance_mask, config)
+
     all_dots, per_cell_dots, dish_nucleus_mask = detect_all_dots(
         gs.dish_mask_overlay,
-        gs.matching_mask,
+        matching_mask,
         config,
         dish_nucleus_mask=gs.dish_nucleus_mask,
         core_mask=gs.core_mask,
     )
-    results = merge_dot_results_to_cell_analysis(gs.results_pre, per_cell_dots)
+    results = merge_dot_results_to_cell_analysis(results_pre, per_cell_dots)
 
     return ChunkResult(
         abs_x=gs.abs_x,
@@ -710,6 +712,7 @@ def run_batch(
     dish_dir: Path,
     output_dir: Path,
     merge_dir: Optional[Path] = None,
+    tile_stream: Optional[object] = None,
 ) -> dict:
     """批次處理『已預切』tile 目錄：逐塊分析 → 全域合併細胞表 → slide 級 overlay 縫合。
 
@@ -728,6 +731,10 @@ def run_batch(
         dish_dir: 已預切 DISH tile 目錄。
         output_dir: 輸出根目錄。
         merge_dir: 合併影像目錄 (可選)，用於產出 merge overlay。
+        tile_stream: 可選的 ``m0_reader.PrecutStream``。給定時**改由它供給 tile**
+            （``ihc_dir`` / ``dish_dir`` 不再被讀取），預切與本分析迴圈重疊執行，省掉
+            「整批切完才開工」的序列等待；不給則維持原本掃目錄的行為。處理順序改變不
+            影響輸出（全域重編號依 ``(abs_y, abs_x, cell_id)`` 排序、縫合按座標讀檔）。
 
     Returns:
         ``{"success": int, "skipped": int}`` 統計。批次內任一塊真實失敗即
@@ -740,25 +747,35 @@ def run_batch(
         "批次處理開始 — run_id=%s, config_hash=%s", run_id, cfg_hash
     )
 
-    paired_tiles = find_paired_tiles(
-        ihc_dir, dish_dir, config.supported_extensions
-    )
+    if tile_stream is None:
+        paired_tiles = find_paired_tiles(
+            ihc_dir, dish_dir, config.supported_extensions
+        )
 
-    if not paired_tiles:
-        logger.warning("未找到任何配對 tile")
-        return {"success": 0, "skipped": 0}
+        if not paired_tiles:
+            logger.warning("未找到任何配對 tile")
+            return {"success": 0, "skipped": 0}
 
-    # 由檔名解析每塊 (abs_x, abs_y)；IHC/DISH 同名同座標，防禦性地兩路都解析並比對。
-    positions: List[Tuple[int, int]] = []
-    for ihc_path, dish_path in paired_tiles:
-        ax, ay = parse_tile_coords(dish_path.name)
-        ihc_xy = parse_tile_coords(ihc_path.name)
-        if ihc_xy != (ax, ay):
-            raise ValueError(
-                f"IHC/DISH tile 座標不一致: {ihc_path.name} {ihc_xy} "
-                f"vs {dish_path.name} {(ax, ay)}"
-            )
-        positions.append((ax, ay))
+        # 由檔名解析每塊 (abs_x, abs_y)；IHC/DISH 同名同座標，防禦性地兩路都解析並比對。
+        positions: List[Tuple[int, int]] = []
+        for ihc_path, dish_path in paired_tiles:
+            ax, ay = parse_tile_coords(dish_path.name)
+            ihc_xy = parse_tile_coords(ihc_path.name)
+            if ihc_xy != (ax, ay):
+                raise ValueError(
+                    f"IHC/DISH tile 座標不一致: {ihc_path.name} {ihc_xy} "
+                    f"vs {dish_path.name} {(ax, ay)}"
+                )
+            positions.append((ax, ay))
+        tiles = ((i, d, p) for (i, d), p in zip(paired_tiles, positions))
+    else:
+        # 串流模式：格線先到（讀檔頭即可算出），tile 檔隨切隨到。IHC/DISH 兩路檔名由
+        # 同一個 pos 生成，座標一致是建構保證，不需再比對。
+        positions = list(tile_stream.positions)
+        if not positions:
+            logger.warning("未找到任何配對 tile")
+            return {"success": 0, "skipped": 0}
+        tiles = iter(tile_stream)
 
     # 一次算出縫合幾何；格線不完整（缺格 / 重複 / 對不上）會 raise ValueError，
     # 屬預期的 fail-fast 驗證，不吞。
@@ -771,7 +788,7 @@ def run_batch(
     dish_cellpose = _init_dish_cellpose_segmenter()
 
     stats = {"success": 0, "skipped": 0}
-    total = len(paired_tiles)
+    total = len(positions)
     # 每塊回傳 (abs_x, abs_y, owned_results)，供迴圈後全域排序 / 重編號。
     per_tile_owned: List[Tuple[int, int, List[CellAnalysisResult]]] = []
 
@@ -793,9 +810,7 @@ def run_batch(
     pending: Optional[Tuple[int, int, Future]] = None
     with _frozen_gc_generation(), \
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="tile-cpu") as pool:
-        for idx, ((ihc_path, dish_path), (ax, ay)) in enumerate(
-            zip(paired_tiles, positions), start=1
-        ):
+        for idx, (ihc_path, dish_path, (ax, ay)) in enumerate(tiles, start=1):
             logger.info(
                 "[%d/%d] 處理 tile: %s", idx, total, dish_path.stem
             )
@@ -992,11 +1007,13 @@ def _run_single_tile_cli(
     dish_arg: str,
     output_dir: Path,
 ) -> None:
-    """CLI 單一 ROI/WSI 影像對模式：先預切成重疊 tile 檔，再走 ``run_batch`` 流程。
+    """CLI 單一 ROI/WSI 影像對模式：預切成重疊 tile 檔並與 ``run_batch`` 重疊執行。
 
-    內部分塊已移除，故先用 ``precut_paired_tiles`` 把整對影像切到
-    ``output_dir/_precut_scratch/{ihc,dish}``（保留供檢查，不自動清理），再交給
-    ``run_batch`` 做逐塊分析 + 全域合併 + slide 級縫合。
+    內部分塊已移除，故以 ``PrecutStream`` 把整對影像切到
+    ``output_dir/_precut_scratch/{ihc,dish}``（保留供檢查，不自動清理）。格線只讀檔頭
+    即可算出，故先交出幾何、tile 檔隨切隨送進 ``run_batch``，切塊不再是分析開始前的一段
+    序列等待（large 錨點實測省下約 75% 的預切時間）。``run_batch`` 照常做逐塊分析 +
+    全域合併 + slide 級縫合。
     """
     ihc_path = _resolve_tile_path(ihc_arg, config.ihc_tile_dir)
     dish_path = _resolve_tile_path(dish_arg, config.dish_tile_dir)
@@ -1005,8 +1022,9 @@ def _run_single_tile_cli(
     scratch = output_dir / "_precut_scratch"
     ihc_out = scratch / "ihc"
     dish_out = scratch / "dish"
-    logger.info("單圖模式：預切 %s / %s → %s", ihc_path.name, dish_path.name, scratch)
-    precut_paired_tiles(
+    logger.info("單圖模式：預切 %s / %s → %s（與分析迴圈重疊）", ihc_path.name,
+                dish_path.name, scratch)
+    stream = PrecutStream(
         ihc_path,
         dish_path,
         ihc_out,
@@ -1015,7 +1033,7 @@ def _run_single_tile_cli(
         overlap=config.window_overlap_px,
     )
 
-    run_batch(ihc_out, dish_out, output_dir)
+    run_batch(ihc_out, dish_out, output_dir, tile_stream=stream)
 
 
 def _resolve_tile_path(arg: str, default_dir: Path) -> Path:
