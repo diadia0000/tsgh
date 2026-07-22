@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import * as tus from 'tus-js-client'
 
@@ -15,52 +15,19 @@ const MODALITIES = [
 ] as const
 type ModalityKey = (typeof MODALITIES)[number]['key']
 
-const CHUNK_SIZE = 64 * 1024 * 1024
+const CHUNK_SIZE = 500 * 1024 * 1024
 const VERY_LARGE_FILE_BYTES = 10 * 1024 * 1024 * 1024
 const INITIAL_PROGRESS: Record<ModalityKey, number> = { her2: 0, dish: 0, he: 0 }
+const INITIAL_DONE: Record<ModalityKey, boolean> = { her2: false, dish: false, he: false }
+
+// The run_id is the name of the job folder the backend creates under its
+// STORAGE_DIR, so it must match the server's rule in schemas/alignment.py --
+// checking here just turns a 422 into an inline hint.
+const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 
 function formatBytes(bytes: number) {
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`
-}
-
-// RFC-4122 v4 from getRandomValues (available in insecure contexts, unlike
-// crypto.randomUUID). Backend requires a parseable UUID (schemas/alignment.py).
-function uuidv4() {
-  const b = crypto.getRandomValues(new Uint8Array(16))
-  b[6] = (b[6] & 0x0f) | 0x40
-  b[8] = (b[8] & 0x3f) | 0x80
-  const h = [...b].map((x) => x.toString(16).padStart(2, '0'))
-  return `${h.slice(0, 4).join('')}-${h.slice(4, 6).join('')}-${h.slice(6, 8).join('')}-${h.slice(8, 10).join('')}-${h.slice(10, 16).join('')}`
-}
-
-// A stable run_id per file-set: kept in localStorage so a resumed upload lands
-// under the SAME run_id the pipeline is later told to run against.
-function runIdFor(files: Record<ModalityKey, File>) {
-  const fp = MODALITIES.map(({ key }) => {
-    const f = files[key]
-    return `${key}:${f.name}:${f.size}:${f.lastModified}`
-  }).join('|')
-  const storageKey = `czi-run:${fp}`
-  let runId: string | null = null
-  try {
-    runId = localStorage.getItem(storageKey)
-  } catch {
-    // Storage disabled: fall through to a fresh id; resume across reloads is lost but upload still works.
-  }
-  // Discard a stale non-UUID id left by an older build; the backend validates
-  // run_id with uuid.UUID() and would 500 on the tus on_upload_complete hook.
-  if (runId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId)) {
-    runId = null
-  }
-  // ponytail: crypto.randomUUID is secure-context only (HTTPS/localhost); fall back
-  // to getRandomValues (works over plain-HTTP LAN) — must stay a valid UUID v4, the
-  // backend validates it with uuid.UUID() (schemas/alignment.py).
-  runId ??= crypto.randomUUID?.() ?? uuidv4()
-  try {
-    localStorage.setItem(storageKey, runId)
-  } catch { /* best-effort */ }
-  return { runId, clear: () => { try { localStorage.removeItem(storageKey) } catch { /* ignore */ } } }
 }
 
 function uploadOne(file: File, runId: string, modality: ModalityKey, onPercent: (p: number) => void) {
@@ -70,6 +37,10 @@ function uploadOne(file: File, runId: string, modality: ModalityKey, onPercent: 
       chunkSize: CHUNK_SIZE,
       retryDelays: [0, 1000, 3000, 5000, 10000],
       removeFingerprintOnSuccess: true,
+      // tus's default fingerprint is file+endpoint only, so an interrupted
+      // upload would resume under the job it was *started* in even after the
+      // user picks a different one. Scope it to the job folder it targets.
+      fingerprint: async (f) => `tsgh-${runId}-${modality}-${f.name}-${f.size}-${f.lastModified}`,
       metadata: {
         filename: file.name,
         filetype: file.type || 'application/octet-stream',
@@ -81,10 +52,13 @@ function uploadOne(file: File, runId: string, modality: ModalityKey, onPercent: 
       onSuccess: () => resolve(),
     })
     // Resume across reloads / prior attempts when tus remembers this file.
+    // .catch(reject): a rejected findPreviousUploads/resume (stale resume URL,
+    // storage disabled) must fail the upload, not leave the promise pending
+    // forever — an unsettled promise here freezes the mutation on "上傳中…".
     upload.findPreviousUploads().then((prev) => {
       if (prev.length) upload.resumeFromPreviousUpload(prev[0])
       upload.start()
-    })
+    }).catch(reject)
     activeUploads.current.push(upload)
   })
 }
@@ -95,15 +69,22 @@ const activeUploads: { current: tus.Upload[] } = { current: [] }
 export function ImageUploader({
   disabled,
   onUploaded,
+  existingRunIds,
 }: {
   disabled?: boolean
   onUploaded: (runId: string) => void
+  existingRunIds: string[]
 }) {
   const [files, setFiles] = useState<Record<ModalityKey, File | null>>({ her2: null, dish: null, he: null })
+  // Prefilled so the common case is one keystroke-free upload; the collision
+  // warning below covers a second job on the same day.
+  const [runId, setRunId] = useState(() => `run-${new Date().toISOString().slice(0, 10)}`)
   const [progress, setProgress] = useState(INITIAL_PROGRESS)
+  const [done, setDone] = useState(INITIAL_DONE)
   const [uploadError, setUploadError] = useState<string | null>(null)
-  const runIdRef = useRef<string | null>(null)
   const allChosen = MODALITIES.every(({ key }) => files[key])
+  const validRunId = RUN_ID_RE.test(runId)
+  const overwriting = validRunId && existingRunIds.includes(runId)
   const largeFiles = MODALITIES.filter(({ key }) => (files[key]?.size ?? 0) >= VERY_LARGE_FILE_BYTES)
 
   const pick = (key: ModalityKey) => (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -114,27 +95,23 @@ export function ImageUploader({
     }
     setFiles((prev) => ({ ...prev, [key]: file }))
     setProgress((prev) => ({ ...prev, [key]: 0 }))
+    setDone((prev) => ({ ...prev, [key]: false }))
     setUploadError(null)
   }
 
   const upload = useMutation({
     mutationFn: async () => {
       setUploadError(null)
+      setDone(INITIAL_DONE)
       activeUploads.current = []
-      const chosen = Object.fromEntries(
-        MODALITIES.map(({ key }) => [key, files[key]!]),
-      ) as Record<ModalityKey, File>
-      const { runId, clear } = runIdFor(chosen)
-      runIdRef.current = runId
 
-      // ponytail: all three concurrently. Triples the transport burst on multi-GB
-      // files; go back to a sequential for-await loop if the link saturates.
-      await Promise.all(
-        MODALITIES.map(({ key }) =>
-          uploadOne(chosen[key], runId, key, (p) => setProgress((prev) => ({ ...prev, [key]: p }))),
-        ),
-      )
-      clear()
+      // Sequential: each file finishes before the next starts, so the link
+      // only ever carries one multi-GB transfer at a time.
+      for (const { key } of MODALITIES) {
+        // await resolves on tus onSuccess = server acknowledged, not just sent.
+        await uploadOne(files[key]!, runId, key, (p) => setProgress((prev) => ({ ...prev, [key]: p })))
+        setDone((prev) => ({ ...prev, [key]: true }))
+      }
       return runId
     },
     onError: (error) => {
@@ -155,6 +132,22 @@ export function ImageUploader({
         上傳影像 (CZI)
       </h2>
       <div className="flex flex-col gap-2">
+        <label className="flex flex-col gap-1 text-xs text-neutral-400">
+          工作名稱（伺服器上的資料夾）
+          <input
+            type="text"
+            value={runId}
+            onChange={(e) => setRunId(e.target.value)}
+            disabled={disabled || upload.isPending}
+            className="rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-xs text-neutral-200"
+          />
+        </label>
+        {!validRunId && (
+          <p className="text-xs text-red-400">名稱只能用英數字、- 或 _，需以英數字開頭，最多 64 字</p>
+        )}
+        {overwriting && (
+          <p className="text-xs text-amber-300">「{runId}」已存在，上傳會覆寫該工作的影像</p>
+        )}
         {MODALITIES.map(({ key, label }) => (
           <label key={key} className="flex flex-col gap-1 text-xs text-neutral-400">
             {label}
@@ -166,9 +159,11 @@ export function ImageUploader({
               className="text-xs text-neutral-300"
             />
             {files[key] && (
-              <div className="flex items-center gap-2 text-[11px] text-neutral-500">
+              <div className="flex items-center gap-2 text-[16px] text-neutral-500">
                 <progress className="h-1.5 flex-1" max={100} value={progress[key]} />
-                <span>{progress[key].toFixed(1)}%</span>
+                <span className={done[key] ? 'text-emerald-400' : undefined}>
+                  {done[key] ? '✓ 完成' : progress[key] >= 100 ? '處理中…' : `${progress[key].toFixed(1)}%`}
+                </span>
                 <span>{formatBytes(files[key]!.size)}</span>
               </div>
             )}
@@ -181,7 +176,7 @@ export function ImageUploader({
         )}
         <button
           type="button"
-          disabled={disabled || upload.isPending || !allChosen}
+          disabled={disabled || upload.isPending || !allChosen || !validRunId}
           onClick={() => upload.mutate()}
           className="rounded-md border border-neutral-700 bg-neutral-800 px-3 py-2 font-medium hover:bg-neutral-700 disabled:opacity-40"
         >
@@ -196,8 +191,32 @@ export function ImageUploader({
             取消上傳
           </button>
         )}
+        {/* Dev only (stripped from the prod bundle): skip the multi-GB upload and
+            point the run at CZIs already sitting on the server. */}
+        {import.meta.env.DEV && (
+          <button
+            type="button"
+            disabled={disabled || upload.isPending || !validRunId}
+            onClick={async () => {
+              setUploadError(null)
+              const res = await fetch('/api/alignment/dev-run', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ run_id: runId }),
+              })
+              if (!res.ok) {
+                setUploadError(`開發模式失敗：${await res.text()}`)
+                return
+              }
+              onUploaded((await res.json()).run_id)
+            }}
+            className="rounded-md border border-dashed border-amber-700 px-3 py-2 text-xs text-amber-300 hover:bg-amber-950/40 disabled:opacity-40"
+          >
+            ⚡ 開發模式：使用伺服器上的 CZI（跳過上傳）
+          </button>
+        )}
         {upload.isSuccess && <p className="text-xs text-emerald-400">上傳完成，可執行流程</p>}
-        {upload.isError && uploadError && <p className="text-xs text-red-400">{uploadError}</p>}
+        {uploadError && <p className="text-xs text-red-400">{uploadError}</p>}
       </div>
     </section>
   )

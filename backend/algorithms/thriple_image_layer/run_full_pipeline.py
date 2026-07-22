@@ -5,7 +5,6 @@
 - Module 2: VALIS Alignment
 - Module 3: ROI Quality Evaluation
 - Module 4: Thumbnail Generation
-- Module 5: Tile 切割 (--tiles)
 """
 import argparse
 import sys
@@ -28,10 +27,6 @@ def main() -> None:
     parser.add_argument(
         "--preprocess", action="store_true",
         help="執行 Module 1: CZI → BigTIFF 前處理",
-    )
-    parser.add_argument(
-        "--tiles", action="store_true",
-        help="執行 Module 5: Tile 切割",
     )
     args = parser.parse_args()
 

@@ -1,4 +1,4 @@
-"""Module 5: Tile Generator - 同時切割 HER2、DISH、Merged 三組對齊的 Tiles"""
+"""Tile Generator - 同時切割 HER2、DISH、Merged 三組對齊的 Tiles"""
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import pyvips

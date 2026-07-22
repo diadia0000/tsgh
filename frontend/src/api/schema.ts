@@ -4,6 +4,72 @@
  */
 
 export interface paths {
+    "/api/alignment/dev-run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Dev Run
+         * @description Fill the named run's czi_input/ with symlinks to the server-local CZIs,
+         *     i.e. the same state a finished upload leaves behind. Everything downstream
+         *     (paths, output isolation, slide publishing) is unchanged.
+         */
+        post: operations["create_dev_run_api_alignment_dev_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/alignment/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Runs
+         * @description Every run folder and how far it got, newest first. The frontend adopts the
+         *     first one on load and offers the rest as a picker, so a user comes back to
+         *     their work instead of re-running the pipeline from scratch.
+         */
+        get: operations["list_runs_api_alignment_runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/alignment/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Publish Run
+         * @description Re-point the viewer at an already-finished run's TIFFs. SLIDES_DIR holds
+         *     one global `aligned_result`, overwritten by whichever run ran thumbnail last,
+         *     so a resumed run has to reclaim it -- by symlink only, no recomputation.
+         */
+        post: operations["publish_run_api_alignment_publish_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/alignment/preprocess": {
         parameters: {
             query?: never;
@@ -72,7 +138,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/alignment/aligned-layers": {
+    "/api/alignment/tus/{uuid}": {
         parameters: {
             query?: never;
             header?: never;
@@ -81,12 +147,45 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /**
-         * Run Aligned Layers
-         * @description Warp each modality to the reference frame -> three aligned *_aligned_lvN.ome.tiff.
-         *     Requires /align to have produced the registrar pickle first.
-         */
-        post: operations["run_aligned_layers_api_alignment_aligned_layers_post"];
+        post?: never;
+        /** Extension Termination Route */
+        delete: operations["extension_termination_route_api_alignment_tus__uuid__delete"];
+        options?: never;
+        /** Core Head Route */
+        head: operations["core_head_route_api_alignment_tus__uuid__head"];
+        /** Core Patch Route */
+        patch: operations["core_patch_route_api_alignment_tus__uuid__patch"];
+        trace?: never;
+    };
+    "/api/alignment/tus/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Extension Creation Route */
+        post: operations["extension_creation_route_api_alignment_tus__post"];
+        delete?: never;
+        /** Core Options Route */
+        options: operations["core_options_route_api_alignment_tus__options"];
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/alignment/tus": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Extension Creation Route */
+        post: operations["extension_creation_route_api_alignment_tus_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -213,7 +312,6 @@ export interface components {
             valis?: components["schemas"]["ValisConfigIn"] | null;
             roi?: components["schemas"]["ROIConfigIn"] | null;
             thumbnail?: components["schemas"]["ThumbnailConfigIn"] | null;
-            tile?: components["schemas"]["TileConfigIn"] | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -222,10 +320,10 @@ export interface components {
         };
         /** HybridTileIn */
         HybridTileIn: {
-            /** Ihc Slide Id */
-            ihc_slide_id: string;
-            /** Dish Slide Id */
-            dish_slide_id: string;
+            /** Ihc Path */
+            ihc_path: string;
+            /** Dish Path */
+            dish_path: string;
             /** Output Dir */
             output_dir?: string | null;
             /** Merge Dir */
@@ -250,8 +348,8 @@ export interface components {
             } | null;
             /** Error */
             error?: string | null;
-            /** Message */
-            message?: string | null;
+            /** Key */
+            key?: string | null;
         };
         /** ModalityConfigIn */
         ModalityConfigIn: {
@@ -276,6 +374,19 @@ export interface components {
             /** Roi Size */
             roi_size?: number[] | null;
         };
+        /**
+         * RunSummary
+         * @description What a run directory already contains, so the UI can resume it instead of
+         *     re-running the whole pipeline.
+         */
+        RunSummary: {
+            /** Run Id */
+            run_id: string;
+            /** Done */
+            done: string[];
+            /** Job Id */
+            job_id?: string | null;
+        };
         /** ThumbnailConfigIn */
         ThumbnailConfigIn: {
             /** Level */
@@ -284,17 +395,6 @@ export interface components {
             use_non_rigid?: boolean | null;
             /** Laplacian Levels */
             laplacian_levels?: number | null;
-        };
-        /** TileConfigIn */
-        TileConfigIn: {
-            /** Tile Width */
-            tile_width?: number | null;
-            /** Tile Height */
-            tile_height?: number | null;
-            /** Workers */
-            workers?: number | null;
-            /** Compression */
-            compression?: string | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -329,6 +429,96 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    create_dev_run_api_alignment_dev_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlignmentConfigIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_runs_api_alignment_runs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunSummary"][];
+                };
+            };
+        };
+    };
+    publish_run_api_alignment_publish_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlignmentConfigIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     run_preprocess_api_alignment_preprocess_post: {
         parameters: {
             query?: never;
@@ -461,18 +651,49 @@ export interface operations {
             };
         };
     };
-    run_aligned_layers_api_alignment_aligned_layers_post: {
+    extension_termination_route_api_alignment_tus__uuid__delete: {
         parameters: {
             query?: never;
-            header?: never;
-            path?: never;
+            header?: {
+                "tus-resumable"?: string;
+            };
+            path: {
+                uuid: string;
+            };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AlignmentConfigIn"];
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
             };
         };
+    };
+    core_head_route_api_alignment_tus__uuid__head: {
+        parameters: {
+            query?: never;
+            header?: {
+                "tus-resumable"?: string;
+            };
+            path: {
+                uuid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -480,7 +701,143 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JobAccepted"];
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    core_patch_route_api_alignment_tus__uuid__patch: {
+        parameters: {
+            query?: {
+                post_request?: boolean;
+            };
+            header: {
+                "content-length": number;
+                "upload-offset": number;
+                "upload-length"?: number;
+                "content-type"?: string;
+                "tus-resumable"?: string;
+            };
+            path: {
+                uuid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    extension_creation_route_api_alignment_tus__post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "upload-metadata"?: string;
+                "upload-length"?: number;
+                "upload-defer-length"?: number;
+                "upload-concat"?: string;
+                "tus-resumable"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    core_options_route_api_alignment_tus__options: {
+        parameters: {
+            query?: never;
+            header?: {
+                "tus-resumable"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    extension_creation_route_api_alignment_tus_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "upload-metadata"?: string;
+                "upload-length"?: number;
+                "upload-defer-length"?: number;
+                "upload-concat"?: string;
+                "tus-resumable"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

@@ -36,7 +36,7 @@ tile dirs, `output_dir`, `slide_id`/`model_version`. `compute_config_hash()` is 
   - `m0_reader.py` — `precut_paired_tiles()` opens IHC/DISH with `pyvips.Image.new_from_file(access="random")`
     and writes aligned `tile_x{abs_x}_y{abs_y}.tiff` files to disk on the same grid as
     `m2_segmentation._overlap_window_coords` (`tile_size`/`window_overlap_px` from config); short edges are
-    white-filled like `module5_tile_generator._crop_tile`. Runs a thread pool (`workers=`) since it's pure I/O.
+    white-filled. Runs a thread pool (`workers=`) since it's pure I/O.
   - `m0_stitch.py` — `compute_tile_geometry()` derives a `TileGeometry` (cut lines + which tiles touch a real
     slide edge) purely from the set of `(abs_x, abs_y)` positions parsed from tile filenames — no read-back of
     the original WSI's true dimensions needed — and raises `ValueError` if the grid has gaps/dupes (fail-fast:

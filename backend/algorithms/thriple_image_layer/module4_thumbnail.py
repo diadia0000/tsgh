@@ -78,7 +78,7 @@ def generate_thumbnail(
     )
 
     print("對齊並儲存 HER2 影像 (non_rigid=False)...")
-    her2_warped = her2_obj.warp_slide(level=level, non_rigid=False, crop="overlap")
+    her2_warped = her2_obj.warp_slide(level=level, non_rigid=True, crop="overlap")
     her2_warped.tiffsave(
         str(her2_temp),
         compression='jpeg',

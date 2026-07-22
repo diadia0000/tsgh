@@ -6,7 +6,7 @@ Only this module is allowed to know about Pydantic; algorithms/ stays framework-
 Generic job types (JobAccepted/JobStatus) live in backend/schemas/common.py since
 they're shared with any future pipeline (e.g. hybrid), not alignment-specific.
 """
-import uuid
+import re
 from pathlib import Path
 from typing import List, Optional
 
@@ -18,7 +18,6 @@ from backend.algorithms.thriple_image_layer.config import (
     RegistrationConfig,
     ROIConfig,
     ThumbnailConfig,
-    TileConfig,
     ValisConfig,
 )
 
@@ -27,12 +26,33 @@ from backend.algorithms.thriple_image_layer.config import (
 # output paths (fixes the shared-storage race).
 STORAGE_DIR = Path("/home/sec312/project/storge_tsgh")
 
+# A run_id is a user-chosen folder name. Restricting it to letters/digits/-/_
+# is what stops a client-supplied value escaping STORAGE_DIR (no "/", no ".."),
+# and requiring a leading alphanumeric keeps internal directories like
+# _tus_incoming out of the run listing. A UUID still matches, so runs created
+# before naming existed keep working.
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+
+
+def is_run_id(name: str) -> bool:
+    return _RUN_ID_RE.fullmatch(name) is not None
+
 
 def run_base(run_id: str) -> Path:
-    """Filesystem base for a run. Validates run_id is a UUID so a client-supplied
-    value can never escape STORAGE_DIR via path traversal."""
-    uuid.UUID(run_id)  # raises ValueError on anything that isn't a UUID
+    """Filesystem base for a run. Validates the name so a client-supplied value
+    can never escape STORAGE_DIR via path traversal."""
+    if not is_run_id(run_id):
+        raise ValueError(f"invalid run_id: {run_id!r}")
     return STORAGE_DIR / run_id
+
+
+class RunSummary(BaseModel):
+    """What a run directory already contains, so the UI can resume it instead of
+    re-running the whole pipeline."""
+
+    run_id: str
+    done: List[str]  # step names whose artifacts are already on disk, in pipeline order
+    job_id: Optional[str] = None  # a step still executing server-side, if any
 
 
 class ModalityConfigIn(BaseModel):
@@ -64,13 +84,6 @@ class ThumbnailConfigIn(BaseModel):
     laplacian_levels: Optional[int] = None
 
 
-class TileConfigIn(BaseModel):
-    tile_width: Optional[int] = None
-    tile_height: Optional[int] = None
-    workers: Optional[int] = None
-    compression: Optional[str] = None
-
-
 class AlignmentConfigIn(BaseModel):
     """Request body accepted by every /api/alignment/* endpoint.
 
@@ -90,13 +103,12 @@ class AlignmentConfigIn(BaseModel):
     valis: Optional[ValisConfigIn] = None
     roi: Optional[ROIConfigIn] = None
     thumbnail: Optional[ThumbnailConfigIn] = None
-    tile: Optional[TileConfigIn] = None
 
     @field_validator("run_id")
     @classmethod
     def _validate_run_id(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None:
-            uuid.UUID(v)  # 422 if not a UUID -> blocks path traversal
+        if v is not None and not is_run_id(v):  # 422 -> blocks path traversal
+            raise ValueError("run_id must be 1-64 letters, digits, '-' or '_', starting alphanumeric")
         return v
 
     def to_registration_config(self) -> RegistrationConfig:
@@ -138,6 +150,4 @@ class AlignmentConfigIn(BaseModel):
             kwargs["roi"] = ROIConfig(**roi_kwargs)
         if self.thumbnail is not None:
             kwargs["thumbnail"] = ThumbnailConfig(**self.thumbnail.model_dump(exclude_none=True))
-        if self.tile is not None:
-            kwargs["tile"] = TileConfig(**self.tile.model_dump(exclude_none=True))
         return RegistrationConfig(**kwargs)
