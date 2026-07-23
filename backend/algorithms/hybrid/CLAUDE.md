@@ -61,10 +61,18 @@ tile dirs, `output_dir`, `slide_id`/`model_version`. `compute_config_hash()` is 
     them into `overlay_slide.tiff`, a pyramidal (`tile=True, pyramid=True`) TIFF QuPath can open directly.
     `pyvips.Image.arrayjoin()` cannot be used here — it assumes a uniform per-cell grid size and silently
     mis-pads when row/column tile sizes differ (as they do at slide edges); the fix is a manual row-then-column
-    `Image.join(..., expand=True)`. `run_batch()` is intentionally sequential (not parallelized) across tiles —
-    the 3 GPU models are loaded once in the main process and share one CUDA context, so cross-tile process
-    parallelism is unsafe (fork-under-CUDA); it also runs **fail-fast**, raising immediately if any tile errors,
-    since all tiles are pieces of one slide and a silent skip would produce a slide with an undocumented hole.
+    `Image.join(..., expand=True)`. `run_batch()` defaults to `workers=1`, which is sequential across tiles —
+    the 3 GPU models are loaded once in the main process and share one CUDA context, and **`fork`-based**
+    cross-tile parallelism would be unsafe (fork-under-CUDA: a forked child inherits a broken context).
+    `run_batch(workers=N)` does cross-tile multiprocessing safely by using **`spawn`** instead, so each worker
+    re-imports and re-initializes its own models/context (VRAM ~2.8 GB and ~3.1 s init per worker); measured
+    **3.09x at N=3** — see `docs/hybrid-pipeline/21-cross-tile-multiprocessing-implementation.md`. Workers only
+    ever return `(abs_x, abs_y, owned)`; the global cell renumbering still happens exactly once, in the parent.
+    **`workers=1` remains the default** (the API path never passes it) and is not cleared for production use
+    until full-WSI validation lands. `run_batch()` also runs **fail-fast** at any worker count, raising
+    immediately if any tile errors — and under multiprocessing the parent terminates every sibling worker
+    before re-raising — since all tiles are pieces of one slide and a silent skip would produce a slide with
+    an undocumented hole.
 - **M1 `m1_overlay.py`** — UNet++ produces the IHC core mask → applied to IHC & DISH →
   50/50 alpha blend (`overlay_alpha`) becomes the M2 input; an empty core mask short-circuits to an empty CSV.
 - **M2 `m2_segmentation.py`** — `CellposeSegmenter` segments the fused image → cell instance mask.
