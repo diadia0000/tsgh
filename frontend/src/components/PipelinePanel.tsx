@@ -72,9 +72,9 @@ export function PipelinePanel({ onResultSlide }: { onResultSlide?: (slideId: str
     },
   })
 
-  // Re-link a finished run's TIFFs into the viewer. SLIDES_DIR holds one global
-  // `aligned_result`, so a resumed run has to reclaim it -- symlinks only, no
-  // recomputation.
+  // Re-point the viewer at a finished run's TIFFs. `aligned_result` is one
+  // global slide_id, so a resumed run has to reclaim it -- no recomputation.
+  // Also what re-establishes the server-side pointer after a backend restart.
   const publish = useMutation({
     mutationFn: async (runId: string) => {
       const { error } = await api.POST('/api/alignment/publish', { body: { run_id: runId } })
@@ -173,7 +173,7 @@ export function PipelinePanel({ onResultSlide }: { onResultSlide?: (slideId: str
     }
     setJobId(null)
     setPipelineStepIndex(null)
-    // Finished run: SLIDES_DIR holds one global `aligned_result`, so reclaim it.
+    // Finished run: `aligned_result` is one global slide_id, so reclaim it.
     if (summary.done.length === ALIGN_STEPS.length) publishRun(summary.run_id)
   }, [publishRun])
 

@@ -10,8 +10,6 @@ Resumable CZI upload is delegated to the `tuspyserver` tus implementation
 (mounted as `tus_router`); this module only maps a finished upload into the
 run's czi_input/ directory the pipeline reads from.
 """
-import os
-import shutil
 from pathlib import Path
 from typing import List
 
@@ -24,7 +22,6 @@ from backend.algorithms.thriple_image_layer.module3_roi_evaluation import evalua
 from backend.algorithms.thriple_image_layer.module4_thumbnail import generate_thumbnail
 from backend.api.jobs import active_job, submit_job
 from backend.io import pyramid
-from backend.io.pyramid import SLIDES_DIR
 from backend.schemas.alignment import (
     STORAGE_DIR,
     AlignmentConfigIn,
@@ -70,71 +67,26 @@ tus_router = create_tus_router(
 )
 
 
-# Dev shortcut: CZIs that already sit on the server, so a developer doesn't wait
-# out a multi-GB upload over Tailscale just to exercise the pipeline. Set
-# TSGH_DEV_CZI_DIR to point at them; defaults to `<repo>/dev_data/czi/40X`.
-_DEV_CZI_DIR = Path(
-    os.environ.get(
-        "TSGH_DEV_CZI_DIR", Path(__file__).resolve().parents[2] / "dev_data" / "czi" / "40X"
-    )
-)
-
-
-@router.post("/dev-run")
-def create_dev_run(body: AlignmentConfigIn) -> dict:
-    """Fill the named run's czi_input/ with symlinks to the server-local CZIs,
-    i.e. the same state a finished upload leaves behind. Everything downstream
-    (paths, output isolation, slide publishing) is unchanged."""
-    if body.run_id is None:
-        raise HTTPException(422, "run_id required")
-    missing = [n for n in _MODALITY_DESTINATIONS.values() if not (_DEV_CZI_DIR / n).is_file()]
-    if missing:
-        raise HTTPException(404, f"{_DEV_CZI_DIR} is missing {missing}")
-    czi_input = run_base(body.run_id) / "czi_input"
-    czi_input.mkdir(parents=True, exist_ok=True)
-    for name in _MODALITY_DESTINATIONS.values():
-        link = czi_input / name
-        if link.exists() or link.is_symlink():  # a reused name must not collide
-            link.unlink()
-        link.symlink_to(_DEV_CZI_DIR / name)
-    return {"run_id": body.run_id}
-
-
 def _publish_aligned_result(result_tiff: Path) -> dict:
     """Expose the generated TIFF to the existing slide tile service."""
-    SLIDES_DIR.mkdir(parents=True, exist_ok=True)
-    slide_link = SLIDES_DIR / "aligned_result.tiff"
-    if slide_link.exists() or slide_link.is_symlink():
-        slide_link.unlink()
-    try:
-        slide_link.symlink_to(result_tiff)
-    except OSError:
-        shutil.copyfile(result_tiff, slide_link)
-    pyramid.invalidate("aligned_result")
+    pyramid.register("aligned_result", result_tiff)
     return {"slide_id": "aligned_result"}
 
 
 def _publish_aligned_layers(config) -> dict:
     """Expose the per-modality warped TIFFs module4 leaves in temp/ as individual
     slides, so the overlay viewer can blend HER2/DISH with live per-layer alpha.
-    They're already OpenSlide-readable pyramids (module4_thumbnail.py:48-52), so a
-    symlink into SLIDES_DIR is enough. HE is never warped (doctors don't need it
-    yet), so no HE layer is published — the frontend shows an empty HE slider."""
+    They're already OpenSlide-readable pyramids (module4_thumbnail.py:48-52), so
+    pointing the slide_id at them is enough. HE is never warped (doctors don't
+    need it yet), so no HE layer is published — the frontend shows an empty HE
+    slider."""
     level = config.thumbnail.level
     layers = {
         "aligned_her2": config.temp_dir / f"her2_warped_lv{level}.tiff",
         "aligned_dish": config.temp_dir / f"dish_warped_lv{level}.tiff",
     }
-    SLIDES_DIR.mkdir(parents=True, exist_ok=True)
     for slide_id, src in layers.items():
-        link = SLIDES_DIR / f"{slide_id}.tiff"
-        if link.exists() or link.is_symlink():
-            link.unlink()
-        try:
-            link.symlink_to(src)
-        except OSError:
-            shutil.copyfile(src, link)
-        pyramid.invalidate(slide_id)
+        pyramid.register(slide_id, src)
     return {"layer_slide_ids": list(layers)}
 
 
@@ -184,9 +136,9 @@ def list_runs() -> List[RunSummary]:
 
 @router.post("/publish")
 def publish_run(body: AlignmentConfigIn) -> dict:
-    """Re-point the viewer at an already-finished run's TIFFs. SLIDES_DIR holds
-    one global `aligned_result`, overwritten by whichever run ran thumbnail last,
-    so a resumed run has to reclaim it -- by symlink only, no recomputation."""
+    """Re-point the viewer at an already-finished run's TIFFs. `aligned_result`
+    is one global slide_id, taken over by whichever run ran thumbnail last, so a
+    resumed run has to reclaim it -- pointer only, no recomputation."""
     config = body.to_registration_config()
     result_tiff = _merged_tiff(config)
     if not result_tiff.is_file():

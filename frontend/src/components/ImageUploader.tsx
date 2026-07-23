@@ -191,30 +191,6 @@ export function ImageUploader({
             取消上傳
           </button>
         )}
-        {/* Dev only (stripped from the prod bundle): skip the multi-GB upload and
-            point the run at CZIs already sitting on the server. */}
-        {import.meta.env.DEV && (
-          <button
-            type="button"
-            disabled={disabled || upload.isPending || !validRunId}
-            onClick={async () => {
-              setUploadError(null)
-              const res = await fetch('/api/alignment/dev-run', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ run_id: runId }),
-              })
-              if (!res.ok) {
-                setUploadError(`開發模式失敗：${await res.text()}`)
-                return
-              }
-              onUploaded((await res.json()).run_id)
-            }}
-            className="rounded-md border border-dashed border-amber-700 px-3 py-2 text-xs text-amber-300 hover:bg-amber-950/40 disabled:opacity-40"
-          >
-            ⚡ 開發模式：使用伺服器上的 CZI（跳過上傳）
-          </button>
-        )}
         {upload.isSuccess && <p className="text-xs text-emerald-400">上傳完成，可執行流程</p>}
         {uploadError && <p className="text-xs text-red-400">{uploadError}</p>}
       </div>

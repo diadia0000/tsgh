@@ -34,15 +34,31 @@ _SUPPORTED = (".tiff", ".tif", ".svs", ".ndpi", ".mrxs", ".vms", ".scn", ".bif")
 _cache: dict[str, DeepZoomGenerator] = {}
 _lock = threading.Lock()
 
+# slide_ids pointing at files outside SLIDES_DIR -- pipeline output that lives in
+# its own run directory. Used to be symlinks into SLIDES_DIR, which stored a host
+# path that was wrong inside the container (and went stale on the next run).
+_registered: dict[str, Path] = {}
+
 
 class SlideNotFound(Exception):
     """slide_id did not resolve to a readable slide file under SLIDES_DIR."""
+
+
+def register(slide_id: str, path: Path) -> None:
+    """Serve `slide_id` from `path`, wherever it lives. In-memory on purpose: it
+    points at whichever run is currently published, and the frontend re-publishes
+    the run it adopts on load, so a restart re-establishes it."""
+    _registered[slide_id] = path
+    invalidate(slide_id)
 
 
 def _resolve(slide_id: str) -> Path:
     # Reject anything that could escape SLIDES_DIR before touching the disk.
     if not slide_id or "/" in slide_id or "\\" in slide_id or ".." in slide_id:
         raise SlideNotFound(slide_id)
+    path = _registered.get(slide_id)
+    if path is not None and path.is_file():
+        return path
     for ext in _SUPPORTED:
         path = SLIDES_DIR / f"{slide_id}{ext}"
         if path.is_file():
@@ -81,13 +97,13 @@ def list_slides() -> list[str]:
     """Every readable slide under SLIDES_DIR, addressed by slide_id (guardrail 2:
     the frontend picks from ids, never filesystem paths). Sorted for a stable
     picker order."""
-    if not SLIDES_DIR.is_dir():
-        return []
-    ids = {
-        p.stem
-        for p in SLIDES_DIR.iterdir()
-        if p.is_file() and p.suffix.lower() in _SUPPORTED
-    }
+    ids = {sid for sid, p in _registered.items() if p.is_file()}
+    if SLIDES_DIR.is_dir():
+        ids |= {
+            p.stem
+            for p in SLIDES_DIR.iterdir()
+            if p.is_file() and p.suffix.lower() in _SUPPORTED
+        }
     return sorted(ids)
 
 

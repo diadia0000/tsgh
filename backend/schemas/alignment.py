@@ -24,12 +24,15 @@ from backend.algorithms.thriple_image_layer.config import (
 
 # Root for per-upload isolated run directories. Each upload gets its own
 # {STORAGE_DIR}/{run_id}/ subtree so concurrent users never share czi_input /
-# output paths (fixes the shared-storage race). Set TSGH_STORAGE_DIR to point
-# elsewhere (e.g. a fast disk); defaults to `<repo>/storage`, mirroring
-# SLIDES_DIR's TSGH_SLIDES_DIR (backend/io/pyramid.py).
-STORAGE_DIR = Path(
-    os.environ.get("TSGH_STORAGE_DIR", Path(__file__).resolve().parents[2] / "storage")
-)
+# output paths (fixes the shared-storage race). Required, not defaulted: the old
+# `<repo>/storage` fallback silently dropped multi-GB CZIs and pipeline output
+# into the checkout whenever the var was missing (running outside compose).
+if "TSGH_STORAGE_DIR" not in os.environ:
+    raise RuntimeError(
+        "TSGH_STORAGE_DIR is not set -- point it at the data volume that holds "
+        "run directories (docker-compose.yml sets it to /data/storge_tsgh)"
+    )
+STORAGE_DIR = Path(os.environ["TSGH_STORAGE_DIR"])
 
 # A run_id is a user-chosen folder name. Restricting it to letters/digits/-/_
 # is what stops a client-supplied value escaping STORAGE_DIR (no "/", no ".."),
