@@ -360,6 +360,12 @@ def main():
     ap.add_argument("--cellpose-batch-size", type=int, default=None,
                     help="override config.cellpose_batch_size for a sweep (doc 13 P4); "
                          "omit to use the config default")
+    ap.add_argument("--mp-workers", type=int, default=1,
+                    help="cross-tile multiprocessing worker count (doc 20 Candidate D); "
+                         "1 = today's single-process path. NOTE: with >1 the monkeypatched "
+                         "per-function TIMINGS only see the parent, so the worker-side "
+                         "buckets (B1/B2/B3/...) come back empty -- end-to-end wall is the "
+                         "only honest comparison, per the playbook's step 4")
     ap.add_argument("--stream-precut", action="store_true",
                     help="overlap phase A precut with the analysis loop (doc 17 §4-4); "
                          "phaseA_precut_s then measures only the grid computation")
@@ -428,7 +434,8 @@ def main():
     tB0 = time.perf_counter()
     if prof:
         prof.enable()
-    stats = HP.run_batch(ihc_out, dish_out, out, tile_stream=stream)
+    stats = HP.run_batch(ihc_out, dish_out, out, tile_stream=stream,
+                         workers=args.mp_workers)
     if prof:
         prof.disable()
     tBCD = time.perf_counter() - tB0
@@ -445,6 +452,7 @@ def main():
     result = {
         "label": args.label,
         "n_tiles": n_tiles,
+        "mp_workers": args.mp_workers,
         "grid": {"cols": len(set(x for x, _ in positions)),
                  "rows": len(set(y for _, y in positions))},
         "wall": {
