@@ -67,12 +67,6 @@ def _crop_to_tile(img: pyvips.Image, x: int, y: int, tile: int) -> pyvips.Image:
     return crop
 
 
-def read_size(path: Path) -> Tuple[int, int]:
-    """回傳影像 ``(height, width)``（只讀檔頭，不解碼像素）。"""
-    img = pyvips.Image.new_from_file(str(path), access="random")
-    return img.height, img.width
-
-
 def chunk_offsets(
     height: int,
     width: int,
@@ -84,75 +78,6 @@ def chunk_offsets(
         (x0, y0)
         for (y0, x0, _y1, _x1) in _overlap_window_coords(height, width, tile_size, overlap)
     ]
-
-
-def precut_paired_tiles(
-    ihc_path: Path,
-    dish_path: Path,
-    ihc_out_dir: Path,
-    dish_out_dir: Path,
-    tile_size: int = 1024,
-    overlap: int = 256,
-    workers: int = 8,
-) -> List[Tuple[int, int]]:
-    """把對齊的 IHC / DISH 影像預切成重疊 tile 檔，寫入兩個輸出目錄。
-
-    兩路以同一視窗格線、相同 offset 切割；每塊均為 ``tile_size × tile_size``
-    （邊界以白底補滿），IHC 與 DISH 同名寫成 ``tile_x{x}_y{y}.tiff``，供
-    ``m1_overlay.find_paired_tiles`` 依同名 zip 配對。以 ThreadPoolExecutor 平行
-    處理裁切/寫檔（I/O bound；pyvips C 運算會釋放 GIL）。
-
-    Args:
-        ihc_path: IHC tile / ROI / WSI 影像路徑。
-        dish_path: DISH 影像路徑（須與 IHC 同尺寸）。
-        ihc_out_dir: IHC tile 輸出目錄（自動建立）。
-        dish_out_dir: DISH tile 輸出目錄（自動建立）。
-        tile_size: 分塊邊長（pixels）。
-        overlap: 相鄰分塊重疊寬度（pixels）；``stride = tile_size - overlap``。
-        workers: 平行裁切/寫檔的執行緒數。
-
-    Returns:
-        已寫出的所有 ``(abs_x, abs_y)`` 左上角座標（供呼叫端記錄/驗證）。
-
-    Raises:
-        ValueError: IHC/DISH 尺寸不一致，或任一邊 < ``tile_size``。
-    """
-    ihc_img = _open_rgb(Path(ihc_path))
-    dish_img = _open_rgb(Path(dish_path))
-
-    if (ihc_img.width, ihc_img.height) != (dish_img.width, dish_img.height):
-        raise ValueError(
-            f"IHC/DISH 尺寸不一致: ihc={(ihc_img.height, ihc_img.width)} "
-            f"vs dish={(dish_img.height, dish_img.width)}"
-        )
-
-    h, w = ihc_img.height, ihc_img.width
-    if min(h, w) < tile_size:
-        raise ValueError(
-            f"patch 邊長 {h}x{w} 小於最小允許尺寸 {tile_size}px——拒絕處理。"
-        )
-
-    ihc_out_dir = Path(ihc_out_dir)
-    dish_out_dir = Path(dish_out_dir)
-    ihc_out_dir.mkdir(parents=True, exist_ok=True)
-    dish_out_dir.mkdir(parents=True, exist_ok=True)
-
-    positions = chunk_offsets(h, w, tile_size, overlap)
-
-    def _cut(pos: Tuple[int, int]) -> None:
-        x, y = pos
-        name = f"tile_x{x}_y{y}.tiff"
-        _crop_to_tile(ihc_img, x, y, tile_size).write_to_file(
-            str(ihc_out_dir / name), compression=_TILE_COMPRESSION
-        )
-        _crop_to_tile(dish_img, x, y, tile_size).write_to_file(
-            str(dish_out_dir / name), compression=_TILE_COMPRESSION
-        )
-
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        list(executor.map(_cut, positions))
-
-    return positions
 
 
 class PrecutStream:
@@ -228,33 +153,3 @@ class PrecutStream:
             futures = [pool.submit(self._cut, pos) for pos in self.positions]
             for fut in as_completed(futures):
                 yield fut.result()
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="預切：把對齊的 IHC/DISH ROI/WSI 切成重疊 tile 檔於磁碟。"
-    )
-    parser.add_argument("--ihc", required=True, type=Path, help="IHC 影像路徑")
-    parser.add_argument("--dish", required=True, type=Path, help="DISH 影像路徑（須與 IHC 同尺寸）")
-    parser.add_argument("--ihc-out", required=True, type=Path, help="IHC tile 輸出目錄")
-    parser.add_argument("--dish-out", required=True, type=Path, help="DISH tile 輸出目錄")
-    parser.add_argument("--tile-size", type=int, default=1024, help="分塊邊長 (px)")
-    parser.add_argument("--overlap", type=int, default=256, help="相鄰分塊重疊寬度 (px)")
-    parser.add_argument("--workers", type=int, default=8, help="平行裁切/寫檔執行緒數")
-    args = parser.parse_args()
-
-    written = precut_paired_tiles(
-        args.ihc,
-        args.dish,
-        args.ihc_out,
-        args.dish_out,
-        tile_size=args.tile_size,
-        overlap=args.overlap,
-        workers=args.workers,
-    )
-    print(
-        f"完成：共寫出 {len(written)} 組 tile "
-        f"→ IHC={args.ihc_out} / DISH={args.dish_out}"
-    )

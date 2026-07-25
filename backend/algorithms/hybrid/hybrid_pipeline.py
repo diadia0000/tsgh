@@ -83,7 +83,7 @@ try:
         core_crop_bounds,
         filter_and_absolutize,
     )
-    from .m0_reader import PrecutStream, precut_paired_tiles
+    from .m0_reader import PrecutStream
 except ImportError:
     from config import config, compute_config_hash
     from m1_overlay import (
@@ -120,7 +120,7 @@ except ImportError:
         core_crop_bounds,
         filter_and_absolutize,
     )
-    from m0_reader import PrecutStream, precut_paired_tiles
+    from m0_reader import PrecutStream
 
 # ------------------------------------------------------------------
 # Logging 設定
@@ -934,7 +934,7 @@ def run_batch(
     output_dir: Path,
     merge_dir: Optional[Path] = None,
     tile_stream: Optional[object] = None,
-    workers: int = 1,
+    workers: int = 4,
 ) -> dict:
     """批次處理『已預切』tile 目錄：逐塊分析 → 全域合併細胞表 → slide 級 overlay 縫合。
 
