@@ -633,6 +633,7 @@ def _finish_chunk_cpu(gs: _ChunkGpuState) -> ChunkResult:
         config,
         dish_nucleus_mask=gs.dish_nucleus_mask,
         core_mask=gs.core_mask,
+        n_jobs=config.dot_detect_n_jobs,
     )
     results = merge_dot_results_to_cell_analysis(results_pre, per_cell_dots)
 
