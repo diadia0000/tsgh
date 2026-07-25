@@ -260,7 +260,9 @@ python hybrid_pipeline.py --test --output /path/to/output
 
 Tile pairing during precut is by filename coordinate: `tile_x{int}_y{int}`. There is no `--batch` flag — `--ihc`/`--dish` already accepts a whole WSI and precuts it internally (`PrecutStream`), so there is no separate "batch over a directory of pre-cut tiles" mode.
 
-**Cross-tile multiprocessing (`workers=N`)**: `run_batch()` (called internally, not yet exposed as a CLI flag on `hybrid_pipeline.py`) accepts a `workers` argument that runs `N` `spawn`-ed processes, each with its own model set and CUDA context, over a shared dynamic tile queue. Measured **3.09x** at `workers=3` on the reference RTX 5090. It defaults to `workers=1` (today's sequential behavior; the API path never passes it) and is **not yet cleared for production** — it's gated on full-WSI-scale validation. Full detail: [`docs/hybrid-pipeline/21-cross-tile-multiprocessing-implementation.md`](docs/hybrid-pipeline/21-cross-tile-multiprocessing-implementation.md). `scripts/perf_measure.py --mp-workers N` is the current way to exercise it.
+**Single-process default got faster too**: a one-line config fix (`dot_detect_n_jobs: int = 1`, replacing an unbounded joblib fan-out inside `detect_all_dots`) measured **1.60x** at `workers=1` — the production default — because the removed background threads were starving the GPU main thread of the GIL, not because the CPU stage itself got cheaper. Detail: [`docs/hybrid-pipeline/23-next-optimization-cycle-implementation.md`](docs/hybrid-pipeline/23-next-optimization-cycle-implementation.md) §4.
+
+**Cross-tile multiprocessing (`workers=N`)**: `run_batch()` (called internally, not yet exposed as a CLI flag on `hybrid_pipeline.py`) accepts a `workers` argument that runs `N` `spawn`-ed processes, each with its own model set and CUDA context, over a shared dynamic tile queue. Measured **3.09x** at `workers=3` on the reference RTX 5090 (round 5); after the `dot_detect_n_jobs` fix landed, a worker-count re-sweep (round 6) revised the recommendation down to **`workers=4`** for unattended jobs / `workers=5` when a restart is cheap — `workers≥6` showed a **2-in-6 CUDA allocator OOM** rate on the same anchor, which voids a whole fail-fast batch. It defaults to `workers=1` (today's sequential behavior; the API path never passes it) and is **not yet cleared for production** — it's gated on full-WSI-scale validation. Full detail: [`docs/hybrid-pipeline/21-cross-tile-multiprocessing-implementation.md`](docs/hybrid-pipeline/21-cross-tile-multiprocessing-implementation.md) (round 5) and [`docs/hybrid-pipeline/23-next-optimization-cycle-implementation.md`](docs/hybrid-pipeline/23-next-optimization-cycle-implementation.md) §6 (round 6 re-tune). `scripts/perf_measure.py --mp-workers N` is the current way to exercise it.
 
 #### Key Configuration Parameters
 
@@ -294,6 +296,7 @@ class Config:
     cellpose_flow_threshold: float = 0.6
     cellpose_cellprob_threshold: float = -0.8
     cellpose_batch_size: int = 16               # per-tile internal patch batch, not cross-tile
+    dot_detect_n_jobs: int = 1                  # joblib workers for detect_all_dots; keep at 1 (see below)
 
     # Tiling / sliding-window deduplication (M0/M2/M3b)
     default_tile_size: int = 1024
@@ -480,7 +483,7 @@ Case-level ratio (`ΣHER2/ΣCEP17`) and average HER2 copy number over valid cell
 
 ### Performance
 
-Real, measured end-to-end numbers (RTX 5090, real WSI crops) live in [`docs/hybrid-pipeline/measurement/bottleneck-list.md`](docs/hybrid-pipeline/measurement/bottleneck-list.md) and are kept current there rather than duplicated here. Headline: single-process (`workers=1`) is ~1.1 s/tile at the 441-tile anchor (~10.5 h upper-bound full-WSI estimate); with cross-tile multiprocessing at `workers=3` that drops to ~0.33 s/tile (~3.3 h upper-bound), pending the production gate noted in [Usage](#hybrid-pipeline-main).
+Real, measured end-to-end numbers (RTX 5090, real WSI crops) live in [`docs/hybrid-pipeline/measurement/bottleneck-list.md`](docs/hybrid-pipeline/measurement/bottleneck-list.md) and are kept current there rather than duplicated here. Headline (round 6): single-process (`workers=1`, the production default) is ~0.69 s/tile at the 441-tile anchor (~5.3 h upper-bound full-WSI estimate, on the corrected 27,565-tile full-slide grid — earlier estimates assumed 35,700); with cross-tile multiprocessing at `workers=4` (round 6's revised recommendation) that drops to ~0.29 s/tile (~2.2 h upper-bound), pending the production gate noted in [Usage](#hybrid-pipeline-main).
 
 ---
 
@@ -616,5 +619,5 @@ This project builds upon:
 
 ---
 
-**Last Updated:** 2026-07-23
+**Last Updated:** 2026-07-25
 **Version:** 0.1.0
