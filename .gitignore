@@ -25,3 +25,4 @@ skills-lock.json
 .uv-cache/
 .csv
 .log
+docs/measurement/*/
