@@ -38,7 +38,7 @@ def run_hybrid_tile(body: HybridTileIn, background_tasks: BackgroundTasks) -> Jo
             overlap=config.window_overlap_px,
         )
         stats = run_batch(ihc_out, dish_out, output_dir, merge_dir=merge_dir,
-                          tile_stream=stream)
+                          tile_stream=stream, workers=1)
         return str(output_dir), stats
 
     return JobAccepted(job_id=submit_job(background_tasks, _run))
