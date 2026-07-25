@@ -187,6 +187,11 @@ class Config:
     # ========== 執行參數 ==========
     num_workers: int = 12
     batch_size: int = 4
+    # detect_all_dots 的 per-cell 平行度（joblib threads）。1 = 序列。
+    # 實測（docs/hybrid-pipeline/23-*.md A2）：每顆 cell 的偵測工作太小（~4 ms、
+    # 一塊只有數十顆），thread 派工 + GIL 成本遠大於平行收益，且**單調變差**——
+    # 20 threads 比序列慢 2.77x（721.5 vs 260.3 ms/tile，紅黑點數完全相同）。
+    dot_detect_n_jobs: int = 1
     device: str = field(
         default_factory=lambda: "cuda" if cuda.is_available() else "cpu"
     )
