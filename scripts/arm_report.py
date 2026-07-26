@@ -43,6 +43,11 @@ BG = {
     "B2_tiff_encode": "TIFF encode",
     "B2_render_overlay": "render_overlay_image",
     "B2_percell_crops": "per-cell crops",
+    # Round 7 split background-tile placeholder writes out of B2_png_encode into their
+    # own bucket (Candidate F). It is the whole of a background tile's BG-arm work, and
+    # its inner B2_*_encode_blank buckets are a breakdown of it -- so count F here and
+    # leave those out, or the arm total double-counts them.
+    "F_write_blank_tile": "blank-tile placeholder writes",
 }
 OUTSIDE = {
     "D_stitch_overlay": "stitch D",
