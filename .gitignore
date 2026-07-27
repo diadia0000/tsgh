@@ -27,3 +27,5 @@ skills-lock.json
 .log
 docs/hybrid-pipeline/measurement/*/*
 scripts/
+docs/hybrid-pipeline/
+docs/algo/
