@@ -9,7 +9,7 @@ Date: 2026-02-05
 
 import logging
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict
+from typing import Tuple, Optional, Dict
 
 import numpy as np
 import torch

@@ -12,9 +12,8 @@ M1: IHC-DISH 遮罩疊加模組
 import logging
 import re
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
-import cv2
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
@@ -52,7 +51,7 @@ def parse_tile_coords(tile_name: str) -> Tuple[int, int]:
 # ------------------------------------------------------------------
 
 def generate_ihc_core_mask(
-    ihc_tile_path: Path,
+    ihc_image: Union[np.ndarray, Path, str],
     unet_inferencer: object,
     close_kernel: int = 7,
 ) -> np.ndarray:
@@ -64,7 +63,9 @@ def generate_ihc_core_mask(
     當影像大於模型訓練尺寸時，自動以滑動視窗推論。
 
     Args:
-        ihc_tile_path: IHC tile 影像路徑。
+        ihc_image: IHC tile 影像本身（RGB ``uint8 (H,W,3)`` ndarray）或其路徑——
+            ``UNetPPInference.predict_single`` 兩者皆吃。管線路徑（``hybrid_pipeline``）
+            一律傳「已讀好的 ndarray」，因為同一張圖 M1/M2 都要用，重讀一次是白花的 I/O。
         unet_inferencer: 已初始化的 ``UNetPPInference`` 物件。
         close_kernel: 形態學閉合核大小 (pixels)，連接微小斷裂。
 
@@ -76,7 +77,7 @@ def generate_ihc_core_mask(
     except ImportError:
         from unet_inference import postprocess_membrane_mask  # noqa: WPS433
 
-    raw_mask: np.ndarray = unet_inferencer.predict_single(ihc_tile_path)
+    raw_mask: np.ndarray = unet_inferencer.predict_single(ihc_image)
     core_mask = postprocess_membrane_mask(
         raw_mask,
         close_kernel_size=close_kernel,

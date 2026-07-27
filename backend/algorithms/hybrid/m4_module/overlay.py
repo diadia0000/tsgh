@@ -1,8 +1,6 @@
-"""全 tile overlay 視覺化與接縫格線。"""
+"""全 tile overlay 視覺化與接縫虛線。"""
 
-import logging
 import math
-from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import cv2
@@ -13,8 +11,6 @@ try:
     from ..hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
 except ImportError:
     from hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
-
-logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------
 # 顏色常數 (BGR for OpenCV)
@@ -30,7 +26,6 @@ _COLOR_DISH_BBOX = (0, 165, 255)
 _COLOR_DISH_MATCHED = (147, 20, 255)
 _COLOR_DRIFT_ARROW = (139, 0, 0)
 _COLOR_CELL_ID = (0, 255, 255)
-_COLOR_WINDOW_GRID = (255, 255, 0)
 
 
 def render_overlay_image(
@@ -50,31 +45,6 @@ def render_overlay_image(
         per_cell_dots=per_cell_dots,
     )
     return cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
-
-
-def export_overlay_visualization(
-    overlay_image: np.ndarray,
-    cell_instance_mask: np.ndarray,
-    results: List[CellAnalysisResult],
-    output_path: Path,
-    all_dots: Optional[List[DetectedDot]] = None,
-    dish_nucleus_mask: Optional[np.ndarray] = None,
-    per_cell_dots: Optional[Dict[int, CellDotResult]] = None,
-) -> Path:
-    """匯出含有細胞邊界、AMP/排除標註與點位的疊加圖。"""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    canvas = cv2.cvtColor(overlay_image.copy(), cv2.COLOR_RGB2BGR)
-    _draw_overlay_layers(
-        canvas, cell_instance_mask, results,
-        all_dots=all_dots,
-        dish_nucleus_mask=dish_nucleus_mask,
-        per_cell_dots=per_cell_dots,
-    )
-
-    cv2.imwrite(str(output_path), canvas)
-    logger.info("Overlay 匯出完成: %s", output_path.name)
-    return output_path
 
 
 def _draw_overlay_layers(
@@ -102,20 +72,6 @@ def _draw_overlay_layers(
     _draw_cell_labels(canvas, results)
     if all_dots:
         _draw_dots(canvas, all_dots)
-
-
-def export_dot_only_visualization(
-    image: np.ndarray,
-    all_dots: List[DetectedDot],
-    output_path: Path,
-) -> Path:
-    """匯出純粹的 tile 層級紅/黑點 QA 圖（不含細胞邊界）。"""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    canvas = cv2.cvtColor(image.copy(), cv2.COLOR_RGB2BGR)
-    _draw_dots(canvas, all_dots)
-    cv2.imwrite(str(output_path), canvas)
-    logger.info("Dot 視覺化匯出: %s (%d 點)", output_path.name, len(all_dots))
-    return output_path
 
 
 def _draw_cell_boundaries(
@@ -274,24 +230,8 @@ def _draw_dots(
 
 
 # ------------------------------------------------------------------
-# 1k sliding-window 接縫虛線格
+# tile 接縫虛線
 # ------------------------------------------------------------------
-
-def draw_dashed_grid(
-    canvas: np.ndarray,
-    tile_size: int,
-    color: Tuple[int, int, int] = _COLOR_WINDOW_GRID,
-    thickness: int = 2,
-    dash: int = 22,
-    gap: int = 14,
-) -> None:
-    """在 canvas 上就地畫出 tile_size 間距的內部接縫虛線格。"""
-    h, w = canvas.shape[:2]
-    for x in range(tile_size, w, tile_size):
-        _dashed_segment(canvas, (x, 0), (x, h), color, thickness, dash, gap)
-    for y in range(tile_size, h, tile_size):
-        _dashed_segment(canvas, (0, y), (w, y), color, thickness, dash, gap)
-
 
 def _dashed_segment(
     canvas: np.ndarray,
@@ -340,22 +280,3 @@ def draw_tile_seam_edges(
         _dashed_segment(crop, (w - 1, 0), (w - 1, h), color, thickness, dash, gap)
     if bottom:
         _dashed_segment(crop, (0, h - 1), (w, h - 1), color, thickness, dash, gap)
-
-
-def stamp_grid_on_overlays(
-    output_dir: Path,
-    tile_size: int,
-    pattern: str = "*_overlay.png",
-) -> int:
-    """為 output_dir 中所有符合 pattern 的影像就地補上虛線格。"""
-    count = 0
-    for path in sorted(output_dir.glob(pattern)):
-        image = cv2.imread(str(path))  # BGR
-        if image is None:
-            continue
-        draw_dashed_grid(image, tile_size)
-        cv2.imwrite(str(path), image)
-        count += 1
-    if count:
-        logger.info("已在 %d 張 %s 上補虛線格 (tile=%d)", count, pattern, tile_size)
-    return count

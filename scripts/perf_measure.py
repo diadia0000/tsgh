@@ -191,15 +191,25 @@ def _seg_label() -> str:
     return "m2_cellpose" if _ev_seg_calls == 1 else "m3b_cellpose"
 
 
+_blank_ctx = threading.local()
+
+
 def wrap_save_tile_array():
     """_save_tile_array: split by suffix into PNG-encode vs TIFF-encode buckets,
-    and count output bytes after write."""
+    and count output bytes after write.
+
+    Writes issued from _write_blank_tile get their own `_blank` buckets (doc 24
+    §0.4 footnote assumed, but never measured, that background-tile writes are a
+    small fast-compressing share of B2_png_encode -- this splits them out so the
+    assumption is checked instead of inherited)."""
     orig = HP._save_tile_array
 
     @functools.wraps(orig)
     def shim(path, array):
         suffix = str(path).lower().rsplit(".", 1)[-1]
         bucket = "B2_png_encode" if suffix == "png" else "B2_tiff_encode"
+        if getattr(_blank_ctx, "active", False):
+            bucket += "_blank"
         t0 = time.perf_counter()
         out = orig(path, array)
         dt = time.perf_counter() - t0
@@ -211,6 +221,52 @@ def wrap_save_tile_array():
         return out
 
     HP._save_tile_array = shim
+
+
+def wrap_write_blank_tile():
+    """_write_blank_tile: Candidate F (doc 24 §2.5) -- the six placeholder writes a
+    background tile issues, never separately measured before this round."""
+    orig = HP._write_blank_tile
+
+    @functools.wraps(orig)
+    def shim(*a, **k):
+        _blank_ctx.active = True
+        t0 = time.perf_counter()
+        try:
+            return orig(*a, **k)
+        finally:
+            _rec("F_write_blank_tile", time.perf_counter() - t0)
+            _blank_ctx.active = False
+
+    HP._write_blank_tile = shim
+
+
+# Candidate G (doc 24 §2.6): _save_tile_array runs `path.parent.mkdir(parents=True,
+# exist_ok=True)` before every write, i.e. 6 mkdir syscalls per tile against six
+# fixed directories that exist after the first tile. Timing Path.mkdir process-wide
+# and splitting by target tells us the redundant share without touching the pipeline.
+_FIXED_OUT_DIRS = {
+    "core_mask", "masked_ihc", "dish_mask_overlay", "instance_mask",
+    "dish_nucleus_mask", "overlay_annotated", "merge_overlay",
+}
+
+
+def wrap_mkdir():
+    import pathlib
+    orig = pathlib.Path.mkdir
+
+    @functools.wraps(orig)
+    def shim(self, *a, **k):
+        t0 = time.perf_counter()
+        try:
+            return orig(self, *a, **k)
+        finally:
+            dt = time.perf_counter() - t0
+            bucket = ("G_mkdir_fixed_outdir" if self.name in _FIXED_OUT_DIRS
+                      else "G_mkdir_other")
+            _rec(bucket, dt)
+
+    pathlib.Path.mkdir = shim
 
 
 # ------------------------------------------------------------------
@@ -284,6 +340,8 @@ def install_wrappers():
     wrap(HP, "segment_masked_dish", "B1_m2_cellpose")
     # B2 file I/O out
     wrap_save_tile_array()
+    wrap_write_blank_tile()
+    wrap_mkdir()
     wrap(HP, "export_per_cell_images", "B2_percell_crops")
     wrap(HP, "render_overlay_image", "B2_render_overlay")
     # B2r read
@@ -344,6 +402,27 @@ def dir_bytes(p: Path) -> int:
     return total
 
 
+def _sum_worker_timings(per_worker: list) -> dict:
+    """Fold every worker's TIMINGS into one bucket table.
+
+    The sum is *aggregate CPU time across workers*, not wall — at `workers=4` a
+    bucket totalling 200 s occupied roughly 50 s of the run. It answers "where did
+    the work go", which is what the parent-only instrumentation could not; it does
+    not answer "how long did the run take". Use `wall.end_to_end_total_s` for that.
+    """
+    out: dict = {}
+    for entry in per_worker:
+        for bucket, vals in entry.get("timings", {}).items():
+            acc = out.setdefault(bucket, {})
+            for k, v in vals.items():
+                if isinstance(v, (int, float)):
+                    acc[k] = acc.get(k, 0) + v
+    for vals in out.values():
+        if "t" in vals:
+            vals["t"] = round(vals["t"], 3)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ihc", required=True)
@@ -362,10 +441,25 @@ def main():
                          "omit to use the config default")
     ap.add_argument("--mp-workers", type=int, default=1,
                     help="cross-tile multiprocessing worker count (doc 20 Candidate D); "
-                         "1 = today's single-process path. NOTE: with >1 the monkeypatched "
-                         "per-function TIMINGS only see the parent, so the worker-side "
-                         "buckets (B1/B2/B3/...) come back empty -- end-to-end wall is the "
-                         "only honest comparison, per the playbook's step 4")
+                         "1 = today's single-process path. The monkeypatched TIMINGS only "
+                         "see the parent, so with >1 pass --worker-timings to have each "
+                         "worker report its own buckets; end-to-end wall remains the only "
+                         "thing to *decide* on, per the playbook's step 4")
+    ap.add_argument("--worker-timings", action="store_true",
+                    help="with --mp-workers>1, install the same timing shims inside each "
+                         "spawned worker and collect their TIMINGS back over the result "
+                         "queue (DISCOVERED #40). Adds the shim overhead to the worker "
+                         "hot path, so use these runs for stage breakdown, not for "
+                         "wall-clock comparison")
+    ap.add_argument("--resume", action="store_true",
+                    help="enable run_batch's per-tile checkpoint so an interrupted run "
+                         "restarts where it stopped (doc 19 #1c); intended for full-slide "
+                         "runs, not for repeat-measurement rounds -- a resumed run does "
+                         "less work and its wall-clock is not comparable")
+    ap.add_argument("--cuda-alloc-conf", default=None,
+                    help="override config.cuda_alloc_conf for the spawned workers, e.g. "
+                         "'expandable_segments:True' (doc 19 #7b). Only meaningful with "
+                         "--mp-workers>1; the parent never allocates on the device there")
     ap.add_argument("--stream-precut", action="store_true",
                     help="overlap phase A precut with the analysis loop (doc 17 §4-4); "
                          "phaseA_precut_s then measures only the grid computation")
@@ -389,6 +483,21 @@ def main():
     # at init time, and both modules hold the same Config object.
     if args.cellpose_batch_size is not None:
         CFG.cellpose_batch_size = args.cellpose_batch_size
+    if args.cuda_alloc_conf is not None:
+        CFG.cuda_alloc_conf = args.cuda_alloc_conf
+
+    # The worker probe is passed by environment because `spawn` children inherit it
+    # and re-import everything else from scratch; a function reference would have to
+    # be picklable out of `__main__`, which re-executes this script in the child.
+    if args.worker_timings:
+        if args.mp_workers <= 1:
+            print("[perf_measure] --worker-timings needs --mp-workers>1; ignoring")
+        else:
+            os.environ["HYBRID_MP_WORKER_PROBE"] = "mp_worker_probe:install"
+            os.environ["PYTHONPATH"] = os.pathsep.join(
+                filter(None, [str(Path(__file__).resolve().parent),
+                              os.environ.get("PYTHONPATH", "")])
+            )
 
     sampler = ResourceSampler(metrics_dir / f"{args.label}_resource.csv", interval=0.5)
     dmon_p = dmon_f = None
@@ -435,7 +544,7 @@ def main():
     if prof:
         prof.enable()
     stats = HP.run_batch(ihc_out, dish_out, out, tile_stream=stream,
-                         workers=args.mp_workers)
+                         workers=args.mp_workers, checkpoint=args.resume)
     if prof:
         prof.disable()
     tBCD = time.perf_counter() - tB0
@@ -466,6 +575,9 @@ def main():
         },
         "stats": stats,
         "timings": TIMINGS,
+        "worker_timings": HP.LAST_MP_WORKER_TIMINGS,
+        "worker_timings_total": _sum_worker_timings(HP.LAST_MP_WORKER_TIMINGS),
+        "cuda_alloc_conf": os.environ.get("PYTORCH_CUDA_ALLOC_CONF", ""),
         "config_hash": compute_config_hash(CFG),
         "peak_cuda_reserved_gb": round(max((r[3] for r in sampler.rows), default=0), 3),
         "peak_rss_gb": round(max((r[1] for r in sampler.rows), default=0), 3),

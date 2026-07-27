@@ -8,7 +8,7 @@ import warnings
 import numpy as np
 from glob import glob
 from pathlib import Path
-from tifffile import imread, imwrite
+from tifffile import imread
 from cellpose import models
 
 warnings.filterwarnings('ignore', message='.*shaped series shape.*')

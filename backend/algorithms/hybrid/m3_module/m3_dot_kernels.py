@@ -129,9 +129,7 @@ def _detect_red_dots(
             dot_type="cep17",
             cell_id=cell_id,
             area=int(p.area),
-            circularity=float(circ),
             solidity=float(p.solidity),
-            contrast=float(contrast),
             score=mean_a_dot,
         ))
 
@@ -288,9 +286,7 @@ def _detect_black_dots(
             dot_type="her2",
             cell_id=cell_id,
             area=int(p.area),
-            circularity=float(circ),
             solidity=float(p.solidity),
-            contrast=float(contrast),
             score=-mean_L_dot,
         ))
 

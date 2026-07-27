@@ -59,7 +59,6 @@ def build_all_positive_results(
                 centroid_x=float(cx),
                 centroid_y=float(cy),
                 is_her2_positive=True,
-                hematoxylin_ratio=1.0,
             )
         )
 

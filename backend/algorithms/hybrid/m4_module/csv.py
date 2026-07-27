@@ -3,9 +3,9 @@
 import csv
 import logging
 import unicodedata
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List
+from typing import List
 
 try:
     from ..hybrid_data_types import CellAnalysisResult
@@ -40,10 +40,6 @@ def _format_score(score: float, excluded: bool) -> str:
 def export_tile_csv(
     results: List[CellAnalysisResult],
     output_path: Path,
-    slide_id: str = "unknown",
-    tile_id: str = "unknown",
-    model_version: str = "v1.0.0",
-    config_hash: str = "00000000",
 ) -> Path:
     """匯出單張 tile 的細胞分類結果至 CSV。"""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -73,8 +69,7 @@ def export_tile_csv(
 class DotStatsSummary:
     """有效雙色細胞統計摘要。
 
-    可代表單一 tile 的統計，亦可由多個 tile 摘要合併為 slide-level。
-    僅記錄 count；百分比於寫檔時計算，避免合併產生累積誤差。
+    僅記錄 count；百分比於寫檔時計算，避免累積誤差。
 
     有效細胞定義：未排除（excluded=False）且 reddot >= 2 且 blackdot >= 1。
     """
@@ -113,24 +108,6 @@ class DotStatsSummary:
             copy_4to5=copy_4to5,
             copy_gte6=copy_gte6,
         )
-
-    def merge(self, other: "DotStatsSummary") -> "DotStatsSummary":
-        """欄位逐項相加，回傳新 summary。"""
-        return DotStatsSummary(**{
-            f.name: getattr(self, f.name) + getattr(other, f.name)
-            for f in fields(self)
-        })
-
-    @classmethod
-    def aggregate(
-        cls,
-        summaries: Iterable["DotStatsSummary"],
-    ) -> "DotStatsSummary":
-        """多個 summary 合併為一（slide-level 接口）。"""
-        total = cls()
-        for s in summaries:
-            total = total.merge(s)
-        return total
 
 
 def _asco_cap_2013_verdict(case_ratio: float, avg_her2_copies: float) -> str:

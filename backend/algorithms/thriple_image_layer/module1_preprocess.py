@@ -14,7 +14,6 @@ os.environ["VIPS_CONCURRENCY"] = str(_VIPS_THREADS)
 
 import shutil
 from multiprocessing import Pool, cpu_count
-from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
 import numpy as np

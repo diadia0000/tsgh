@@ -8,7 +8,10 @@ IHC-DISH Overlay & Analysis Pipeline — 主入口
   - M1: IHC → UNet++ mask → mask on IHC & DISH → 50/50 alpha blend
   - M2: Cellpose 分割 IHC-DISH 疊合影像 → cell instance mask
   - M3: 將 M2 cell mask 套用至 dish_mask_overlay → 逐細胞結果
-  - M4: CSV + overlay 視覺化 + 固定 256×256 逐細胞裁切
+  - M4: CSV + overlay 視覺化
+
+落地產物只有三樣：``report.csv`` / ``summary.txt`` / ``overlay_slide.tiff``。
+逐塊的遮罩、masked IHC、per-cell 裁切等中繼陣列一律留在記憶體，不寫硬碟。
 
 Usage:
     # 單一 ROI/WSI 影像對：先預切成重疊 tile 檔（暫存於 output/_precut_scratch），
@@ -22,6 +25,10 @@ Usage:
 import argparse
 import gc
 import logging
+import os
+import pickle
+import resource
+import shutil
 import sys
 import time
 import uuid
@@ -29,11 +36,11 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pyvips
-from torch import sparse
+from torch import sparse,cuda
 from skimage import io
 
 # Cellpose 在 get_masks_torch 內呼叫 torch.sparse_coo_tensor；PyTorch 要求顯式表態
@@ -70,7 +77,6 @@ try:
     )
     from .m4_export import (
         draw_tile_seam_edges,
-        export_per_cell_images,
         export_summary_statistics,
         export_tile_csv,
         render_overlay_image,
@@ -107,7 +113,6 @@ except ImportError:
     )
     from m4_export import (
         draw_tile_seam_edges,
-        export_per_cell_images,
         export_summary_statistics,
         export_tile_csv,
         render_overlay_image,
@@ -131,13 +136,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 逐塊標註 overlay 的暫存夾。這不是產物而是縫合用的**串流緩衝**：pyvips 以
+# ``access="sequential"`` 惰性讀這些檔再 ``tiffsave``，整片才不必同時在記憶體裡
+# （純記憶體拼接就是當初被砍掉的全片 canvas 失效模式）。``_stitch_overlay_slide``
+# 寫完 overlay_slide.tiff 後整夾刪除。
+_STITCH_SCRATCH = "_stitch_scratch"
+
 
 @dataclass
 class M1StageArtifacts:
     """M1 輸出影像與遮罩，供後續 M2/M3/M4 共用。"""
 
     core_mask: np.ndarray
-    masked_ihc: np.ndarray
     dish_mask_overlay: np.ndarray
     m2_input_overlay: np.ndarray
 
@@ -154,8 +164,7 @@ class _ChunkGpuState:
 
     abs_x: int
     abs_y: int
-    core_mask: np.ndarray
-    masked_ihc: np.ndarray
+    core_mask: np.ndarray                    # detect_all_dots 用來濾掉核心區外的 DISH 核
     dish_mask_overlay: np.ndarray
     instance_mask: np.ndarray
     dish_nucleus_mask: np.ndarray            # segment_windowed 產出，尚未經 detect_all_dots 過濾
@@ -168,8 +177,6 @@ class _TileGpuResult:
     tile_name: str
     abs_x: int
     abs_y: int
-    th: int
-    tw: int
     crop: Tuple[int, int, int, int]          # (lx0, lx1, ly0, ly1) 核心裁切界
     start_time: float
     chunk: Optional[_ChunkGpuState]          # None = 背景塊（核心遮罩全空）
@@ -251,47 +258,6 @@ def _frozen_gc_generation():
 # 單 tile 處理
 # ------------------------------------------------------------------
 
-def process_precut_tile(
-    ihc_tile_path: Path,
-    dish_tile_path: Path,
-    abs_x: int,
-    abs_y: int,
-    geometry: TileGeometry,
-    unet_inferencer: object,
-    cellpose_segmenter: CellposeSegmenter,
-    dish_cellpose_segmenter: CellposeSegmenter,
-    output_dir: Path,
-    merge_dir: Optional[Path] = None,
-) -> Optional[List[CellAnalysisResult]]:
-    """處理單一『已預切』tile：M1→M2→M3，逐塊落地產物，回傳核心區擁有的細胞清單。
-
-    落地產物（皆以 ``tile_x{abs_x}_y{abs_y}`` 命名，分別置於 ``output_dir`` 下各子夾）：
-      - 5 張非 overlay 陣列（原樣、局部 ID、未過濾、未重編號）:
-        ``core_mask/`` ``masked_ihc/`` ``dish_mask_overlay/``（PNG）、
-        ``instance_mask/`` ``dish_nucleus_mask/``（int32 TIFF，保留 label）。
-      - ``overlay_annotated/``: 以 ``dish_mask_overlay`` 為底繪 dish 核輪廓/細胞邊界/飄移箭頭/
-        標籤/dots，核心裁切後存 TIFF，供後續 pyvips arrayjoin 拼成 slide 級 QuPath 影像
-        （另一支任務負責）。
-      - ``cell_crops/tile_x{x}_y{y}/cells/``: 核心擁有細胞的固定尺寸裁切。
-      - ``merge_overlay/``（可選）: 若 ``merge_dir`` 有同名 tile，畫邊界後核心裁切存 TIFF。
-
-    表格 CSV / summary 不在此產出——回傳的 ``owned``（質心已絕對化、``cell_id`` 仍為
-    分塊局部）由 batch driver 收集後全域合併去重再寫出。
-
-    Returns:
-        - 正常（含 0 細胞）→ 該塊核心區擁有、質心絕對化的 ``CellAnalysisResult`` 清單。
-        - 核心遮罩全空的背景塊 → 仍寫空白 placeholder（維持 arrayjoin 每格一檔），回傳 ``[]``。
-        - 讀檔 / 維度等真實錯誤 → ``None``。
-    """
-    tg = _process_precut_tile_gpu(
-        ihc_tile_path, dish_tile_path, abs_x, abs_y, geometry,
-        unet_inferencer, cellpose_segmenter, dish_cellpose_segmenter, output_dir,
-    )
-    if tg is None:
-        return None
-    return _process_precut_tile_cpu(tg, geometry, output_dir, merge_dir=merge_dir)
-
-
 def _process_precut_tile_gpu(
     ihc_tile_path: Path,
     dish_tile_path: Path,
@@ -328,7 +294,6 @@ def _process_precut_tile_gpu(
         )
         return None
 
-    th, tw = ihc.shape[:2]
     lx0, lx1, ly0, ly1 = core_crop_bounds(
         geometry, abs_x, abs_y, config.default_tile_size
     )
@@ -350,8 +315,6 @@ def _process_precut_tile_gpu(
         tile_name=tile_name,
         abs_x=abs_x,
         abs_y=abs_y,
-        th=th,
-        tw=tw,
         crop=(lx0, lx1, ly0, ly1),
         start_time=start_time,
         chunk=chunk,
@@ -364,7 +327,7 @@ def _process_precut_tile_cpu(
     output_dir: Path,
     merge_dir: Optional[Path] = None,
 ) -> List[CellAnalysisResult]:
-    """單塊的 **CPU 後段**：detect_all_dots + merge → 核心去重 → 逐塊落地寫檔。
+    """單塊的 **CPU 後段**：detect_all_dots + merge → 核心去重 → 寫縫合用 overlay。
 
     完全不碰 torch / CUDA，設計為可在背景執行緒執行，與主執行緒『下一塊的 GPU 前向』重疊。
     回傳核心區擁有、質心已絕對化（``cell_id`` 仍為分塊局部）的細胞清單。
@@ -382,10 +345,9 @@ def _process_precut_tile_cpu(
     )
 
     if tg.chunk is None:
-        # 背景塊（核心遮罩全空）：仍寫空白 placeholder，讓 arrayjoin 每格恰有一檔。
+        # 背景塊（核心遮罩全空）：仍寫空白 placeholder，讓縫合每格恰有一檔。
         _write_blank_tile(
-            output_dir, tile_name, tg.th, tg.tw, (ly1 - ly0, lx1 - lx0),
-            seam_edges=seam_edges,
+            output_dir, tile_name, (ly1 - ly0, lx1 - lx0), seam_edges=seam_edges,
         )
         logger.info("Tile %s: 核心遮罩全空 → 空白 placeholder", tile_name)
         return []
@@ -393,30 +355,10 @@ def _process_precut_tile_cpu(
     cr = _finish_chunk_cpu(tg.chunk)
 
     owned = filter_and_absolutize(cr, geometry, tg.abs_x, tg.abs_y)
-    owned_ids = {r.cell_id for r in owned}
-    local_owned = [r for r in cr.results if r.cell_id in owned_ids]
 
-    # (a) 5 張非 overlay 陣列：原樣、全塊局部、未過濾、未重編號。
-    _save_tile_array(
-        output_dir / "core_mask" / f"{tile_name}.png",
-        (cr.core_mask * 255).astype(np.uint8),
-    )
-    _save_tile_array(output_dir / "masked_ihc" / f"{tile_name}.png", cr.masked_ihc)
-    _save_tile_array(
-        output_dir / "dish_mask_overlay" / f"{tile_name}.png", cr.dish_mask_overlay
-    )
-    _save_tile_array(
-        output_dir / "instance_mask" / f"{tile_name}.tiff",
-        cr.instance_mask.astype(np.int32, copy=False),
-    )
-    _save_tile_array(
-        output_dir / "dish_nucleus_mask" / f"{tile_name}.tiff",
-        cr.dish_nucleus_mask.astype(np.int32, copy=False),
-    )
-
-    # (b) 標註 overlay（醫師 / slide 級 QuPath），以 dish_mask_overlay 為底畫全塊、核心裁切。
-    #     以全塊 results/instance_mask/all_dots/dish_nucleus_mask/per_cell_dots 繪製後裁核心：
-    #     核心區彼此無重疊、無縫隙，故每個標註像素在拼回的整片中恰出現一次。
+    # 標註 overlay（醫師 / slide 級 QuPath），以 dish_mask_overlay 為底畫全塊、核心裁切。
+    # 以全塊 results/instance_mask/all_dots/dish_nucleus_mask/per_cell_dots 繪製後裁核心：
+    # 核心區彼此無重疊、無縫隙，故每個標註像素在拼回的整片中恰出現一次。
     annotated = render_overlay_image(
         cr.dish_mask_overlay, cr.instance_mask, cr.results,
         all_dots=cr.all_dots,
@@ -429,22 +371,11 @@ def _process_precut_tile_cpu(
         overlay_crop, right=seam_edges[0], bottom=seam_edges[1]
     )
     _save_tile_array(
-        output_dir / "overlay_annotated" / f"{tile_name}.tiff",
+        output_dir / _STITCH_SCRATCH / f"{tile_name}.tiff",
         overlay_crop,
     )
 
-    # (c) per-cell crop：核心擁有子集（局部座標）；per-chunk 子夾避免 cell_id 撞名。
-    export_per_cell_images(
-        cr.dish_mask_overlay,
-        cr.instance_mask,
-        local_owned,
-        output_dir / "cell_crops" / tile_name,
-        crop_size=config.cell_crop_size,
-        per_cell_dots=cr.per_cell_dots,
-        dish_nucleus_mask=cr.dish_nucleus_mask,
-    )
-
-    # (d) 可選 merge overlay。
+    # 可選 merge overlay（呼叫端給了 merge_dir 才產）。
     if merge_dir is not None:
         _export_chunk_merge_overlay(
             merge_dir, output_dir, tile_name, cr, (lx0, lx1, ly0, ly1)
@@ -468,44 +399,23 @@ def _save_tile_array(path: Path, array: np.ndarray) -> None:
 def _write_blank_tile(
     output_dir: Path,
     tile_name: str,
-    th: int,
-    tw: int,
     crop_hw: tuple,
     seam_edges: tuple = (False, False),
 ) -> None:
-    """核心遮罩全空的背景塊：為每項輸出寫一張空白 placeholder，維持每格一檔。
+    """核心遮罩全空的背景塊：寫一張空白 overlay placeholder，維持縫合每格一檔。
 
     ``seam_edges`` = ``(right, bottom)``：空白塊的 overlay 仍畫 tile 接縫虛線，讓拼回
     overlay_slide 後的接縫格線在空白區域維持連續、不留缺口。
     """
-    fill = config.background_fill_value
     ch, cw = crop_hw
-    _save_tile_array(
-        output_dir / "core_mask" / f"{tile_name}.png",
-        np.zeros((th, tw), dtype=np.uint8),
+    blank_overlay = np.full(
+        (ch, cw, 3), config.background_fill_value, dtype=np.uint8
     )
-    _save_tile_array(
-        output_dir / "masked_ihc" / f"{tile_name}.png",
-        np.full((th, tw, 3), fill, dtype=np.uint8),
-    )
-    _save_tile_array(
-        output_dir / "dish_mask_overlay" / f"{tile_name}.png",
-        np.full((th, tw, 3), fill, dtype=np.uint8),
-    )
-    _save_tile_array(
-        output_dir / "instance_mask" / f"{tile_name}.tiff",
-        np.zeros((th, tw), dtype=np.int32),
-    )
-    _save_tile_array(
-        output_dir / "dish_nucleus_mask" / f"{tile_name}.tiff",
-        np.zeros((th, tw), dtype=np.int32),
-    )
-    blank_overlay = np.full((ch, cw, 3), fill, dtype=np.uint8)
     draw_tile_seam_edges(
         blank_overlay, right=seam_edges[0], bottom=seam_edges[1]
     )
     _save_tile_array(
-        output_dir / "overlay_annotated" / f"{tile_name}.tiff",
+        output_dir / _STITCH_SCRATCH / f"{tile_name}.tiff",
         blank_overlay,
     )
 
@@ -568,7 +478,7 @@ def _process_one_chunk_gpu(
     改在 M3 之前只清「碰到真實 slide 外緣」的細胞；跨塊重複偵測由縫合層的質心
     core-ownership 去重。單塊時四邊皆真實 slide 邊 → 等同現行 M2 清邊行為。
     """
-    core_mask = generate_ihc_core_mask(  # pyright: ignore[reportArgumentType]
+    core_mask = generate_ihc_core_mask(
         ihc,
         unet_inferencer,
         close_kernel=config.core_close_kernel,
@@ -607,7 +517,6 @@ def _process_one_chunk_gpu(
         abs_x=abs_x,
         abs_y=abs_y,
         core_mask=core_mask,
-        masked_ihc=m1.masked_ihc,
         dish_mask_overlay=m1.dish_mask_overlay,
         instance_mask=instance_mask,
         dish_nucleus_mask=dish_nucleus_mask,
@@ -642,8 +551,6 @@ def _finish_chunk_cpu(gs: _ChunkGpuState) -> ChunkResult:
         abs_y=gs.abs_y,
         instance_mask=gs.instance_mask,
         dish_nucleus_mask=dish_nucleus_mask,
-        core_mask=gs.core_mask,
-        masked_ihc=gs.masked_ihc,
         dish_mask_overlay=gs.dish_mask_overlay,
         results=results,
         all_dots=all_dots,
@@ -677,7 +584,6 @@ def _run_m1_overlay_stage(
 
     return M1StageArtifacts(
         core_mask=core_mask,
-        masked_ihc=masked_ihc,
         dish_mask_overlay=dish_mask_overlay,
         m2_input_overlay=overlay_image,
     )
@@ -728,6 +634,41 @@ def _read_rgb(src: Path) -> np.ndarray:
 
 _MP_POISON = None                            # 工作佇列的結束哨兵
 
+# worker 內量測掛勾（doc 26 Tier 1.1 / DISCOVERED #40）。
+#
+# `scripts/perf_measure.py` 是 monkeypatch 式的：它在**父行程**的 hybrid_pipeline 命名空間
+# 上包一層計時器。spawn 出來的 worker 重新 import 這個模組，拿到的是乾淨的原函式，所以
+# `workers>1` 下所有 per-stage 的桶（B1/B2/B3/...）都是空的——整批只剩端到端 wall 可讀，
+# 「為什麼慢」完全不可測（doc 21 §10 follow-up #1）。
+#
+# 修法刻意不讓管線去 import 量測腳本（那會把測量工具變成執行期相依）。改成：worker 啟動時
+# 讀 `HYBRID_MP_WORKER_PROBE` 環境變數，格式 `module.path:callable`；有設才 import 並呼叫，
+# 該 callable 需回傳一個「無參數、回傳 dict」的收集器。worker 收工前把收集到的 dict 從既有的
+# result queue 送回父行程。沒設環境變數時這段是一個 `os.environ.get` 的成本，其餘為零。
+_MP_PROBE_ENV = "HYBRID_MP_WORKER_PROBE"
+
+# 上一次 `run_batch(workers>1)` 收到的 worker 端 TIMINGS，供量測腳本在跑完後取用。
+# 每個元素是 `{"worker": <name>, "timings": {...}}`。
+LAST_MP_WORKER_TIMINGS: List[dict] = []
+
+
+def _install_worker_probe():
+    """依 ``HYBRID_MP_WORKER_PROBE`` 安裝 worker 端量測掛勾，回傳收集器或 ``None``。
+
+    刻意吞掉所有例外並只記 warning：量測掛勾壞掉不該讓一批真實的分析工作失敗。
+    """
+    spec = os.environ.get(_MP_PROBE_ENV)
+    if not spec:
+        return None
+    try:
+        import importlib
+        mod_name, _, func_name = spec.partition(":")
+        return getattr(importlib.import_module(mod_name), func_name)()
+    except Exception as exc:                 # noqa: BLE001 — 見 docstring
+        logger.warning("worker 量測掛勾 %r 安裝失敗: %r（本 worker 不回報 timings）",
+                       spec, exc)
+        return None
+
 
 def _mp_tile_worker(
     task_q,
@@ -744,11 +685,13 @@ def _mp_tile_worker(
     就值 doc 18 §2 量到的 −8.0%。少了它，每個 worker 都會退化成 round-3 之前的序列
     版本，多行程賺到的會被這裡賠掉。
 
-    以 ``result_q`` 回報三種訊息：
+    以 ``result_q`` 回報四種訊息：
       - ``("ready", None)``：模型已載完（供父行程量測 init 是否平行）。
       - ``("ok", (abs_x, abs_y, owned))``：一塊完成。
+      - ``("timings", {...})``：本 worker 的 per-stage 計時（僅在量測掛勾啟用時）。
       - ``("error", message)``：真實錯誤 → 父行程終止全部 worker 後 raise。
     """
+    collect_timings = _install_worker_probe()   # 必須早於 _init_*，否則量不到 init
     try:
         cfg_hash = compute_config_hash(config)
         if cfg_hash != parent_cfg_hash:
@@ -806,6 +749,14 @@ def _mp_tile_worker(
             if pending is not None:
                 p_ax, p_ay, fut = pending
                 result_q.put(("ok", (p_ax, p_ay, fut.result())))
+
+        if collect_timings is not None:
+            # 收工後才送：父行程的收件迴圈在收滿 total 塊後才會去撈這些，先送也只是排隊。
+            import multiprocessing
+            result_q.put(("timings", {
+                "worker": multiprocessing.current_process().name,
+                "timings": collect_timings(),
+            }))
     except Exception as exc:                 # noqa: BLE001 — 任何例外都必須傳回父行程
         logger.error("Worker 例外: %s", exc, exc_info=True)
         result_q.put(("error", f"worker 例外: {exc!r}"))
@@ -819,6 +770,7 @@ def _run_tiles_multiprocess(
     merge_dir: Optional[Path],
     workers: int,
     cfg_hash: str,
+    on_tile=None,
 ) -> List[Tuple[int, int, List[CellAnalysisResult]]]:
     """把 tile 分派給 ``workers`` 個 spawn 行程，回收每塊的 ``(abs_x, abs_y, owned)``。
 
@@ -827,14 +779,29 @@ def _run_tiles_multiprocess(
 
     ``tiles`` 是迭代器（可能是邊切邊產出的 ``PrecutStream``），故以一條 feeder 執行緒
     餵佇列，主執行緒同時收結果——否則兩邊會互等而死鎖。
+
+    ``on_tile(abs_x, abs_y, owned)`` 若給定，會在**每塊回來的當下**於父行程呼叫（斷點
+    續跑就掛在這裡）。回傳值仍是完整清單，與不給時相同。
     """
     import multiprocessing as mp
     import queue as _queue
     import threading
 
+    # CUDA allocator 設定必須在 worker 的第一次 CUDA 配置之前決定。父行程在這條路徑上
+    # 完全不碰 CUDA，spawn 的 child 又會繼承 environ，所以「spawn 之前寫 os.environ」
+    # 是唯一能真正生效、且不需要呼叫端記得先 export 的位置。
+    # 預設空字串 = 完全不碰環境 = 今日行為；`workers≥6` 的 24.76 GiB 配置器氣球
+    # （19 #7b / DISCOVERED #2）就是靠這個旋鈕掃 `expandable_segments:True` 的。
+    alloc_conf = getattr(config, "cuda_alloc_conf", "")
+    if alloc_conf and "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = alloc_conf
+    logger.info("worker CUDA allocator 設定: PYTORCH_CUDA_ALLOC_CONF=%r",
+                os.environ.get("PYTORCH_CUDA_ALLOC_CONF", ""))
+
     ctx = mp.get_context("spawn")            # 絕不用 fork（見本節開頭）
     task_q = ctx.Queue()
     result_q = ctx.Queue()
+    LAST_MP_WORKER_TIMINGS.clear()
 
     procs = [
         ctx.Process(
@@ -908,7 +875,12 @@ def _run_tiles_multiprocess(
                         workers, time.perf_counter() - t_start,
                     )
                 continue
+            if kind == "timings":
+                LAST_MP_WORKER_TIMINGS.append(payload)
+                continue
             collected.append(payload)
+            if on_tile is not None:
+                on_tile(*payload)
             logger.info("[%d/%d] 已回收 tile_x%d_y%d",
                         len(collected), total, payload[0], payload[1])
     except BaseException:
@@ -918,10 +890,116 @@ def _run_tiles_multiprocess(
         _kill_all()
         raise
 
+    # worker 的 timings 是收工前最後才送的，所以最後一塊被收下時通常還沒到。必須在
+    # join 之前撈完：worker 送完就退出，而 join 會等到佇列被排空才回來。
+    if os.environ.get(_MP_PROBE_ENV):
+        deadline = time.perf_counter() + 30
+        while len(LAST_MP_WORKER_TIMINGS) < workers and time.perf_counter() < deadline:
+            try:
+                kind, payload = result_q.get(timeout=1)
+            except _queue.Empty:
+                if all(p.exitcode is not None for p in procs):
+                    break
+                continue
+            if kind == "timings":
+                LAST_MP_WORKER_TIMINGS.append(payload)
+        if len(LAST_MP_WORKER_TIMINGS) < workers:
+            logger.warning("只收到 %d/%d 個 worker 的 timings。",
+                           len(LAST_MP_WORKER_TIMINGS), workers)
+
     for p in procs:
         p.join(timeout=60)
     _kill_all()                              # 任何沒乾淨退出的殘留一律收掉
     return collected
+
+
+# ------------------------------------------------------------------
+# 斷點續跑（partial resume）
+# ------------------------------------------------------------------
+# `run_batch` 是 fail-fast 的：任一塊真實失敗即中止整批。對「各自獨立的影像」那是錯的，
+# 對「同一張玻片的碎片」那是對的——留下有未記載破洞的玻片比大聲崩潰更糟（doc 20 §1
+# item 2）。但 fail-fast 有一個它沒回答的問題：**已經算完的 27,000 塊怎麼辦**。全片
+# 27,565 塊時，第 25,000 塊 OOM 會賠掉整整數小時的運算，而那些塊的結果本來完全可用。
+# 這正是 round 5b/6 建議 unattended 跑 `workers=4` 而非更快的 `workers=6` 的真正原因
+# （doc 21 §10 follow-up #7 / 19 #1c）。
+#
+# 這裡補的是最小可用版本：每塊完成時把它的 `owned` 結果（唯一無法從磁碟重建的東西——
+# 其餘每塊產物本來就已落地）pickle 到 `output_dir/_resume/`，重跑時載回來並跳過該塊。
+# 語意上**不放寬 fail-fast**：失敗照樣中止整批，只是重跑時不必從頭算。
+#
+# 設計取捨：
+#   - 預設關閉（`checkpoint=False`）。API 的單塊請求開了只是白付 I/O，而且會在輸出目錄
+#     留下 scratch；這是給長時間無人看顧的整片跑用的旋鈕，由呼叫端明講。
+#   - 每塊一檔而非單一 append log：多行程下每塊恰由一個 worker 產生、由**父行程**寫出，
+#     一檔一塊天然免鎖；寫入走 tmp+rename，故中途被 kill 不會留下半個檔。
+#   - 存 config_hash：設定變了，先前那些塊就不再可信。不符時大聲警告並整批重算
+#     （而不是靜靜混用兩種設定的結果，那是無法追溯的產物）。
+
+_CKPT_DIRNAME = "_resume"
+
+
+def _checkpoint_load(
+    ckpt_dir: Path, cfg_hash: str, positions: Iterable[Tuple[int, int]],
+) -> Dict[Tuple[int, int], List[CellAnalysisResult]]:
+    """載入先前跑到一半留下的每塊結果；沒有 / 設定不符 / 壞檔一律當作沒有。"""
+    if not ckpt_dir.is_dir():
+        return {}
+
+    hash_file = ckpt_dir / "config_hash.txt"
+    prev = hash_file.read_text().strip() if hash_file.exists() else ""
+    if prev != cfg_hash:
+        logger.warning(
+            "斷點目錄 %s 的 config_hash 為 %r，與本次的 %r 不符——先前的塊是以不同設定"
+            "算出的，不可混用。本次將整批重算（舊檔會被逐一覆蓋，不刪除）。",
+            ckpt_dir, prev, cfg_hash,
+        )
+        return {}
+
+    wanted = set(positions)
+    done: Dict[Tuple[int, int], List[CellAnalysisResult]] = {}
+    for path in ckpt_dir.glob("tile_x*_y*.pkl"):
+        try:
+            ax, ay = parse_tile_coords(path.name)
+        except ValueError:
+            continue
+        if (ax, ay) not in wanted:
+            continue                         # 上次跑的是別的格線，不是這批的塊
+        try:
+            with open(path, "rb") as fh:
+                done[(ax, ay)] = pickle.load(fh)
+        except Exception as exc:             # noqa: BLE001 — 壞檔就當沒算過，重算即可
+            logger.warning("斷點檔 %s 讀取失敗（%r），該塊將重算。", path, exc)
+    if done:
+        logger.info("斷點續跑：%s 已有 %d 塊完成，本批將跳過它們。", ckpt_dir, len(done))
+    return done
+
+
+def _checkpoint_init(ckpt_dir: Path, cfg_hash: str) -> None:
+    """建立斷點目錄並寫下本次的 config_hash。"""
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    (ckpt_dir / "config_hash.txt").write_text(cfg_hash)
+
+
+def _checkpoint_save(
+    ckpt_dir: Path, abs_x: int, abs_y: int, owned: List[CellAnalysisResult],
+) -> None:
+    """把一塊的結果原子性地寫進斷點目錄（tmp+rename，故中途被 kill 不留半個檔）。"""
+    dst = ckpt_dir / f"tile_x{abs_x}_y{abs_y}.pkl"
+    tmp = dst.with_suffix(".pkl.tmp")
+    with open(tmp, "wb") as fh:
+        pickle.dump(owned, fh, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(tmp, dst)
+
+
+def _skip_completed(tiles, done: Dict[Tuple[int, int], List[CellAnalysisResult]]):
+    """過濾掉斷點已記錄完成的塊。
+
+    串流模式下仍會讓 ``PrecutStream`` 把該塊切出來（切檔是冪等的、且格線由它供給），
+    只是不再送去分析——省下的是三個 GPU 前向與 CPU 後段，那才是成本所在。
+    """
+    for ihc_path, dish_path, (ax, ay) in tiles:
+        if (ax, ay) not in done:
+            yield ihc_path, dish_path, (ax, ay)
 
 
 # ------------------------------------------------------------------
@@ -935,6 +1013,7 @@ def run_batch(
     merge_dir: Optional[Path] = None,
     tile_stream: Optional[object] = None,
     workers: int = 4,
+    checkpoint: bool = False,
 ) -> dict:
     """批次處理『已預切』tile 目錄：逐塊分析 → 全域合併細胞表 → slide 級 overlay 縫合。
 
@@ -961,6 +1040,11 @@ def run_batch(
             一行為變化都沒有；``>1`` 走 ``_run_tiles_multiprocess``，每個 worker 自帶
             一份模型與 CUDA context。預設必須維持 1：API 的單塊請求不該為了平行度去付
             N 份模型初始化成本（doc 20 §1 item 7）。
+        checkpoint: 是否啟用斷點續跑。``True`` 時每塊完成即把結果落地到
+            ``output_dir/_resume/``，且**本次開始前**會先載入該目錄中屬於這批格線、
+            且 config_hash 相符的塊並跳過它們。給無人看顧的整片跑用（27,565 塊時，
+            第 25,000 塊失敗不該賠掉前面數小時）；預設 ``False``，API 的單塊請求開了
+            只是白付 I/O。**不放寬 fail-fast**：任一塊失敗照樣中止整批。
 
     Returns:
         ``{"success": int, "skipped": int}`` 統計。批次內任一塊真實失敗即
@@ -1014,20 +1098,47 @@ def run_batch(
     # 每塊回傳 (abs_x, abs_y, owned_results)，供迴圈後全域排序 / 重編號。
     per_tile_owned: List[Tuple[int, int, List[CellAnalysisResult]]] = []
 
+    # 斷點續跑：先把已完成的塊補進 per_tile_owned，再把它們從待跑的 tiles 濾掉。
+    # 兩條路徑（單行程 / 多行程）共用同一份載入與存檔，跟 _finish_batch 一樣只有一個實作。
+    ckpt_dir = output_dir / _CKPT_DIRNAME
+    done: Dict[Tuple[int, int], List[CellAnalysisResult]] = {}
+    if checkpoint:
+        done = _checkpoint_load(ckpt_dir, cfg_hash, positions)
+        _checkpoint_init(ckpt_dir, cfg_hash)
+        if done:
+            tiles = _skip_completed(tiles, done)
+            for (ax, ay), owned in done.items():
+                per_tile_owned.append((ax, ay, owned))
+                stats["skipped" if len(owned) == 0 else "success"] += 1
+
+    def _record(abs_x: int, abs_y: int, owned: List[CellAnalysisResult]) -> None:
+        """累計統計，並在啟用斷點時把這塊落地。父行程唯一的收斂點。"""
+        per_tile_owned.append((abs_x, abs_y, owned))
+        stats["skipped" if len(owned) == 0 else "success"] += 1
+        if checkpoint:
+            _checkpoint_save(ckpt_dir, abs_x, abs_y, owned)
+
+    remaining = total - len(done)
+
+    if remaining == 0:
+        # 斷點裡已經有全部的塊：直接去做全域合併 + 縫合。不短路的話，兩條路徑都會為了
+        # 零塊工作先把三個模型載起來（多行程還是每個 worker 各一份），純浪費。這條路徑
+        # 也正好是「只想重跑最後的縫合」時要走的。
+        logger.info("斷點已涵蓋全部 %d 塊，跳過分析，直接進行全域合併與縫合。", total)
+        return _finish_batch(
+            run_id, per_tile_owned, stats, total, output_dir, geometry,
+        )
+
     if workers > 1:
         # 多行程路徑：模型只在 worker 內載入，父行程完全不碰 CUDA（不然會白付一份
         # context + 權重）。回傳的 tuple 與單行程迴圈產生的完全同型，故下方的全域
         # 合併 / 重編號 / 縫合完全共用，一行都不必改。
-        per_tile_owned = _run_tiles_multiprocess(
-            tiles, total, geometry, output_dir, merge_dir, workers, cfg_hash,
+        _run_tiles_multiprocess(
+            tiles, remaining, geometry, output_dir, merge_dir, workers, cfg_hash,
+            on_tile=_record,
         )
-        for _ax, _ay, owned in per_tile_owned:
-            if len(owned) == 0:
-                stats["skipped"] += 1
-            else:
-                stats["success"] += 1
         return _finish_batch(
-            run_id, per_tile_owned, stats, total, output_dir, geometry, cfg_hash,
+            run_id, per_tile_owned, stats, total, output_dir, geometry,
         )
 
     unet = _init_unet_inferencer()
@@ -1037,12 +1148,7 @@ def run_batch(
     def _collect(entry: Tuple[int, int, Future]) -> None:
         """收一塊已提交的 CPU 後段結果並累計統計；其真實錯誤在此 raise → fail-fast。"""
         e_ax, e_ay, fut = entry
-        owned = fut.result()
-        per_tile_owned.append((e_ax, e_ay, owned))
-        if len(owned) == 0:
-            stats["skipped"] += 1
-        else:
-            stats["success"] += 1
+        _record(e_ax, e_ay, fut.result())
 
     # 兩段式管線（單一背景執行緒，管線深度 1）：三個 GPU 模型仍只在主行程 / 單一 CUDA
     # context 載入一次並重用，且**所有 GPU 前向仍只在主執行緒序列執行**（背景執行緒完全
@@ -1054,7 +1160,7 @@ def run_batch(
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="tile-cpu") as pool:
         for idx, (ihc_path, dish_path, (ax, ay)) in enumerate(tiles, start=1):
             logger.info(
-                "[%d/%d] 處理 tile: %s", idx, total, dish_path.stem
+                "[%d/%d] 處理 tile: %s", idx, remaining, dish_path.stem
             )
             tg = _process_precut_tile_gpu(
                 ihc_path, dish_path, ax, ay, geometry,
@@ -1079,9 +1185,8 @@ def run_batch(
             # gc.freeze() 之後整批 gc 只剩 0.52 s，最多再省 0.36 s（<0.1% wall，遠在雜訊內），
             # 卻讓 peak RSS 變成所有配置中最高的一個。零收益的層一律砍掉。見 doc 16 §4.2。
             try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                if cuda.is_available():
+                    cuda.empty_cache()
             except ImportError:
                 pass
             gc.collect()
@@ -1099,7 +1204,7 @@ def run_batch(
             _collect(pending)
 
     return _finish_batch(
-        run_id, per_tile_owned, stats, total, output_dir, geometry, cfg_hash,
+        run_id, per_tile_owned, stats, total, output_dir, geometry,
     )
 
 
@@ -1110,7 +1215,6 @@ def _finish_batch(
     total: int,
     output_dir: Path,
     geometry: TileGeometry,
-    cfg_hash: str,
 ) -> dict:
     """全域合併 → 重編號 → 表格輸出 → slide 級縫合。
 
@@ -1132,25 +1236,48 @@ def _finish_batch(
     ]
 
     # 表格輸出（空清單由 export_* 自身妥善處理，不特判）。
-    export_tile_csv(
-        renumbered,
-        output_dir / "report.csv",
-        slide_id=config.slide_id,
-        tile_id=output_dir.name,
-        model_version=config.model_version,
-        config_hash=cfg_hash,
-    )
+    export_tile_csv(renumbered, output_dir / "report.csv")
     export_summary_statistics(renumbered, output_dir / "summary.txt")
 
-    # slide 級 overlay：把每格核心裁切的 overlay_annotated tile 惰性拼回整片。
+    # slide 級 overlay：把每格核心裁切的暫存 tile 惰性拼回整片，拼完刪暫存夾。
     _stitch_overlay_slide(output_dir, geometry)
 
     _log_batch_summary(run_id, stats, total)
     return stats
 
 
-def _stitch_overlay_slide(output_dir: Path, geometry: TileGeometry) -> None:
-    """把 ``overlay_annotated/`` 內每格核心裁切的 tile 惰性拼成一張全片 pyramid TIFF。
+def _ensure_nofile_limit(needed: int) -> None:
+    """確保本行程的 open-file 軟上限足以讓縫合同時開著 ``needed`` 個 tile。
+
+    ``_join_overlay_tiles`` 是**惰性**的：整張玻片的 27,565 個 overlay tile 會全部
+    同時以 pyvips image 開著，一直到最後 ``tiffsave`` 拉資料時才真的逐一讀。本機的
+    軟上限是 1,048,576，所以一路沒事；但 Linux 常見預設是 **1,024**，在那種機器上
+    整片分析（數小時）跑完之後才會在最後一步炸掉——這是這條管線最貴的失敗方式，
+    也正是 doc 25 §5.2 記下但沒補的缺口。
+
+    故在開任何檔之前先檢查：軟上限不夠就自己往上提（soft→hard 一律允許，不需
+    特權），硬上限也不夠才大聲失敗並講清楚要調多少。
+    """
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft == resource.RLIM_INFINITY or soft >= needed:
+        return
+    if hard == resource.RLIM_INFINITY or hard >= needed:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (needed, hard))
+        logger.info(
+            "RLIMIT_NOFILE 軟上限 %d 不足，已自行提高為 %d（縫合需同時開啟 %d 個 tile）",
+            soft, needed, needed,
+        )
+        return
+    raise RuntimeError(
+        f"overlay 縫合需同時開啟約 {needed} 個檔案，但本行程的 RLIMIT_NOFILE "
+        f"硬上限只有 {hard}（軟上限 {soft}）。請提高硬上限後重跑最後的縫合步驟"
+        f"（例如 `ulimit -Hn {needed}`，或於 systemd unit 設 LimitNOFILE={needed}）"
+        f"——整片的逐塊 overlay 已在 {_STITCH_SCRATCH}/ 落地，不需重跑。"
+    )
+
+
+def _join_overlay_tiles(output_dir: Path, geometry: TileGeometry) -> pyvips.Image:
+    """把 ``_stitch_scratch/`` 內每格核心裁切的 tile 惰性拼成一張全片影像（尚未編碼）。
 
     每格 overlay 的尺寸依所在欄 / 列而異（邊界格較小），但**同欄同寬、同列同高**
     （由 ``core_crop_bounds`` 的建構保證）。``pyvips.Image.arrayjoin()`` 只做「等格montage」
@@ -1158,12 +1285,15 @@ def _stitch_overlay_slide(output_dir: Path, geometry: TileGeometry) -> None:
     它會多出留白、尺寸錯誤）。故改為手動：每列內由左至右水平 join（同列高已相等），
     再把各列由上至下垂直 join（各列總寬已相等）——可逐像素還原原始版面。
 
-    壓縮採 **lzw（無失真）**：這是帶細胞邊界線 / 標籤文字 / 紅黑點的標註影像，JPEG
-    的區塊假影會糊掉細線與小點，醫師判讀不宜；lzw 保真且仍可壓。
+    與 ``_stitch_overlay_slide`` 拆開，是為了讓 ``scripts/stitch_probe.py`` 能在**同一張
+    已拼好的影像**上獨立消融 ``tiffsave`` 的各個參數（doc 26 Tier 1.1）：join 與 encode
+    的成本必須分開讀，否則量到的差異分不清是哪一段造成的。
     """
-    overlay_dir = output_dir / "overlay_annotated"
+    overlay_dir = output_dir / _STITCH_SCRATCH
     xs = sorted(geometry.col_of)  # abs_x，欄序（升冪即欄索引序）
     ys = sorted(geometry.row_of)  # abs_y，列序
+
+    _ensure_nofile_limit(len(xs) * len(ys) + 256)
 
     row_images: List[pyvips.Image] = []
     for ay in ys:
@@ -1172,7 +1302,7 @@ def _stitch_overlay_slide(output_dir: Path, geometry: TileGeometry) -> None:
             path = overlay_dir / f"tile_x{ax}_y{ay}.tiff"
             if not path.exists():
                 raise FileNotFoundError(
-                    f"overlay_annotated 缺少 tile: {path}——每格應恰有一檔。"
+                    f"{_STITCH_SCRATCH} 缺少 tile: {path}——每格應恰有一檔。"
                 )
             row_tiles.append(
                 pyvips.Image.new_from_file(str(path), access="sequential")
@@ -1185,7 +1315,26 @@ def _stitch_overlay_slide(output_dir: Path, geometry: TileGeometry) -> None:
     slide = row_images[0]
     for row in row_images[1:]:
         slide = slide.join(row, "vertical", expand=True)
+    return slide
 
+
+def _stitch_overlay_slide(output_dir: Path, geometry: TileGeometry) -> None:
+    """把 ``_stitch_scratch/`` 內的 tile 拼成一張全片 pyramid TIFF 並寫出，寫完刪暫存夾。
+
+    壓縮採 **lzw（無失真）**：這是帶細胞邊界線 / 標籤文字 / 紅黑點的標註影像，JPEG
+    的區塊假影會糊掉細線與小點，醫師判讀不宜；lzw 保真且仍可壓。
+
+    ``tiffsave`` 的其餘參數（tile 大小、pyramid 深度、predictor）已在真實 16.22 GP
+    規模上逐一消融過，沒有一個換得到值得留下的時間——見
+    ``docs/hybrid-pipeline/27-remaining-work-implementation.md`` §3 與
+    ``scripts/stitch_probe.py --ablate``。故此處維持 pyvips 預設，不加旋鈕：零貢獻的
+    層一律不留（playbook step 4）。
+
+    ``tiffsave`` 是同步的——回傳時惰性管線已把每格讀完寫出，故其後即可安全刪除暫存夾。
+    刪除**不放 finally**：拼合失敗時保留暫存夾，才能重跑縫合而不必重算整批。
+    """
+    overlay_dir = output_dir / _STITCH_SCRATCH
+    slide = _join_overlay_tiles(output_dir, geometry)
     slide.tiffsave(
         str(output_dir / "overlay_slide.tiff"),
         tile=True,
@@ -1196,6 +1345,8 @@ def _stitch_overlay_slide(output_dir: Path, geometry: TileGeometry) -> None:
     logger.info(
         "overlay_slide.tiff 縫合完成: %d×%d px", slide.width, slide.height
     )
+    if overlay_dir.exists():
+        shutil.rmtree(overlay_dir)
 
 
 def _log_batch_summary(
@@ -1245,6 +1396,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="輸出目錄 (預設: config.output_dir)",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="跨 tile 平行的行程數（預設 1 = 單行程）。>1 尚未通過整片驗證，"
+             "見 docs/hybrid-pipeline/19-open-backlog.md #7",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="啟用斷點續跑：每塊完成即落地到 output/_resume/，重跑時跳過已完成的塊。"
+             "給無人看顧的整片跑用",
+    )
     return parser
 
 
@@ -1257,10 +1421,12 @@ def main() -> None:
 
     if args.test:
         _run_single_tile_cli(
-            str(config.ihc_test_path), str(config.dish_test_path), output_dir
+            str(config.ihc_test_path), str(config.dish_test_path), output_dir,
+            workers=args.workers, checkpoint=args.resume,
         )
     elif args.ihc and args.dish:
-        _run_single_tile_cli(args.ihc, args.dish, output_dir)
+        _run_single_tile_cli(args.ihc, args.dish, output_dir,
+                             workers=args.workers, checkpoint=args.resume)
     else:
         parser.print_help()
 
@@ -1269,6 +1435,8 @@ def _run_single_tile_cli(
     ihc_arg: str,
     dish_arg: str,
     output_dir: Path,
+    workers: int = 1,
+    checkpoint: bool = False,
 ) -> None:
     """CLI 單一 ROI/WSI 影像對模式：預切成重疊 tile 檔並與 ``run_batch`` 重疊執行。
 
@@ -1296,7 +1464,8 @@ def _run_single_tile_cli(
         overlap=config.window_overlap_px,
     )
 
-    run_batch(ihc_out, dish_out, output_dir, tile_stream=stream)
+    run_batch(ihc_out, dish_out, output_dir, tile_stream=stream,
+              workers=workers, checkpoint=checkpoint)
 
 
 def _resolve_tile_path(arg: str, default_dir: Path) -> Path:

@@ -2,7 +2,6 @@
 
 產生對齊疊合縮圖
 """
-from pathlib import Path
 import pyvips
 from valis import registration, slide_io
 

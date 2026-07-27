@@ -98,23 +98,14 @@ class Config:
     cellpose_dish_cellprob_threshold: float = 0.0
 
     # ========== DISH 訊號點偵測參數 (M3b) ==========
-    # LAB + H-morphology + 多準則閘控（see docs/dish_dot_detection_spec.md v0.2）
+    # LAB + H-morphology + 多準則閘控。演算法的權威說明在 m3_module/m3_dot_kernels.py
+    # 與 m3_module/m3_dot_detection.py 的 docstring；本節只是它們的旋鈕。
     #
     # --- 全域 / 背景 ---
     # LAB L* > 此值視為白色背景（0=黑, 100=白）
     dot_background_l_threshold: float = 95.0
     # H-peak / H-pit 種子膨脹半徑（用以還原整個 dot 連通區，px）
     dot_seed_dilate_radius: int = 3
-    # cell_roi 膨脹半徑（捕捉緊鄰 Cellpose 邊界外的 dot，px）
-    dot_cell_roi_dilate: int = 0
-
-    # --- 點位歸屬 (cell assignment) ---
-    # blob 與原始 instance_mask 的最小重疊比例
-    dot_assignment_min_overlap_ratio: float = 0.10
-    # 若 blob 不與原始細胞重疊，僅允許在此距離內最近鄰指派
-    dot_assignment_max_distance: float = 3.0
-    # 邊界緩衝（px）：距離 label 邊界太近者不做 cell 歸屬
-    dot_assignment_boundary_margin: float = 0.05
 
     # --- 紅點 (CEP17) ---
     dot_red_h: float = 5.0                 # H-maxima 深度（a* 通道）
@@ -179,19 +170,20 @@ class Config:
     # --- HER2 擴增判定閾值（Score）---
     score_cep17_min_count: int = 2          # CEP17 < 此值且非 0/0 → 排除打 X；0/0 照常計入
     dot_amplification_ratio: float = 2.0    # Score=HER2/CEP17 ≥ 此值 → 擴增
-    dot_her2_count_threshold: int = 6       # 保留相容；新 Score 邏輯不再單獨使用
-
-    # ========== 單細胞裁切參數 (M4) ==========
-    cell_crop_size: int = 100
 
     # ========== 執行參數 ==========
-    num_workers: int = 12
     batch_size: int = 4
     # detect_all_dots 的 per-cell 平行度（joblib threads）。1 = 序列。
     # 實測（docs/hybrid-pipeline/23-*.md A2）：每顆 cell 的偵測工作太小（~4 ms、
     # 一塊只有數十顆），thread 派工 + GIL 成本遠大於平行收益，且**單調變差**——
     # 20 threads 比序列慢 2.77x（721.5 vs 260.3 ms/tile，紅黑點數完全相同）。
     dot_detect_n_jobs: int = 1
+    # 跨 tile 多行程（run_batch(workers>1)）時給 worker 的 PYTORCH_CUDA_ALLOC_CONF。
+    # 空字串 = 完全不碰環境變數 = PyTorch 預設配置器。父行程在多行程路徑上不碰 CUDA，
+    # 故此值於 spawn 前寫入 environ 才會對 worker 生效（已設好的環境變數優先，不覆蓋）。
+    # `expandable_segments:True` 是 19 #7b 那顆「一個 worker 剛好漲到 24.76 GiB」
+    # 配置器氣球的候選解，用 scripts/alloc_conf_probe.py 掃。
+    cuda_alloc_conf: str = ""
     device: str = field(
         default_factory=lambda: "cuda" if cuda.is_available() else "cpu"
     )
@@ -212,14 +204,24 @@ class Config:
     # 在 overlay_slide 的 tile 接縫（core-crop 邊界）畫藍色虛線，作為 tile 邊界視覺參考。
     draw_window_grid: bool = True
 
-    # ========== 追溯性欄位 ==========
-    model_version: str = "v1.0.0"
-    slide_id: str = "unknown"
+
+# 不進 config hash 的欄位：只影響「怎麼跑」、不可能影響「跑出什麼」的執行期旋鈕。
+#
+# config hash 被寫進每一份 CSV，回答的是「這批結果是不是同一組設定算出來的」。CUDA
+# allocator 的 arena 策略換了，同樣的輸入仍然產生逐位元相同的輸出，所以把它算進 hash
+# 只會製造兩個問題：(1) 跨輪比較時 hash 不再可比，明明演算法一個字都沒改；(2) 更嚴重
+# ——`_mp_tile_worker` 會比對「父行程 hash == worker hash」，而 spawn 的 worker 是重新
+# import config 的，拿不到父行程對單例的執行期修改，於是整批 fail-fast 中止。
+# （後者不是假設：`scripts/alloc_conf_probe.py` 第一次跑就撞上，那個護欄正確地擋下了。）
+_HASH_EXCLUDE = frozenset({"cuda_alloc_conf"})
 
 
 def compute_config_hash(cfg: Config) -> str:
-    """Compute a short SHA-256 hash of the config for traceability."""
-    d = asdict(cfg)
+    """Compute a short SHA-256 hash of the config for traceability.
+
+    執行期旋鈕（``_HASH_EXCLUDE``）不計入——見該常數上方的說明。
+    """
+    d = {k: v for k, v in asdict(cfg).items() if k not in _HASH_EXCLUDE}
     # Convert Path objects to strings for JSON serialization
     for k, v in d.items():
         if isinstance(v, Path):

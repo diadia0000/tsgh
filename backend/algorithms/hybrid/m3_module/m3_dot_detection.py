@@ -15,7 +15,7 @@
        1 核，故不再有「多核排除」。
 
 像素級偵測核心（紅/黑點、環統計、合併）在 m3_dot_kernels.py；
-DISH 核彈性匹配在 m3_elastic_matching.py。詳見 docs/sdd-elastic-dish-matching.md。
+DISH 核彈性匹配在 m3_elastic_matching.py（該檔的 docstring 即該演算法的權威說明）。
 """
 
 from __future__ import annotations
@@ -356,21 +356,17 @@ def _finalize_per_cell(
             and cdr.cell_id in drop_out_ids
         ):
             cdr.excluded = True
-            cdr.exclude_reason = "drop_out"
         elif (
             cdr.blue_region_count == 0
             and cdr.cell_id in oob_overlap_cells
         ):
             cdr.excluded = True
-            cdr.exclude_reason = "out_of_bounds_nucleus"
         elif cdr.cep17_dot_count < cep17_min and not (
             cdr.her2_dot_count == 0 and cdr.cep17_dot_count == 0
         ):
             cdr.excluded = True
-            cdr.exclude_reason = "low_cep17"
         else:
             cdr.excluded = False
-            cdr.exclude_reason = ""
 
         if cdr.excluded:
             cdr.score = 0.0

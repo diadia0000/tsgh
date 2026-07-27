@@ -181,14 +181,6 @@ class RegistrationConfig:
                 return m
         return None
     
-    def get_reference_modality(self) -> Optional[ModalityConfig]:
-        """獲取參考模態配置
-        
-        Returns:
-            Optional[ModalityConfig]: 參考模態配置
-        """
-        return self.get_modality_by_name(self.reference_modality)
-    
     @property
     def transform_params_dir(self) -> Path:
         """變換參數目錄
@@ -224,20 +216,6 @@ def create_default_config() -> RegistrationConfig:
         RegistrationConfig: 預設配置實例
     """
     return RegistrationConfig()
-
-
-# === 便利函數 ===
-
-def get_modality_filenames(config: RegistrationConfig) -> dict:
-    """獲取所有模態的檔名映射
-    
-    Args:
-        config: 配置實例
-        
-    Returns:
-        dict: {模態名稱: 檔名} 映射
-    """
-    return {m.name: m.filename for m in config.modalities}
 
 
 def get_slide_key(filename: str) -> str:

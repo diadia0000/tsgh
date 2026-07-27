@@ -206,10 +206,6 @@ class AnnotationView(QGraphicsView):
         self._update_cursor_size()
 
     @property
-    def has_paint(self) -> bool:
-        return self._mask is not None and np.any(self._mask > 0)
-
-    @property
     def paint_coverage(self) -> float:
         if self._mask is None:
             return 0.0

@@ -10,10 +10,10 @@ M0 縫合層：分塊 (per-chunk) 幾何與「質心 core-ownership」去重的�
 overlay_image）。對真實 WSI（~156222×134028）這是數百 GB 的記憶體，已完全移除。
 
 新流程：
-- 5 張 per-chunk 陣列（instance_mask / dish_nucleus_mask / core_mask / masked_ihc /
-  dish_mask_overlay）由**別的任務**逐塊、以局部 ID 原樣寫檔，不做合併。
-- ``overlay_image`` 由**別的任務**在最後用 pyvips arrayjoin+tiffsave 惰性拼接，
-  同樣不需要全圖陣列。
+- per-chunk 陣列（instance_mask / dish_nucleus_mask / core_mask / masked_ihc /
+  dish_mask_overlay）全部留在記憶體、隨分塊釋放，一張都不寫檔。
+- ``overlay_image`` 由 ``hybrid_pipeline._stitch_overlay_slide()`` 在最後用 pyvips
+  惰性拼接（逐塊 overlay 先落 ``_stitch_scratch/``，拼完即刪），同樣不需要全圖陣列。
 - 唯一仍需「全域、去重、合併」的是**表格式**細胞結果（``CellAnalysisResult`` 清單，
   最終餵給 m4_module/csv 的 ``export_tile_csv`` / ``export_summary_statistics``）。
   因為是「列」不是「像素」，成本極低。
@@ -58,9 +58,7 @@ class ChunkResult:
     abs_y: int
     instance_mask: np.ndarray        # (th, tw) int32, 局部細胞 ID（已清真實 slide 邊、relabel）
     dish_nucleus_mask: np.ndarray    # (th, tw) int32, 局部 DISH 核 ID（detect_all_dots 過濾後）
-    core_mask: np.ndarray            # (th, tw) uint8{0,1}
-    masked_ihc: np.ndarray           # (th, tw, 3) uint8
-    dish_mask_overlay: np.ndarray    # (th, tw, 3) uint8
+    dish_mask_overlay: np.ndarray    # (th, tw, 3) uint8, 標註 overlay 的底圖
     results: List[CellAnalysisResult]
     all_dots: List[DetectedDot]
     per_cell_dots: Dict[int, CellDotResult]

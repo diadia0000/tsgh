@@ -12,7 +12,11 @@ Models are initialized once before the batch loop and reused.
 ```bash
 python hybrid_pipeline.py --ihc roi_ihc.tiff --dish roi_dish.tiff   # single ROI/WSI pair: precut then batch
 python hybrid_pipeline.py --test [--output DIR]                     # smoke-test: bundled test_picture ROI pair, same precut+batch path
+python hybrid_pipeline.py --ihc a.tiff --dish b.tiff --workers 4 --resume   # unattended full-slide run
 ```
+
+`--workers N` (default 1) is `run_batch(workers=N)`; `--resume` is `run_batch(checkpoint=True)`. Both are
+documented under M0 below — `--workers>1` is not yet cleared for production.
 
 Tile pairing is by filename coordinate parsing `tile_x{int}_y{int}`.
 Key imports in `hybrid_pipeline.py`: all local-style — `m0_reader`, `m0_stitch`, `m1_overlay`, `m2_segmentation`, `m3_cell_detection`, `m4_export`.
@@ -26,7 +30,9 @@ separate pretiled-dir path). `backend/api/hybrid.py`'s `/api/hybrid/tile` endpoi
 
 `config.py` is **gitignored**; run `cp config_example.py config.py` first, then edit paths/params.
 Key fields: `unet_model_path`, `cellpose_model_path` (M2), `cellpose_dish_model_path` (M3b),
-tile dirs, `output_dir`, `slide_id`/`model_version`. `compute_config_hash()` is written into every CSV for traceability.
+tile dirs, `output_dir`. `compute_config_hash()` is no longer written into the CSV — it now guards two
+things instead: spawn workers verify their hash matches the parent's, and the resume checkpoint refuses
+to reuse tiles computed under a different config.
 
 ## Architecture
 
@@ -40,8 +46,10 @@ tile dirs, `output_dir`, `slide_id`/`model_version`. `compute_config_hash()` is 
   - `m0_stitch.py` — `compute_tile_geometry()` derives a `TileGeometry` (cut lines + which tiles touch a real
     slide edge) purely from the set of `(abs_x, abs_y)` positions parsed from tile filenames — no read-back of
     the original WSI's true dimensions needed — and raises `ValueError` if the grid has gaps/dupes (fail-fast:
-    the analysis stage has no other way to catch a partially-completed precut job). `hybrid_pipeline.process_precut_tile()`
-    runs M1→M2→M3 per tile via `_process_one_chunk()` with `remove_border=False` (no interior-seam clearing);
+    the analysis stage has no other way to catch a partially-completed precut job). Per tile,
+    `hybrid_pipeline._process_precut_tile_gpu()` runs M1→M2 (via `_process_one_chunk_gpu()`) and
+    `_process_precut_tile_cpu()` finishes M3 (via `_finish_chunk_cpu()`), with `remove_border=False`
+    (no interior-seam clearing);
     `clear_slide_edge_cells()` (gated by `geometry.edge_flags()`) only clears cells touching a *real* slide edge
     before M3. `filter_and_absolutize()` then dedups cross-tile duplicates by **centroid core-ownership**: each
     tile's core region is the strip inside `overlap/2` of its neighbors, and a cell counts only in the tile
@@ -51,14 +59,22 @@ tile dirs, `output_dir`, `slide_id`/`model_version`. `compute_config_hash()` is 
     1..N exactly once — the only place global cell IDs are assigned. Single-tile input degenerates to final
     ID == local ID, matching the pre-refactor single-image path (GPU inference itself is non-deterministic, so
     cross-run comparisons are judged against a noise floor, not exact equality).
-  - Per-tile artifacts land in per-array-type folders under `output_dir/` (`core_mask/`, `masked_ihc/`,
-    `dish_nucleus_mask/`, `dish_mask_overlay/`, `instance_mask/`, `cell_crops/tile_x{x}_y{y}/`) and stay at
-    1024px — only `report.csv` + `summary.txt` (global, via `export_tile_csv`/`export_summary_statistics` on
-    the renumbered cell list) and the **annotated** slide-level overlay are assembled globally. The overlay is
-    built per-tile as `overlay_annotated/tile_x{x}_y{y}.tiff` (core-cropped via `core_crop_bounds()`, drawn with
+  - A run leaves exactly three files in `output_dir/`: `report.csv` + `summary.txt` (global, via
+    `export_tile_csv`/`export_summary_statistics` on the renumbered cell list) and `overlay_slide.tiff`.
+    **Per-tile intermediates are never written** — core mask, `dish_mask_overlay`, instance mask and DISH
+    nucleus mask all stay in memory inside `_process_precut_tile_cpu()` and die with the chunk. The masked-IHC
+    array and the per-cell crop export were deleted outright, not merely kept in memory. The one exception is the annotated overlay, which must round-trip through disk: it is written
+    per-tile as `_stitch_scratch/tile_x{x}_y{y}.tiff` (core-cropped via `core_crop_bounds()`, drawn with
     `render_overlay_image()` on `dish_mask_overlay` — DISH nucleus contours + cell boundaries + drift arrows
-    + labels + HER2/CEP17 dot markers) then `_stitch_overlay_slide()` joins
-    them into `overlay_slide.tiff`, a pyramidal (`tile=True, pyramid=True`) TIFF QuPath can open directly.
+    + labels + HER2/CEP17 dot markers), then `_stitch_overlay_slide()` joins
+    them into `overlay_slide.tiff`, a pyramidal (`tile=True, pyramid=True`) TIFF QuPath can open directly,
+    and `shutil.rmtree`s the scratch dir. That dir is a **streaming buffer, not an artifact**: pyvips reads it
+    lazily (`access="sequential"`) so the full slide never materializes in RAM — building it from in-memory
+    tile buffers instead would resurrect the ≈400GB full-canvas failure mode. The rmtree is deliberately *not*
+    in a `finally`, so a failed stitch keeps the tiles and can be re-run without recomputing the batch
+    (`backend/tests/test_stitch_scratch_cleanup.py` covers the round-trip + cleanup).
+    `merge_overlay/` is still written per-tile when the caller passes `merge_dir` — an explicitly requested
+    output, not an intermediate.
     `pyvips.Image.arrayjoin()` cannot be used here — it assumes a uniform per-cell grid size and silently
     mis-pads when row/column tile sizes differ (as they do at slide edges); the fix is a manual row-then-column
     `Image.join(..., expand=True)`. `run_batch()` defaults to `workers=1`, which is sequential across tiles —
@@ -73,6 +89,24 @@ tile dirs, `output_dir`, `slide_id`/`model_version`. `compute_config_hash()` is 
     immediately if any tile errors — and under multiprocessing the parent terminates every sibling worker
     before re-raising — since all tiles are pieces of one slide and a silent skip would produce a slide with
     an undocumented hole.
+  - **Partial resume (`run_batch(checkpoint=True)`, CLI `--resume`)** — fail-fast is right about not shipping
+    a holed slide, but it says nothing about the 27,000 tiles already computed when tile 25,000 OOMs, which
+    at 27,565 tiles is hours of GPU work. With the checkpoint on, each tile's `owned` list — the *only*
+    per-tile product not reconstructible from disk — is pickled to `output_dir/_resume/tile_x{x}_y{y}.pkl`
+    the moment it lands in the parent (single-process and multiprocess share one write path via
+    `_run_tiles_multiprocess(on_tile=...)`, so the parent is still the only writer). One file per tile rather
+    than an append log means no lock is needed under multiprocessing; each write is tmp+`os.replace`, so a
+    kill mid-write leaves no half file. On restart `_checkpoint_load()` takes back only the tiles that belong
+    to *this* grid and whose `config_hash.txt` matches, and `_skip_completed()` filters them out of the
+    analysis stream — precut still cuts them (it is idempotent and supplies the grid), but the three GPU
+    forwards and the CPU tail are skipped, which is where the cost is. A config-hash mismatch discards the
+    whole checkpoint loudly instead of silently blending results from two configs into one CSV.
+    This **does not relax fail-fast** — a failing tile still aborts the batch; it only makes the retry cheap.
+    If the checkpoint already covers every tile, `run_batch()` short-circuits straight to `_finish_batch()`
+    without initializing any model (that is also how you re-run *just* the stitch — it works because a failed
+    stitch leaves `_stitch_scratch/` in place). Default is **off**: the API's single-tile request would pay
+    the I/O for nothing and leave scratch in the output dir. `tests/test_run_batch_resume.py` covers the
+    store, the skip filter, and the staleness guards.
 - **M1 `m1_overlay.py`** — UNet++ produces the IHC core mask → applied to IHC & DISH →
   50/50 alpha blend (`overlay_alpha`) becomes the M2 input; an empty core mask short-circuits to an empty CSV.
 - **M2 `m2_segmentation.py`** — `CellposeSegmenter` segments the fused image → cell instance mask.
@@ -87,10 +121,11 @@ tile dirs, `output_dir`, `slide_id`/`model_version`. `compute_config_hash()` is 
   - `m3_dot_kernels.py` — `DetectedDot`; pixel-level dot detection, ring statistics, merge core.
   - Score(r,b)=HER2/CEP17: `cep17 < score_cep17_min_count` (default 2) and not 0/0 → excluded with X (0/0 still counted normally); otherwise `score = ratio if ratio ≥ dot_amplification_ratio else 0`; `is_amplified = score > 0`.
   - `m3_cell_detection.py` — backward-compat shim; re-exports all symbols from `m3_module/` in one file.
-- **M4 `m4_export.py` + `m4_module/`** — facade re-export over three sub-modules:
-  - `m4_module/csv.py` — `DotStatsSummary`, `export_tile_csv`, `export_summary_statistics`, `write_summary_csv`.
-  - `m4_module/overlay.py` — `render_overlay_image`, `export_overlay_visualization`, `export_dot_only_visualization`, `stamp_grid_on_overlays`.
-  - `m4_module/cell_crops.py` — `export_per_cell_images`, `export_cell_dot_annotations` (unified entry point: CSV + overlay + per-cell crops).
+- **M4 `m4_export.py` + `m4_module/`** — facade re-export over two sub-modules. M4 is a **pure library**:
+  it renders to arrays and writes the two global tables, and owns no slide-level image file.
+  - `m4_module/csv.py` — `export_tile_csv`, `export_summary_statistics` (+ internal `DotStatsSummary`,
+    `write_summary_csv`).
+  - `m4_module/overlay.py` — `render_overlay_image` (returns RGB, writes nothing), `draw_tile_seam_edges`.
   - `m4_export.py` is the stable public API; callers import only from it.
 - **`unet_inference.py`** — `UNetPPInference` (EfficientNet-B4); large images use sliding-window inference.
 - **`heatmap_visualizer.py`** — Standalone validation tool (**does not import pipeline**); reads per-tile `*_report.csv` →

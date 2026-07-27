@@ -14,7 +14,8 @@
 =drop-out（排除、打 X）；0 核且從頭就沒有候選=忽略配對、照常計入（顯示 0/0）。
 一對一配對下每顆細胞至多 1 核，故不再有「多核排除」。
 
-詳見 docs/sdd-elastic-dish-matching.md（註：該文件描述舊「以核為中心」版本）。
+本檔即此演算法的唯一權威來源；`docs/algo/elastic_matching_v3_explainer.html` 是配圖說明
+（已於 v4 更新為上述流程），與本檔牴觸時以本檔為準。改動本檔的配對規則時請一併更新該頁。
 """
 
 from __future__ import annotations
