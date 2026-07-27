@@ -48,6 +48,10 @@ sys.path.insert(0, str(HYBRID))
 sys.path.insert(0, str(HYBRID.parent.parent.parent))
 
 import hybrid_pipeline as HP  # noqa: E402
+# The per-tile M1→M4 calls live in m0_tile_runner since the M0 split; that module binds
+# them as its own globals, so the shims must be installed *there* — patching the defining
+# module (m1_overlay etc.) would not intercept an already-bound reference.
+from m0_module import m0_tile_runner as TR  # noqa: E402
 import torch  # noqa: E402
 import psutil  # noqa: E402
 
@@ -202,7 +206,7 @@ def wrap_save_tile_array():
     §0.4 footnote assumed, but never measured, that background-tile writes are a
     small fast-compressing share of B2_png_encode -- this splits them out so the
     assumption is checked instead of inherited)."""
-    orig = HP._save_tile_array
+    orig = TR._save_tile_array
 
     @functools.wraps(orig)
     def shim(path, array):
@@ -220,13 +224,13 @@ def wrap_save_tile_array():
         _rec(bucket, dt, {"bytes": nbytes})
         return out
 
-    HP._save_tile_array = shim
+    TR._save_tile_array = shim
 
 
 def wrap_write_blank_tile():
     """_write_blank_tile: Candidate F (doc 24 §2.5) -- the six placeholder writes a
     background tile issues, never separately measured before this round."""
-    orig = HP._write_blank_tile
+    orig = TR._write_blank_tile
 
     @functools.wraps(orig)
     def shim(*a, **k):
@@ -238,7 +242,7 @@ def wrap_write_blank_tile():
             _rec("F_write_blank_tile", time.perf_counter() - t0)
             _blank_ctx.active = False
 
-    HP._write_blank_tile = shim
+    TR._write_blank_tile = shim
 
 
 # Candidate G (doc 24 §2.6): _save_tile_array runs `path.parent.mkdir(parents=True,
@@ -330,34 +334,34 @@ def start_dmon(out_path: Path):
 def install_wrappers():
     # B1 GPU forward
     if CUDA_EVENTS:
-        wrap_gpu(HP, "generate_ihc_core_mask", "B1_unet_coremask",
+        wrap_gpu(TR, "generate_ihc_core_mask", "B1_unet_coremask",
                  label_of=lambda: "unet_coremask")
-        wrap_gpu(HP, "segment_windowed", "B1_m3b_cellpose", label_of=_seg_label)
+        wrap_gpu(TR, "segment_windowed", "B1_m3b_cellpose", label_of=_seg_label)
         wrap_tile_boundary()
     else:
-        wrap(HP, "generate_ihc_core_mask", "B1_unet_coremask")
-        wrap(HP, "segment_windowed", "B1_m3b_cellpose")
-    wrap(HP, "segment_masked_dish", "B1_m2_cellpose")
+        wrap(TR, "generate_ihc_core_mask", "B1_unet_coremask")
+        wrap(TR, "segment_windowed", "B1_m3b_cellpose")
+    wrap(TR, "segment_masked_dish", "B1_m2_cellpose")
     # B2 file I/O out
     wrap_save_tile_array()
     wrap_write_blank_tile()
     wrap_mkdir()
-    wrap(HP, "export_per_cell_images", "B2_percell_crops")
-    wrap(HP, "render_overlay_image", "B2_render_overlay")
+    wrap(TR, "export_per_cell_images", "B2_percell_crops")
+    wrap(TR, "render_overlay_image", "B2_render_overlay")
     # B2r read
-    wrap(HP, "_read_rgb", "B2r_tile_read")
+    wrap(TR, "_read_rgb", "B2r_tile_read")
     # B3 M3
-    wrap(HP, "build_all_positive_results", "B3_build_results")
-    wrap(HP, "enlarge_cell_instances", "B3_enlarge_cells")
-    wrap(HP, "detect_all_dots", "B3_detect_dots")
-    wrap(HP, "merge_dot_results_to_cell_analysis", "B3_merge_dots")
+    wrap(TR, "build_all_positive_results", "B3_build_results")
+    wrap(TR, "enlarge_cell_instances", "B3_enlarge_cells")
+    wrap(TR, "detect_all_dots", "B3_detect_dots")
+    wrap(TR, "merge_dot_results_to_cell_analysis", "B3_merge_dots")
     # B-M1 overlay
-    wrap(HP, "apply_mask_to_ihc_image", "BM1_apply_mask")
-    wrap(HP, "overlay_ihc_mask_on_dish", "BM1_overlay_dish")
-    wrap(HP, "fuse_masked_ihc_with_dish", "BM1_fuse")
+    wrap(TR, "apply_mask_to_ihc_image", "BM1_apply_mask")
+    wrap(TR, "overlay_ihc_mask_on_dish", "BM1_overlay_dish")
+    wrap(TR, "fuse_masked_ihc_with_dish", "BM1_fuse")
     # B-stitch per tile
-    wrap(HP, "filter_and_absolutize", "Bs_filter_absolutize")
-    wrap(HP, "clear_slide_edge_cells", "Bs_clear_edge")
+    wrap(TR, "filter_and_absolutize", "Bs_filter_absolutize")
+    wrap(TR, "clear_slide_edge_cells", "Bs_clear_edge")
     # C global merge
     wrap(HP, "export_tile_csv", "C_export_csv")
     wrap(HP, "export_summary_statistics", "C_export_summary")

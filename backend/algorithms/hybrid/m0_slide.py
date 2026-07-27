@@ -18,6 +18,7 @@ Available:
   _process_precut_tile_gpu      → m0_module.m0_tile_runner
   _process_precut_tile_cpu      → m0_module.m0_tile_runner
   _run_tiles_multiprocess       → m0_module.m0_multiprocess
+  LAST_MP_WORKER_TIMINGS        → m0_module.m0_multiprocess
   _CKPT_DIRNAME                 → m0_module.m0_checkpoint
   _checkpoint_load              → m0_module.m0_checkpoint
   _checkpoint_init              → m0_module.m0_checkpoint
@@ -41,7 +42,10 @@ try:
         _process_precut_tile_cpu,
         _process_precut_tile_gpu,
     )
-    from .m0_module.m0_multiprocess import _run_tiles_multiprocess
+    from .m0_module.m0_multiprocess import (
+        LAST_MP_WORKER_TIMINGS,
+        _run_tiles_multiprocess,
+    )
     from .m0_module.m0_checkpoint import (
         _CKPT_DIRNAME,
         _checkpoint_init,
@@ -66,7 +70,10 @@ except ImportError:
         _process_precut_tile_cpu,
         _process_precut_tile_gpu,
     )
-    from m0_module.m0_multiprocess import _run_tiles_multiprocess
+    from m0_module.m0_multiprocess import (
+        LAST_MP_WORKER_TIMINGS,
+        _run_tiles_multiprocess,
+    )
     from m0_module.m0_checkpoint import (
         _CKPT_DIRNAME,
         _checkpoint_init,
@@ -89,6 +96,7 @@ __all__ = [
     "_process_precut_tile_gpu",
     "_process_precut_tile_cpu",
     "_run_tiles_multiprocess",
+    "LAST_MP_WORKER_TIMINGS",
     "_CKPT_DIRNAME",
     "_checkpoint_load",
     "_checkpoint_init",
