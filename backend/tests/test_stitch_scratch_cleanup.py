@@ -13,11 +13,9 @@ from skimage import io
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from backend.algorithms.hybrid.hybrid_pipeline import (  # noqa: E402
+from backend.algorithms.hybrid.m0_slide import (  # noqa: E402
     _STITCH_SCRATCH,
     _stitch_overlay_slide,
-)
-from backend.algorithms.hybrid.m0_stitch import (  # noqa: E402
     compute_tile_geometry,
     core_crop_bounds,
 )

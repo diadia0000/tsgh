@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks
 
 from backend.algorithms.hybrid.config import config
 from backend.algorithms.hybrid.hybrid_pipeline import run_batch
-from backend.algorithms.hybrid.m0_reader import PrecutStream
+from backend.algorithms.hybrid.m0_slide import PrecutStream
 from backend.api.jobs import submit_job
 from backend.schemas.common import JobAccepted
 from backend.schemas.hybrid import HybridTileIn

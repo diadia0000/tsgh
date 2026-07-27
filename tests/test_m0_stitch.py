@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from hybrid_data_types import CellAnalysisResult
-from m0_stitch import (
+from m0_module.m0_stitch import (
     ChunkResult,
     clear_slide_edge_cells,
     compute_tile_geometry,

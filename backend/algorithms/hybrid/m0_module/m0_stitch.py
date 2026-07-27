@@ -36,18 +36,31 @@ overlay_image）。對真實 WSI（~156222×134028）這是數百 GB 的記憶�
 """
 from __future__ import annotations
 
+import logging
+import resource
+import shutil
 from bisect import bisect_right
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
+import pyvips
 
 try:
-    from .hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
-    from .m2_segmentation import _relabel_sequential, _remove_border_cells
+    from ..hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
+    from ..m2_segmentation import _relabel_sequential, _remove_border_cells
 except ImportError:
     from hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
     from m2_segmentation import _relabel_sequential, _remove_border_cells
+
+logger = logging.getLogger(__name__)
+
+# 逐塊標註 overlay 的暫存夾。這不是產物而是縫合用的**串流緩衝**：pyvips 以
+# ``access="sequential"`` 惰性讀這些檔再 ``tiffsave``，整片才不必同時在記憶體裡
+# （純記憶體拼接就是當初被砍掉的全片 canvas 失效模式）。``_stitch_overlay_slide``
+# 寫完 overlay_slide.tiff 後整夾刪除。
+_STITCH_SCRATCH = "_stitch_scratch"
 
 
 @dataclass
@@ -330,3 +343,106 @@ def filter_and_absolutize(
         if bisect_right(cuts_x, gxc) == col and bisect_right(cuts_y, gyc) == row:
             owned.append(replace(r, centroid_x=gxc, centroid_y=gyc))
     return owned
+
+
+def _ensure_nofile_limit(needed: int) -> None:
+    """確保本行程的 open-file 軟上限足以讓縫合同時開著 ``needed`` 個 tile。
+
+    ``_join_overlay_tiles`` 是**惰性**的：整張玻片的 27,565 個 overlay tile 會全部
+    同時以 pyvips image 開著，一直到最後 ``tiffsave`` 拉資料時才真的逐一讀。本機的
+    軟上限是 1,048,576，所以一路沒事；但 Linux 常見預設是 **1,024**，在那種機器上
+    整片分析（數小時）跑完之後才會在最後一步炸掉——這是這條管線最貴的失敗方式，
+    也正是 doc 25 §5.2 記下但沒補的缺口。
+
+    故在開任何檔之前先檢查：軟上限不夠就自己往上提（soft→hard 一律允許，不需
+    特權），硬上限也不夠才大聲失敗並講清楚要調多少。
+    """
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft == resource.RLIM_INFINITY or soft >= needed:
+        return
+    if hard == resource.RLIM_INFINITY or hard >= needed:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (needed, hard))
+        logger.info(
+            "RLIMIT_NOFILE 軟上限 %d 不足，已自行提高為 %d（縫合需同時開啟 %d 個 tile）",
+            soft, needed, needed,
+        )
+        return
+    raise RuntimeError(
+        f"overlay 縫合需同時開啟約 {needed} 個檔案，但本行程的 RLIMIT_NOFILE "
+        f"硬上限只有 {hard}（軟上限 {soft}）。請提高硬上限後重跑最後的縫合步驟"
+        f"（例如 `ulimit -Hn {needed}`，或於 systemd unit 設 LimitNOFILE={needed}）"
+        f"——整片的逐塊 overlay 已在 {_STITCH_SCRATCH}/ 落地，不需重跑。"
+    )
+
+
+def _join_overlay_tiles(output_dir: Path, geometry: TileGeometry) -> pyvips.Image:
+    """把 ``_stitch_scratch/`` 內每格核心裁切的 tile 惰性拼成一張全片影像（尚未編碼）。
+
+    每格 overlay 的尺寸依所在欄 / 列而異（邊界格較小），但**同欄同寬、同列同高**
+    （由 ``core_crop_bounds`` 的建構保證）。``pyvips.Image.arrayjoin()`` 只做「等格montage」
+    （以最大寬高為格、其餘留白），無法正確處理非均勻的每欄 / 每列尺寸（已用合成測試證實
+    它會多出留白、尺寸錯誤）。故改為手動：每列內由左至右水平 join（同列高已相等），
+    再把各列由上至下垂直 join（各列總寬已相等）——可逐像素還原原始版面。
+
+    與 ``_stitch_overlay_slide`` 拆開，是為了讓 ``scripts/stitch_probe.py`` 能在**同一張
+    已拼好的影像**上獨立消融 ``tiffsave`` 的各個參數（doc 26 Tier 1.1）：join 與 encode
+    的成本必須分開讀，否則量到的差異分不清是哪一段造成的。
+    """
+    overlay_dir = output_dir / _STITCH_SCRATCH
+    xs = sorted(geometry.col_of)  # abs_x，欄序（升冪即欄索引序）
+    ys = sorted(geometry.row_of)  # abs_y，列序
+
+    _ensure_nofile_limit(len(xs) * len(ys) + 256)
+
+    row_images: List[pyvips.Image] = []
+    for ay in ys:
+        row_tiles: List[pyvips.Image] = []
+        for ax in xs:
+            path = overlay_dir / f"tile_x{ax}_y{ay}.tiff"
+            if not path.exists():
+                raise FileNotFoundError(
+                    f"{_STITCH_SCRATCH} 缺少 tile: {path}——每格應恰有一檔。"
+                )
+            row_tiles.append(
+                pyvips.Image.new_from_file(str(path), access="sequential")
+            )
+        row = row_tiles[0]
+        for tile in row_tiles[1:]:
+            row = row.join(tile, "horizontal", expand=True)
+        row_images.append(row)
+
+    slide = row_images[0]
+    for row in row_images[1:]:
+        slide = slide.join(row, "vertical", expand=True)
+    return slide
+
+
+def _stitch_overlay_slide(output_dir: Path, geometry: TileGeometry) -> None:
+    """把 ``_stitch_scratch/`` 內的 tile 拼成一張全片 pyramid TIFF 並寫出，寫完刪暫存夾。
+
+    壓縮採 **lzw（無失真）**：這是帶細胞邊界線 / 標籤文字 / 紅黑點的標註影像，JPEG
+    的區塊假影會糊掉細線與小點，醫師判讀不宜；lzw 保真且仍可壓。
+
+    ``tiffsave`` 的其餘參數（tile 大小、pyramid 深度、predictor）已在真實 16.22 GP
+    規模上逐一消融過，沒有一個換得到值得留下的時間——見
+    ``docs/hybrid-pipeline/27-remaining-work-implementation.md`` §3 與
+    ``scripts/stitch_probe.py --ablate``。故此處維持 pyvips 預設，不加旋鈕：零貢獻的
+    層一律不留（playbook step 4）。
+
+    ``tiffsave`` 是同步的——回傳時惰性管線已把每格讀完寫出，故其後即可安全刪除暫存夾。
+    刪除**不放 finally**：拼合失敗時保留暫存夾，才能重跑縫合而不必重算整批。
+    """
+    overlay_dir = output_dir / _STITCH_SCRATCH
+    slide = _join_overlay_tiles(output_dir, geometry)
+    slide.tiffsave(
+        str(output_dir / "overlay_slide.tiff"),
+        tile=True,
+        pyramid=True,
+        compression="lzw",
+        bigtiff=True,
+    )
+    logger.info(
+        "overlay_slide.tiff 縫合完成: %d×%d px", slide.width, slide.height
+    )
+    if overlay_dir.exists():
+        shutil.rmtree(overlay_dir)

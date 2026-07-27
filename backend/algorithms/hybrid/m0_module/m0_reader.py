@@ -40,7 +40,7 @@ pyvips.cache_set_max(0)
 _TILE_COMPRESSION = "deflate"
 
 try:
-    from .m2_segmentation import _overlap_window_coords
+    from ..m2_segmentation import _overlap_window_coords
 except ImportError:
     from m2_segmentation import _overlap_window_coords
 

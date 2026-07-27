@@ -19,7 +19,7 @@ import resource
 
 import pytest
 
-import hybrid_pipeline as HP
+from m0_module import m0_stitch as HP
 
 
 @pytest.fixture
@@ -86,7 +86,7 @@ def test_fails_loudly_when_the_hard_limit_is_too_low(fake_limits):
 def test_stitch_checks_the_limit_before_opening_any_tile(tmp_path, fake_limits):
     """The guard must fire on tile *count*, not on the first EMFILE — otherwise it
     is just a worse error message for the same failure."""
-    from m0_stitch import compute_tile_geometry
+    from m0_module.m0_stitch import compute_tile_geometry
 
     stride = 768
     positions = [(x * stride, y * stride) for y in range(4) for x in range(4)]
