@@ -25,7 +25,7 @@ skills-lock.json
 .uv-cache/
 .csv
 .log
-docs/hybrid-pipeline/measurement/*/*
 scripts/
-docs/hybrid-pipeline/
-docs/algo/
+docs/*
+!docs/UI/
+!docs/BACKLOG.md
