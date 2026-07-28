@@ -440,6 +440,21 @@ def _stitch_overlay_slide(output_dir: Path, geometry: TileGeometry) -> None:
         pyramid=True,
         compression="lzw",
         bigtiff=True,
+        # predictor="none" is a CORRECTNESS fix, not a tuning knob (round 9, doc 32 §5.1).
+        # libvips 8.15.1's default (`horizontal`) writes tag 317 Predictor=2 on the full
+        # -resolution IFD only, while still horizontally differencing the *reduced* pyramid
+        # levels' data. Every reader tried — tifffile and libtiff via Pillow — therefore
+        # decodes levels 1..N as noise (measured: 88–99% zero pixels), i.e. a pathologist
+        # zooming out sees a black slide. Confirmed in QuPath on a real slide, then measured
+        # directly on a real overlay_slide.tiff — not inferred from a synthetic one.
+        #
+        # Cost, measured on that same real overlay (18,688² L0): output grows
+        # 93.35 → 102.08 MB (+9.4%), encode time 4.14 → 4.18 s (within noise). Paying ~9%
+        # disk to make the zoomed-out view exist at all is the same trade doc 27 §3.1 made
+        # when it vetoed `zstd`: an overlay a pathologist cannot read is worth zero.
+        # **Do not "optimise" this back to horizontal without re-checking every pyramid
+        # level** — `tests/test_stitch_pyramid_levels.py` will fail if you do.
+        predictor="none",
     )
     logger.info(
         "overlay_slide.tiff 縫合完成: %d×%d px", slide.width, slide.height
