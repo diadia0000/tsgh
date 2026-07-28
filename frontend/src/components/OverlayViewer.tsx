@@ -36,6 +36,19 @@ export function OverlayViewer() {
     },
   })
 
+  // Which run these layers actually came from. `aligned_*` are global slide_ids
+  // owned by whichever run published last, so selecting another job in the panel
+  // leaves the previous run's images on screen -- naming the source is what stops
+  // them being read as the selected job's result.
+  const published = useQuery({
+    queryKey: ['published'],
+    queryFn: async () => {
+      const { data, error } = await api.GET('/api/alignment/published')
+      if (error) throw new Error('published lookup failed')
+      return data
+    },
+  })
+
   // Layers with an aligned image actually on the backend, in LAYERS order. Their
   // position here IS the OpenSeadragon world index the sliders address.
   const present = LAYERS.filter((l) => l.slideId && slides.data?.includes(l.slideId))
@@ -90,6 +103,12 @@ export function OverlayViewer() {
         <div className="absolute left-3 top-3 flex w-64 flex-col gap-3 rounded-lg bg-neutral-950/80 p-3 text-xs text-neutral-200 backdrop-blur">
           <span className="font-semibold uppercase tracking-wide text-neutral-400">
             圖層透明度
+          </span>
+          <span className="-mt-2 break-all text-[11px] text-neutral-500">
+            來源工作：
+            <span className="font-mono text-neutral-300">
+              {published.data?.run_id ?? '未知（後端重啟前的結果）'}
+            </span>
           </span>
           {LAYERS.map((l) => {
             const empty = !l.slideId || !slides.data?.includes(l.slideId)

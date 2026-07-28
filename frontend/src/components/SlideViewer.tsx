@@ -7,9 +7,23 @@ import OpenSeadragon from 'openseadragon'
  * `/api/tiles/{slideId}_files/{level}/{col}_{row}.jpeg` (see backend/api/tiles.py).
  * The slide is addressed only by `slideId` — never a filesystem path (guardrail 2).
  */
-export function SlideViewer({ slideId }: { slideId: string }) {
+export type ImageRect = { x: number; y: number; w: number; h: number }
+
+export function SlideViewer({
+  slideId,
+  onViewportChange,
+}: {
+  slideId: string
+  /** Current viewport in *image* pixels, reported after every pan/zoom. This is
+   *  what lets the analysis panel turn "what I am looking at" into a ROI. */
+  onViewportChange?: (rect: ImageRect) => void
+}) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
+  // Held in a ref so a new callback identity never tears down and rebuilds the
+  // viewer (which would reset the user's zoom mid-selection).
+  const reportRef = useRef(onViewportChange)
+  reportRef.current = onViewportChange
 
   useEffect(() => {
     if (!containerRef.current || !slideId) return
@@ -31,6 +45,26 @@ export function SlideViewer({ slideId }: { slideId: string }) {
     viewer.addHandler('open-failed', (e) => {
       setError(`無法載入切片「${slideId}」：${e.message ?? 'not found'}`)
     })
+
+    // The viewport can extend past the slide (OSD lets you pan into blank
+    // space), so clamp before reporting: a ROI must be a real sub-rectangle of
+    // the image or the backend rejects it.
+    const report = () => {
+      const item = viewer.world.getItemAt(0)
+      if (!item) return
+      const size = item.getContentSize()
+      const r = viewer.viewport.viewportToImageRectangle(viewer.viewport.getBounds(true))
+      const x = Math.max(0, Math.round(r.x))
+      const y = Math.max(0, Math.round(r.y))
+      reportRef.current?.({
+        x,
+        y,
+        w: Math.min(Math.round(r.width), size.x - x),
+        h: Math.min(Math.round(r.height), size.y - y),
+      })
+    }
+    viewer.addHandler('open', report)
+    viewer.addHandler('animation-finish', report)
 
     return () => viewer.destroy()
   }, [slideId])

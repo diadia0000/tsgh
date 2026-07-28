@@ -82,6 +82,8 @@ export function PipelinePanel({ onResultSlide }: { onResultSlide?: (slideId: str
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['slides'] })
+      // The viewer names the run its layers came from; publishing is what changes it.
+      queryClient.invalidateQueries({ queryKey: ['published'] })
       onResultSlide?.('aligned_result')
     },
   })
@@ -195,7 +197,10 @@ export function PipelinePanel({ onResultSlide }: { onResultSlide?: (slideId: str
   }, [startedAt, running])
 
   useEffect(() => {
-    if (status === 'done') queryClient.invalidateQueries({ queryKey: ['slides'] })
+    if (status !== 'done') return
+    queryClient.invalidateQueries({ queryKey: ['slides'] })
+    // The thumbnail step publishes as a side effect, so the source label moves too.
+    queryClient.invalidateQueries({ queryKey: ['published'] })
   }, [queryClient, status])
 
   // Advance only after the current job reaches a terminal state. Each request
@@ -299,7 +304,7 @@ export function PipelinePanel({ onResultSlide }: { onResultSlide?: (slideId: str
                 )
               })}
             </ul>
-            {nextIndex > 0 && (
+            {nextIndex !== 0 && (
               <label className="mb-2 flex items-center gap-2 text-xs text-neutral-500">
                 <input
                   type="checkbox"
@@ -312,15 +317,21 @@ export function PipelinePanel({ onResultSlide }: { onResultSlide?: (slideId: str
             )}
           </>
         )}
+        {/* A finished run has nothing left to continue, so the only thing this
+            button can do is redo every step -- overwriting artifacts that cost
+            hours. That must be an opt-in (the checkbox above, now also shown
+            when complete), never the silent meaning of the primary action. */}
         <button
           type="button"
-          disabled={busy || !run}
+          disabled={busy || !run || (complete && !restart)}
           onClick={runPipeline}
           className="w-full rounded-md bg-sky-600 px-3 py-2 font-medium hover:bg-sky-500 disabled:opacity-40"
         >
-          {startIndex === 0
-            ? '執行完整流程'
-            : `繼續執行（從${ALIGN_STEPS[startIndex].label}開始）`}
+          {complete && !restart
+            ? '此工作已完成'
+            : startIndex === 0
+              ? '執行完整流程'
+              : `繼續執行（從${ALIGN_STEPS[startIndex].label}開始）`}
         </button>
         {publish.isError && (
           <p className="mt-2 text-xs text-red-400">無法載入既有結果到檢視器</p>
@@ -366,8 +377,10 @@ export function PipelinePanel({ onResultSlide }: { onResultSlide?: (slideId: str
               </div>
             </>
           )}
+          {/* break-all: server error strings carry long unbroken Windows paths,
+              which otherwise widen the whole sidebar into a horizontal scroll. */}
           {job.data?.error && (
-            <p className="mt-2 text-xs text-red-400">{job.data.error}</p>
+            <p className="mt-2 break-all text-xs text-red-400">{job.data.error}</p>
           )}
           {job.data?.result_path && (
             <p className="mt-2 break-all text-xs text-emerald-400">
@@ -376,7 +389,9 @@ export function PipelinePanel({ onResultSlide }: { onResultSlide?: (slideId: str
           )}
         </section>
       )}
-      {pipelineError && <p className="text-xs text-red-400">流程已停止：{pipelineError}</p>}
+      {pipelineError && (
+        <p className="break-all text-xs text-red-400">流程已停止：{pipelineError}</p>
+      )}
     </div>
   )
 }

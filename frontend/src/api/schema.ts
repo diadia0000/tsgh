@@ -4,28 +4,6 @@
  */
 
 export interface paths {
-    "/api/alignment/dev-run": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Create Dev Run
-         * @description Fill the named run's czi_input/ with symlinks to the server-local CZIs,
-         *     i.e. the same state a finished upload leaves behind. Everything downstream
-         *     (paths, output isolation, slide publishing) is unchanged.
-         */
-        post: operations["create_dev_run_api_alignment_dev_run_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/alignment/runs": {
         parameters: {
             query?: never;
@@ -48,6 +26,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/alignment/published": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Published Run
+         * @description Which run the viewer is currently showing. Lets the UI label the layers
+         *     instead of leaving the user to assume they belong to the selected run.
+         */
+        get: operations["published_run_api_alignment_published_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/alignment/publish": {
         parameters: {
             query?: never;
@@ -59,9 +58,9 @@ export interface paths {
         put?: never;
         /**
          * Publish Run
-         * @description Re-point the viewer at an already-finished run's TIFFs. SLIDES_DIR holds
-         *     one global `aligned_result`, overwritten by whichever run ran thumbnail last,
-         *     so a resumed run has to reclaim it -- by symlink only, no recomputation.
+         * @description Re-point the viewer at an already-finished run's TIFFs. `aligned_result`
+         *     is one global slide_id, taken over by whichever run ran thumbnail last, so a
+         *     resumed run has to reclaim it -- pointer only, no recomputation.
          */
         post: operations["publish_run_api_alignment_publish_post"];
         delete?: never;
@@ -186,6 +185,52 @@ export interface paths {
         put?: never;
         /** Extension Creation Route */
         post: operations["extension_creation_route_api_alignment_tus_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hybrid/result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Hybrid Result
+         * @description Read back the artifacts of the most recent run in the default output dir.
+         *
+         *     The UI never sends output_dir (it is a server-side override), so results
+         *     always land in config.output_dir -- that is the only place to look. Returns
+         *     empty fields rather than 404 when nothing has run yet: "no results" is a
+         *     normal state for the panel, not an error.
+         */
+        get: operations["hybrid_result_api_hybrid_result_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hybrid/report.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Hybrid Report Csv
+         * @description The per-cell table, as a download. A file body, not JSON -- it is the one
+         *     artifact the pathologist takes away to another tool.
+         */
+        get: operations["hybrid_report_csv_api_hybrid_report_csv_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -318,16 +363,44 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /**
+         * HybridResult
+         * @description What a finished hybrid run left behind, as the UI needs to show it.
+         *
+         *     A run writes exactly three files (hybrid_pipeline.py:349-353): report.csv,
+         *     summary.txt and overlay_slide.tiff. summary.txt is small and is rendered as
+         *     the report card, so it is inlined here; the CSV is a download and the TIFF is
+         *     addressed by slide_id, never by path (guardrail 2).
+         */
+        HybridResult: {
+            /** Summary */
+            summary?: string | null;
+            /**
+             * Has Report
+             * @default false
+             */
+            has_report: boolean;
+            /** Overlay Slide Id */
+            overlay_slide_id?: string | null;
+        };
         /** HybridTileIn */
         HybridTileIn: {
-            /** Ihc Path */
-            ihc_path: string;
-            /** Dish Path */
-            dish_path: string;
+            /** Ihc Slide Id */
+            ihc_slide_id: string;
+            /** Dish Slide Id */
+            dish_slide_id: string;
             /** Output Dir */
             output_dir?: string | null;
             /** Merge Dir */
             merge_dir?: string | null;
+            /** Roi X */
+            roi_x?: number | null;
+            /** Roi Y */
+            roi_y?: number | null;
+            /** Roi W */
+            roi_w?: number | null;
+            /** Roi H */
+            roi_h?: number | null;
         };
         /** JobAccepted */
         JobAccepted: {
@@ -368,6 +441,18 @@ export interface components {
             strip_height?: number | null;
             /** Num Processes */
             num_processes?: number | null;
+        };
+        /**
+         * PublishedRun
+         * @description Which run the viewer's `aligned_*` slide_ids currently resolve to.
+         *
+         *     Those ids are global and get taken over by whichever run published last, so
+         *     the layers on screen do not necessarily belong to the run selected in the
+         *     panel. None means nothing has been published since the backend started.
+         */
+        PublishedRun: {
+            /** Run Id */
+            run_id?: string | null;
         };
         /** ROIConfigIn */
         ROIConfigIn: {
@@ -429,41 +514,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    create_dev_run_api_alignment_dev_run_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AlignmentConfigIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     list_runs_api_alignment_runs_get: {
         parameters: {
             query?: never;
@@ -480,6 +530,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunSummary"][];
+                };
+            };
+        };
+    };
+    published_run_api_alignment_published_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishedRun"];
                 };
             };
         };
@@ -847,6 +917,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    hybrid_result_api_hybrid_result_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HybridResult"];
+                };
+            };
+        };
+    };
+    hybrid_report_csv_api_hybrid_report_csv_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

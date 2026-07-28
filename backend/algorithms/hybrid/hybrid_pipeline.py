@@ -202,8 +202,12 @@ def run_batch(
 
     # 一次算出縫合幾何；格線不完整（缺格 / 重複 / 對不上）會 raise ValueError，
     # 屬預期的 fail-fast 驗證，不吞。
+    # 只分析 ROI 時格線從 ROI 起點算起（tile 座標仍是全片絕對值），把原點交給驗證器，
+    # 這樣「第一格不見了」在兩種模式下都還是抓得到。
+    region = getattr(tile_stream, "region", None) if tile_stream is not None else None
+    origin = (region[0], region[1]) if region else (0, 0)
     geometry = compute_tile_geometry(
-        positions, config.default_tile_size, config.window_overlap_px
+        positions, config.default_tile_size, config.window_overlap_px, origin=origin
     )
 
     stats = {"success": 0, "skipped": 0}
