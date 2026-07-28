@@ -5,6 +5,7 @@ IHC-DISH Overlay & Analysis Pipeline — 主入口
 支援單 tile 處理與批次掃描。
 
 流程:
+  - M0: 先把整片玻片切成重疊 tile
   - M1: IHC → UNet++ mask → mask on IHC & DISH → 50/50 alpha blend
   - M2: Cellpose 分割 IHC-DISH 疊合影像 → cell instance mask
   - M3: 將 M2 cell mask 套用至 dish_mask_overlay → 逐細胞結果

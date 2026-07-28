@@ -67,16 +67,18 @@ def export_tile_csv(
 
 @dataclass
 class DotStatsSummary:
-    """有效雙色細胞統計摘要。
+    """有效細胞統計摘要。
 
     僅記錄 count；百分比於寫檔時計算，避免累積誤差。
 
-    有效細胞定義：未排除（excluded=False）且 reddot >= 2 且 blackdot >= 1。
+    有效細胞定義：未排除（excluded=False）且 reddot >= 2。不要求 blackdot >= 1：
+    有紅點但 0 黑點是切片平面沒切到該位點的真實低拷貝數細胞，丟掉它會同時拿走
+    分子與分母中的一顆低值細胞，把比值與平均黑點數系統性往上拉（偏向判陽性）。
     """
 
-    valid_cells: int = 0      # 雙色有效細胞總數
-    total_her2: int = 0       # 有效細胞 HER2 黑點總和 (ΣHER2)，供 case ratio/平均拷貝數
-    total_cep17: int = 0      # 有效細胞 CEP17 紅點總和 (ΣCEP17)，供 case ratio
+    valid_cells: int = 0      # 有效細胞總數
+    total_her2: int = 0       # 有效細胞黑點總和 (Σ黑)，供 case 比值/平均黑點數
+    total_cep17: int = 0      # 有效細胞紅點總和 (Σ紅)，供 case 比值
     ratio_lt2: int = 0        # her2/cep17 < 2
     ratio_gte2: int = 0       # her2/cep17 >= 2
     copy_lt4: int = 0         # blackdot < 4
@@ -92,7 +94,6 @@ class DotStatsSummary:
             r for r in results
             if not r.excluded
             and r.cep17_dot_count >= 2
-            and r.her2_dot_count >= 1
         ]
         ratio_lt2 = sum(1 for r in valid if r.her2_cep17_ratio < 2.0)
         copy_lt4 = sum(1 for r in valid if r.her2_dot_count < 4)
@@ -143,7 +144,7 @@ def _pad(text: str, width: int) -> str:
 # 判讀結論的中文註解（讓醫師一眼看懂英文術語）。
 _VERDICT_GLOSS = {
     "Amplified (positive)": "擴增 / 陽性",
-    "Equivocal": "",
+    "Equivocal": "灰區 / 無法定論",
     "Not amplified (negative)": "未擴增 / 陰性",
     "Insufficient cells": "有效細胞不足，無法判讀",
 }
@@ -161,7 +162,7 @@ def write_summary_csv(
     def pct(count: int) -> str:
         return f"{count / n * 100:.1f}%" if n > 0 else "N/A"
 
-    # case-level 判讀：ratio = ΣHER2/ΣCEP17、平均拷貝數 = ΣHER2/有效細胞數。
+    # case-level 判讀：比值 = Σ黑/Σ紅、平均黑點數 = Σ黑/有效細胞數。
     # 有效細胞需 cep17 >= 2，故 n > 0 時 total_cep17 必 > 0，無除零風險。
     if n > 0:
         case_ratio = stats.total_her2 / stats.total_cep17
@@ -177,11 +178,11 @@ def write_summary_csv(
     # ── 判讀區塊（label → 值，label 補齊到固定顯示寬度）──
     kv = [
         ("判讀結論", f"{verdict}（{_VERDICT_GLOSS.get(verdict, '')}）"),
-        ("HER2/CEP17 比值", ratio_str),
-        ("平均 HER2 拷貝數", avg_str),
-        ("HER2 訊號總數", str(stats.total_her2)),
-        ("CEP17 訊號總數", str(stats.total_cep17)),
-        ("有效腫瘤細胞數", str(n)),
+        ("黑點/紅點 比值", ratio_str),
+        ("平均黑點數", avg_str),
+        ("黑點總數", str(stats.total_her2)),
+        ("紅點總數", str(stats.total_cep17)),
+        ("有效細胞數", str(n)),
     ]
     kv_w = max(_display_width(k) for k, _ in kv) + 2
 
@@ -189,15 +190,15 @@ def write_summary_csv(
     dist = [
         ("比值 < 2", stats.ratio_lt2),
         ("比值 >= 2", stats.ratio_gte2),
-        ("HER2 拷貝數 < 4", stats.copy_lt4),
-        ("HER2 拷貝數 4-5", stats.copy_4to5),
-        ("HER2 拷貝數 >= 6", stats.copy_gte6),
+        ("黑點數 < 4", stats.copy_lt4),
+        ("黑點數 4-5", stats.copy_4to5),
+        ("黑點數 >= 6", stats.copy_gte6),
     ]
     dist_w = max(_display_width(k) for k, _ in dist) + 2
 
     bar = "=" * 46
     sub = "-" * 46
-    lines = [bar, "  ASCO/CAP 2013 判讀", bar]
+    lines = [bar, "  ASCO/CAP 2013 判讀（全細胞統計）", bar]
     lines += [f"  {_pad(k, kv_w)}{v}" for k, v in kv]
     lines += ["", sub, "  細胞分佈（佔有效細胞比例）", sub]
     lines += [f"  {_pad(k, dist_w)}{c:>5}  ({pct(c)})" for k, c in dist]
