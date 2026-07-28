@@ -1,0 +1,849 @@
+<title>HER2 DISH 判讀 — ASCO/CAP 2013</title>
+
+<style>
+  :root {
+    --ground:   #F5F7F9;
+    --surface:  #FFFFFF;
+    --sunk:     #EDF0F4;
+    --ink:      #131820;
+    --ink-soft: #5B6672;
+    --ink-dim:  #8B96A3;
+    --rule:     #DEE4EA;
+    --rule-firm:#C4CDD7;
+
+    --nucleus:  #4A7FB5;
+    --nucleus-edge: #2F5D8C;
+    --her2:     #14181E;
+    --her2-ring: #14181E;
+    --cep17:    #C63028;
+
+    --pos:      #C63028;
+    --pos-bg:   #FBECEA;
+    --equiv:    #B0790C;
+    --equiv-bg: #FBF2DF;
+    --neg:      #2F7259;
+    --neg-bg:   #E7F2ED;
+    --none:     #6C7683;
+    --none-bg:  #EDF0F4;
+
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia,
+             "Songti TC", "Songti SC", "SimSun", serif;
+    --sans: "PingFang TC", "Hiragino Sans CNS", "Microsoft JhengHei",
+            "Noto Sans TC", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+    --pad: clamp(1.25rem, 4vw, 2.75rem);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground:   #0E1218;
+      --surface:  #161C25;
+      --sunk:     #1D2531;
+      --ink:      #E7ECF2;
+      --ink-soft: #98A4B2;
+      --ink-dim:  #6E7A88;
+      --rule:     #262F3C;
+      --rule-firm:#394554;
+
+      --nucleus:  #517FB0;
+      --nucleus-edge: #7BA8D6;
+      --her2:     #0B0E12;
+      --her2-ring: #BAC6D3;
+      --cep17:    #E45247;
+
+      --pos:      #F0736A;
+      --pos-bg:   #2E1A19;
+      --equiv:    #E0AB45;
+      --equiv-bg: #2C2415;
+      --neg:      #63BC96;
+      --neg-bg:   #14261F;
+      --none:     #8B96A3;
+      --none-bg:  #1D2531;
+    }
+  }
+
+  :root[data-theme="light"] {
+    --ground: #F5F7F9; --surface: #FFFFFF; --sunk: #EDF0F4;
+    --ink: #131820; --ink-soft: #5B6672; --ink-dim: #8B96A3;
+    --rule: #DEE4EA; --rule-firm: #C4CDD7;
+    --nucleus: #4A7FB5; --nucleus-edge: #2F5D8C;
+    --her2: #14181E; --her2-ring: #14181E; --cep17: #C63028;
+    --pos: #C63028; --pos-bg: #FBECEA;
+    --equiv: #B0790C; --equiv-bg: #FBF2DF;
+    --neg: #2F7259; --neg-bg: #E7F2ED;
+    --none: #6C7683; --none-bg: #EDF0F4;
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0E1218; --surface: #161C25; --sunk: #1D2531;
+    --ink: #E7ECF2; --ink-soft: #98A4B2; --ink-dim: #6E7A88;
+    --rule: #262F3C; --rule-firm: #394554;
+    --nucleus: #517FB0; --nucleus-edge: #7BA8D6;
+    --her2: #0B0E12; --her2-ring: #BAC6D3; --cep17: #E45247;
+    --pos: #F0736A; --pos-bg: #2E1A19;
+    --equiv: #E0AB45; --equiv-bg: #2C2415;
+    --neg: #63BC96; --neg-bg: #14261F;
+    --none: #8B96A3; --none-bg: #1D2531;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 1rem;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 60rem;
+    margin: 0 auto;
+    padding: var(--pad) var(--pad) 4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 2.5rem;
+  }
+
+  /* ---------- masthead ---------- */
+
+  .masthead { display: flex; flex-direction: column; gap: .5rem; }
+
+  .eyebrow {
+    font-size: .75rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    font-weight: 600;
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: clamp(1.75rem, 4.5vw, 2.6rem);
+    line-height: 1.15;
+    font-weight: 600;
+    text-wrap: balance;
+    letter-spacing: -.01em;
+  }
+
+  .standfirst {
+    font-size: 1.0625rem;
+    color: var(--ink-soft);
+    max-width: 44ch;
+  }
+  .standfirst b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- section frame ---------- */
+
+  section {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: clamp(1.1rem, 3vw, 1.75rem);
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+  }
+
+  h2 {
+    font-family: var(--serif);
+    font-size: 1.3rem;
+    font-weight: 600;
+    line-height: 1.3;
+    display: flex;
+    align-items: baseline;
+    gap: .6rem;
+  }
+  h2 .num {
+    font-family: var(--mono);
+    font-size: .8rem;
+    color: var(--ink-dim);
+    font-weight: 500;
+  }
+
+  .note { font-size: .875rem; color: var(--ink-soft); }
+  .note b { color: var(--ink); }
+
+  /* ---------- verdict meanings ---------- */
+
+  .verdicts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: .75rem;
+  }
+
+  .vcard {
+    display: flex;
+    flex-direction: column;
+    gap: .4rem;
+    padding: .85rem .9rem;
+    border: 1px solid var(--rule);
+    border-top: 3px solid var(--vc, var(--none));
+    border-radius: 3px;
+  }
+  .vcard.is-pos   { --vc: var(--pos); }
+  .vcard.is-equiv { --vc: var(--equiv); }
+  .vcard.is-neg   { --vc: var(--neg); }
+
+  .vcard .tag { align-self: flex-start; }
+  .vcard .mean { font-size: .9375rem; font-weight: 600; line-height: 1.5; }
+  .vcard .doing { font-size: .875rem; color: var(--ink-soft); }
+
+  /* ---------- calculator ---------- */
+
+  .calc {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 15rem);
+    gap: 1.5rem;
+    align-items: start;
+  }
+  @media (max-width: 44rem) {
+    .calc { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  .fields { display: flex; flex-direction: column; gap: .75rem; }
+
+  .field {
+    display: grid;
+    grid-template-columns: 1fr 6.5rem;
+    align-items: center;
+    gap: .75rem;
+  }
+  .field label {
+    font-size: .9375rem;
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+  }
+  .field input {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 1rem;
+    text-align: right;
+    padding: .45rem .6rem;
+    background: var(--sunk);
+    color: var(--ink);
+    border: 1px solid var(--rule-firm);
+    border-radius: 3px;
+    width: 100%;
+  }
+  .field input:focus-visible {
+    outline: 2px solid var(--nucleus);
+    outline-offset: 1px;
+  }
+
+  .swatch {
+    width: .7rem; height: .7rem;
+    border-radius: 50%;
+    flex: none;
+  }
+  .swatch.black { background: var(--her2); box-shadow: 0 0 0 1px var(--her2-ring); }
+  .swatch.red   { background: var(--cep17); }
+
+  .presets { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .presets button {
+    font-family: inherit;
+    font-size: .8125rem;
+    padding: .3rem .7rem;
+    background: transparent;
+    color: var(--ink-soft);
+    border: 1px solid var(--rule-firm);
+    border-radius: 999px;
+    cursor: pointer;
+    transition: color .12s, border-color .12s;
+  }
+  .presets button:hover { color: var(--ink); border-color: var(--ink-dim); }
+  .presets button:focus-visible { outline: 2px solid var(--nucleus); outline-offset: 1px; }
+
+  /* ---------- verdict + cell ---------- */
+
+  .readout {
+    display: flex;
+    flex-direction: column;
+    gap: .75rem;
+    align-items: center;
+    text-align: center;
+  }
+
+  .verdict {
+    width: 100%;
+    padding: .75rem .5rem;
+    border-radius: 4px;
+    background: var(--v-bg, var(--none-bg));
+    color: var(--v-fg, var(--none));
+    border: 1px solid currentColor;
+  }
+  .verdict .en {
+    font-family: var(--serif);
+    font-size: 1.25rem;
+    font-weight: 600;
+    line-height: 1.2;
+    display: block;
+  }
+  .verdict .zh { font-size: .8125rem; opacity: .85; }
+
+  .metrics {
+    display: flex;
+    gap: 1.25rem;
+    justify-content: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .metric { display: flex; flex-direction: column; }
+  .metric .v {
+    font-family: var(--mono);
+    font-size: 1.25rem;
+    line-height: 1.2;
+  }
+  .metric .k {
+    font-size: .6875rem;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+
+  .cell-fig { display: flex; flex-direction: column; gap: .3rem; align-items: center; }
+  .cell-fig svg { width: 100%; max-width: 11rem; height: auto; }
+  .cell-fig figcaption { font-size: .75rem; color: var(--ink-dim); }
+
+  /* ---------- rule ladder ---------- */
+
+  .ladder { display: flex; flex-direction: column; }
+
+  .rung {
+    display: grid;
+    grid-template-columns: 1.75rem minmax(0, 1fr) auto;
+    align-items: center;
+    gap: .75rem;
+    padding: .6rem .7rem;
+    border-radius: 3px;
+    border-left: 3px solid transparent;
+    transition: background .15s, opacity .15s;
+  }
+  .rung + .rung { border-top: 1px solid var(--rule); }
+
+  .rung .i {
+    font-family: var(--mono);
+    font-size: .8125rem;
+    color: var(--ink-dim);
+  }
+  .rung .cond { font-size: .9375rem; }
+  .rung .cond code {
+    font-family: var(--mono);
+    font-size: .9em;
+    background: var(--sunk);
+    padding: .05em .35em;
+    border-radius: 2px;
+  }
+  .rung .out {
+    font-size: .8125rem;
+    font-weight: 600;
+    white-space: nowrap;
+    color: var(--ink-dim);
+  }
+
+  .rung.is-skipped { opacity: .42; }
+  .rung.is-active {
+    background: var(--v-bg, var(--none-bg));
+    border-left-color: var(--v-fg, var(--none));
+  }
+  .rung.is-active .i,
+  .rung.is-active .out { color: var(--v-fg, var(--none)); }
+  .rung.is-active .cond { font-weight: 600; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+
+  /* ---------- tables ---------- */
+
+  .scroll { overflow-x: auto; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: .9375rem;
+    min-width: 30rem;
+  }
+  th, td {
+    text-align: left;
+    padding: .55rem .75rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  thead th {
+    font-size: .7rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    font-weight: 600;
+    border-bottom-color: var(--rule-firm);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num, th.num {
+    text-align: right;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tag {
+    display: inline-block;
+    font-size: .75rem;
+    font-weight: 600;
+    padding: .1rem .5rem;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .tag.pos   { background: var(--pos-bg);   color: var(--pos); }
+  .tag.equiv { background: var(--equiv-bg); color: var(--equiv); }
+  .tag.neg   { background: var(--neg-bg);   color: var(--neg); }
+  .tag.none  { background: var(--none-bg);  color: var(--none); }
+
+  /* ---------- key points ---------- */
+
+  .points { display: flex; flex-direction: column; gap: 1.25rem; }
+
+  .point { display: flex; flex-direction: column; gap: .45rem; }
+  .point h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+  .point p { font-size: .9375rem; color: var(--ink-soft); }
+  .point p b { color: var(--ink); font-weight: 600; }
+
+  .split {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+    gap: .75rem;
+  }
+  .box {
+    background: var(--sunk);
+    border-radius: 3px;
+    padding: .7rem .85rem;
+    font-size: .875rem;
+  }
+  .box .h {
+    font-size: .7rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    font-weight: 600;
+    display: block;
+    margin-bottom: .2rem;
+  }
+
+  code.inline {
+    font-family: var(--mono);
+    font-size: .9em;
+    background: var(--sunk);
+    padding: .1em .4em;
+    border-radius: 2px;
+  }
+
+  /* ---------- footer ---------- */
+
+  footer {
+    font-size: .8125rem;
+    color: var(--ink-dim);
+    display: flex;
+    flex-direction: column;
+    gap: .4rem;
+    border-top: 1px solid var(--rule);
+    padding-top: 1.25rem;
+  }
+  footer a { color: inherit; }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <span class="eyebrow">HER2 判讀準則</span>
+    <h1>數紅點與黑點，得到一個結論</h1>
+    <p class="standfirst">
+      ASCO/CAP 2013 的 ISH 判讀。<b>判讀單位是整張片子，不是單顆細胞</b>——
+      每顆細胞只貢獻兩個數字給分子分母。
+    </p>
+  </header>
+
+  <!-- 0 — what the three verdicts mean -->
+  <section aria-labelledby="s0">
+    <h2 id="s0"><span class="num">01</span>三個結論是什麼意思</h2>
+
+    <p class="note">
+      這三個字決定<b>病人能不能用標靶藥（trastuzumab / 賀癌平）</b>。
+    </p>
+
+    <div class="verdicts">
+      <div class="vcard is-pos">
+        <span class="tag pos">Positive</span>
+        <p class="mean">HER2 基因<b>有</b>擴增，多出很多份</p>
+        <p class="doing">可以用標靶藥，有效</p>
+      </div>
+      <div class="vcard is-equiv">
+        <span class="tag equiv">Equivocal</span>
+        <p class="mean">數字卡在中間，<b>判不出來</b></p>
+        <p class="doing">不能決定 → 要加做其他檢測</p>
+      </div>
+      <div class="vcard is-neg">
+        <span class="tag neg">Negative</span>
+        <p class="mean">HER2 基因<b>沒有</b>擴增，數量正常</p>
+        <p class="doing">標靶藥無效，走化療等其他路</p>
+      </div>
+    </div>
+
+    <div class="point">
+      <h3>為什麼「擴增」重要</h3>
+      <p>
+        正常細胞每顆有 <b>2 份</b> HER2 基因。癌細胞如果把它複製到 <b>10 份、20 份</b>，
+        就會做出過量的 HER2 蛋白，推著腫瘤長。trastuzumab 就是專門去黏 HER2 蛋白的藥。
+      </p>
+      <div class="split">
+        <div class="box"><span class="h">基因擴增</span>蛋白多 → 藥有靶可打 → <b>用藥</b></div>
+        <div class="box"><span class="h">基因正常</span>蛋白不多 → 藥沒東西可打 → <b>不用藥</b></div>
+      </div>
+      <p class="note">這就是為什麼要數點：<b>黑點多 = 基因份數多 = 擴增</b>。</p>
+    </div>
+
+    <div class="point">
+      <h3>Equivocal 不是第三種病，是「這次測不出結論」</h3>
+      <p>
+        數字剛好落在 Positive 和 Negative 中間的緩衝帶（比值 &lt; 2.0 但平均黑點 4.0–6.0）。
+        醫師不能拿 Equivocal 去做決定，必須再測一次或換方法。
+        <b>ASCO/CAP 2018 版就是因為這格太難用，直接把它取消了。</b>
+      </p>
+      <div class="split">
+        <div class="box"><span class="h">Equivocal</span>數<b>得</b>出來，但數字在灰區</div>
+        <div class="box"><span class="h">Insufficient</span>根本<b>沒東西</b>可數（技術失敗）</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 1 — interactive -->
+  <section aria-labelledby="s1">
+    <h2 id="s1"><span class="num">02</span>改數字，看結論怎麼變</h2>
+
+    <div class="calc">
+      <div class="fields">
+        <div class="field">
+          <label for="black"><span class="swatch black"></span>黑點總數（HER2）</label>
+          <input id="black" type="number" min="0" step="1" value="130" inputmode="numeric">
+        </div>
+        <div class="field">
+          <label for="red"><span class="swatch red"></span>紅點總數（CEP17）</label>
+          <input id="red" type="number" min="0" step="1" value="50" inputmode="numeric">
+        </div>
+        <div class="field">
+          <label for="cells">有效細胞數</label>
+          <input id="cells" type="number" min="0" step="1" value="20" inputmode="numeric">
+        </div>
+
+        <div class="presets" role="group" aria-label="範例">
+          <button type="button" data-p="130,50,20">擴增（靠比值）</button>
+          <button type="button" data-p="130,100,20">擴增（靠拷貝數）</button>
+          <button type="button" data-p="90,50,20">灰區</button>
+          <button type="button" data-p="70,50,20">未擴增</button>
+          <button type="button" data-p="0,0,0">不可判讀</button>
+        </div>
+      </div>
+
+      <div class="readout" id="readout">
+        <div class="verdict">
+          <span class="en" id="v-en">Positive</span>
+          <span class="zh" id="v-zh">擴增 / 陽性</span>
+        </div>
+        <div class="metrics">
+          <div class="metric"><span class="v" id="m-ratio">2.60</span><span class="k">比值</span></div>
+          <div class="metric"><span class="v" id="m-avg">6.50</span><span class="k">平均黑點</span></div>
+        </div>
+        <figure class="cell-fig">
+          <svg id="cellviz" viewBox="0 0 120 120" role="img" aria-labelledby="cellviz-t">
+            <title id="cellviz-t">一顆代表性細胞的平均訊號分佈</title>
+          </svg>
+          <figcaption>平均每顆細胞的訊號</figcaption>
+        </figure>
+      </div>
+    </div>
+
+    <div class="ladder" id="ladder">
+      <div class="rung" data-r="1">
+        <span class="i">1</span>
+        <span class="cond"><code>比值 ≥ 2.0</code></span>
+        <span class="out">Positive</span>
+      </div>
+      <div class="rung" data-r="2">
+        <span class="i">2</span>
+        <span class="cond"><code>平均黑點數 ≥ 6.0</code></span>
+        <span class="out">Positive</span>
+      </div>
+      <div class="rung" data-r="3">
+        <span class="i">3</span>
+        <span class="cond"><code>平均黑點數 ≥ 4.0</code></span>
+        <span class="out">Equivocal</span>
+      </div>
+      <div class="rung" data-r="4">
+        <span class="i">4</span>
+        <span class="cond">其餘</span>
+        <span class="out">Negative</span>
+      </div>
+      <div class="rung" data-r="5">
+        <span class="i">5</span>
+        <span class="cond">有效細胞數 = 0</span>
+        <span class="out">Insufficient</span>
+      </div>
+    </div>
+
+    <p class="note">
+      由上往下判，中了就停。<b>比值 = Σ黑 ÷ Σ紅</b>，<b>平均黑點數 = Σ黑 ÷ 有效細胞數</b>。
+      第 2 條專門抓「17 號染色體整條多倍化、比值被紅點稀釋、但 HER2 絕對量其實很高」的腫瘤。
+    </p>
+  </section>
+
+  <!-- 2 — original table -->
+  <section aria-labelledby="s2">
+    <h2 id="s2"><span class="num">03</span>原文 Table 1</h2>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>結論</th><th>條件</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="tag pos">Positive</span></td>
+            <td>HER2/CEP17 ≥ 2.0 且平均 HER2 拷貝數 ≥ 4.0 signals/cell</td>
+          </tr>
+          <tr>
+            <td><span class="tag pos">Positive</span></td>
+            <td>HER2/CEP17 ≥ 2.0 且平均 HER2 拷貝數 &lt; 4.0 signals/cell</td>
+          </tr>
+          <tr>
+            <td><span class="tag pos">Positive</span></td>
+            <td>HER2/CEP17 &lt; 2.0 且平均 HER2 拷貝數 ≥ 6.0 signals/cell</td>
+          </tr>
+          <tr>
+            <td><span class="tag equiv">Equivocal</span></td>
+            <td>HER2/CEP17 &lt; 2.0 且平均 HER2 拷貝數 ≥ 4.0 且 &lt; 6.0 signals/cell</td>
+          </tr>
+          <tr>
+            <td><span class="tag neg">Negative</span></td>
+            <td>HER2/CEP17 &lt; 2.0 且平均 HER2 拷貝數 &lt; 4.0 signals/cell</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      前兩列合併等價於「比值 ≥ 2.0」，所以上面的階梯才能收成 4 行。
+      原文數 <b>20 顆訊號清晰的腫瘤細胞</b>；我們改成全 slide 偵測到的所有有效細胞。
+    </p>
+  </section>
+
+  <!-- 3 — key points -->
+  <section aria-labelledby="s3">
+    <h2 id="s3"><span class="num">04</span>三個容易講錯的地方</h2>
+
+    <div class="points">
+
+      <div class="point">
+        <h3>沒有訊號 ≠ 陰性</h3>
+        <p>
+          陰性的定義是「<b>數得出來</b>，且比值 &lt; 2.0、平均黑點數 &lt; 4.0」。
+          完全數不到訊號是技術失敗（雜交或前處理出問題），叫 <b>uncountable</b>，要排除或重做。
+          報成陰性等於告訴臨床這個病人不該用 trastuzumab，但事實是根本沒測到。
+        </p>
+        <div class="split">
+          <div class="box"><span class="h">單顆細胞沒訊號</span>換一顆數</div>
+          <div class="box"><span class="h">整張片子沒訊號</span>uncountable → 重做或轉 FISH</div>
+        </div>
+        <p class="note">論文 69 例中有 2 例因此被排除：一例只有紅點沒有黑點，一例黑點微弱且只在小部分細胞。</p>
+      </div>
+
+      <div class="point">
+        <h3>IHC 陽性但 DISH 陰性，是預期內的</h3>
+        <p>
+          IHC 測<b>蛋白表現量</b>，ISH 測<b>基因拷貝數</b>。蛋白過度表現不一定來自基因擴增。
+          流程上 <b>IHC 3+ 直接判陽性、不需做 ISH</b>；ISH 是專門用來救 IHC 2+ 灰區的。
+        </p>
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr><th>IHC 分數</th><th class="num">DISH 擴增</th><th class="num">DISH 未擴增</th><th class="num">擴增比例</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>2+</td><td class="num">4</td><td class="num">25</td><td class="num">14%</td></tr>
+              <tr><td>3+</td><td class="num">17</td><td class="num">5</td><td class="num">77%</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">論文 Table 3，51 例。真正的麻煩是 <b>IHC 2+ 且 DISH uncountable</b>——沒有其他資訊可以定案，必須重做。</p>
+      </div>
+
+      <div class="point">
+        <h3>0 黑點的細胞要算進去</h3>
+        <p>
+          我們的有效細胞條件是 <code class="inline">未排除 且 紅點 ≥ 2</code>，
+          <b>不要求黑點 ≥ 1</b>。有紅點但 0 黑點是切片平面沒切到該位點的真實低拷貝數細胞，不是偵測失敗。
+          丟掉它會同時拿走分子與分母中的一顆低值細胞，把兩個數字都往上拉。
+        </p>
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr><th>5 顆 6黑/2紅 + 5 顆 0黑/2紅</th><th class="num">比值</th><th class="num">平均黑點</th><th>結論</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><b>計入</b> 0 黑點細胞</td>
+                <td class="num">1.50</td><td class="num">3.00</td>
+                <td><span class="tag neg">Negative</span></td>
+              </tr>
+              <tr>
+                <td>丟掉 0 黑點細胞</td>
+                <td class="num">3.00</td><td class="num">6.00</td>
+                <td><span class="tag pos">Positive</span> 偽陽性</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">同一組資料，結論相反。已寫成回歸測試 <code class="inline">test_zero_black_cells_count_toward_denominator</code>。</p>
+      </div>
+
+    </div>
+  </section>
+
+  <footer>
+    <div>
+      <b>準則</b>　Wolff AC, et al. ASCO/CAP clinical practice guideline update.
+      <i>J Clin Oncol</i> 2013;31:3997-4013.
+    </div>
+    <div>
+      <b>對照論文</b>　Anekpuritanang T, et al. Reproducibility in the Assessment of HER2 DISH
+      in Breast Cancer. <i>Bangkok Med J</i> 2015;10:1-5.（<code class="inline">paper/document.pdf</code> Table 1）
+    </div>
+    <div>
+      <b>實作</b>　<code class="inline">backend/algorithms/hybrid/m4_module/csv.py</code>　·
+      測試 <code class="inline">tests/test_asco_verdict.py</code>
+    </div>
+    <div>
+      <b>版本落差</b>　2018 update 取消了 ISH 的 Equivocal 分類，且「比值 ≥ 2.0 但平均拷貝數 &lt; 4.0」
+      不再直接判陽性。我們沿用 2013，是為了跟對照論文比對同一版準則。
+    </div>
+  </footer>
+
+</div>
+
+<script>
+  (function () {
+    var $ = function (id) { return document.getElementById(id); };
+    var inputs = { black: $('black'), red: $('red'), cells: $('cells') };
+    var rungs = Array.prototype.slice.call(document.querySelectorAll('.rung'));
+
+    var STYLE = {
+      pos:   { en: 'Positive',     zh: '擴增 / 陽性',   fg: 'var(--pos)',   bg: 'var(--pos-bg)' },
+      equiv: { en: 'Equivocal',    zh: '灰區 / 無法定論', fg: 'var(--equiv)', bg: 'var(--equiv-bg)' },
+      neg:   { en: 'Negative',     zh: '未擴增 / 陰性', fg: 'var(--neg)',   bg: 'var(--neg-bg)' },
+      none:  { en: 'Insufficient', zh: '有效細胞不足，無法判讀', fg: 'var(--none)', bg: 'var(--none-bg)' }
+    };
+
+    // 由上往下判，中了就停 — 與 m4_module/csv.py 的 _asco_cap_2013_verdict 同順序。
+    function judge(black, red, cells) {
+      if (cells <= 0 || red <= 0) return { rule: 5, key: 'none', ratio: null, avg: null };
+      var ratio = black / red;
+      var avg = black / cells;
+      if (ratio >= 2.0) return { rule: 1, key: 'pos', ratio: ratio, avg: avg };
+      if (avg >= 6.0)   return { rule: 2, key: 'pos', ratio: ratio, avg: avg };
+      if (avg >= 4.0)   return { rule: 3, key: 'equiv', ratio: ratio, avg: avg };
+      return { rule: 4, key: 'neg', ratio: ratio, avg: avg };
+    }
+
+    // 黃金角螺旋：點數改變時分佈穩定，不會每次重排。
+    function spiral(n, total, phase) {
+      var pts = [], golden = Math.PI * (3 - Math.sqrt(5));
+      for (var i = 0; i < n; i++) {
+        var k = i * 2 + phase;
+        var r = Math.sqrt((k + 0.5) / Math.max(total * 2, 1)) * 0.74;
+        var a = k * golden;
+        pts.push([60 + Math.cos(a) * r * 46, 60 + Math.sin(a) * r * 40]);
+      }
+      return pts;
+    }
+
+    var SVG_NS = 'http://www.w3.org/2000/svg';
+
+    function drawCell(avgBlack, avgRed) {
+      var svg = $('cellviz');
+      while (svg.childNodes.length > 1) svg.removeChild(svg.lastChild);
+
+      var nuc = document.createElementNS(SVG_NS, 'ellipse');
+      nuc.setAttribute('cx', '60'); nuc.setAttribute('cy', '60');
+      nuc.setAttribute('rx', '52'); nuc.setAttribute('ry', '46');
+      nuc.setAttribute('fill', 'var(--nucleus)');
+      nuc.setAttribute('stroke', 'var(--nucleus-edge)');
+      nuc.setAttribute('stroke-width', '1.5');
+      nuc.setAttribute('opacity', '0.55');
+      svg.appendChild(nuc);
+
+      var nb = Math.min(Math.round(avgBlack || 0), 20);
+      var nr = Math.min(Math.round(avgRed || 0), 20);
+      var total = Math.max(nb, nr);
+
+      [[nb, 'var(--her2)', 0], [nr, 'var(--cep17)', 1]].forEach(function (spec) {
+        spiral(spec[0], total, spec[2]).forEach(function (p) {
+          var d = document.createElementNS(SVG_NS, 'circle');
+          d.setAttribute('cx', p[0].toFixed(1));
+          d.setAttribute('cy', p[1].toFixed(1));
+          d.setAttribute('r', '4');
+          d.setAttribute('fill', spec[1]);
+          svg.appendChild(d);
+        });
+      });
+    }
+
+    function render() {
+      var black = Math.max(0, parseInt(inputs.black.value, 10) || 0);
+      var red   = Math.max(0, parseInt(inputs.red.value, 10) || 0);
+      var cells = Math.max(0, parseInt(inputs.cells.value, 10) || 0);
+
+      var res = judge(black, red, cells);
+      var s = STYLE[res.key];
+
+      var readout = $('readout');
+      readout.style.setProperty('--v-fg', s.fg);
+      readout.style.setProperty('--v-bg', s.bg);
+      $('v-en').textContent = s.en;
+      $('v-zh').textContent = s.zh;
+      $('m-ratio').textContent = res.ratio === null ? '—' : res.ratio.toFixed(2);
+      $('m-avg').textContent   = res.avg   === null ? '—' : res.avg.toFixed(2);
+
+      rungs.forEach(function (el) {
+        var r = parseInt(el.getAttribute('data-r'), 10);
+        var active = r === res.rule;
+        el.classList.toggle('is-active', active);
+        // 排在生效規則之後的沒被評估到；Insufficient 則是 1-4 全部短路跳過。
+        el.classList.toggle('is-skipped', !active && (r > res.rule || res.rule === 5));
+        if (active) {
+          el.style.setProperty('--v-fg', s.fg);
+          el.style.setProperty('--v-bg', s.bg);
+        } else {
+          el.style.removeProperty('--v-fg');
+          el.style.removeProperty('--v-bg');
+        }
+      });
+
+      drawCell(res.avg, cells > 0 ? red / cells : 0);
+    }
+
+    Object.keys(inputs).forEach(function (k) {
+      inputs[k].addEventListener('input', render);
+    });
+
+    document.querySelectorAll('.presets button').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var v = b.getAttribute('data-p').split(',');
+        inputs.black.value = v[0];
+        inputs.red.value = v[1];
+        inputs.cells.value = v[2];
+        render();
+      });
+    });
+
+    render();
+  })();
+</script>
