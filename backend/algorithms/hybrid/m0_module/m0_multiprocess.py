@@ -27,6 +27,8 @@ from .m0_tile_runner import (
     _init_unet_inferencer,
     _process_precut_tile_cpu,
     _process_precut_tile_gpu,
+    _read_tile_pair,
+    prefetch_tile_reads,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,6 +71,16 @@ _MP_POISON = None                            # 工作佇列的結束哨兵
 # result queue 送回父行程。沒設環境變數時這段是一個 `os.environ.get` 的成本，其餘為零。
 _MP_PROBE_ENV = "HYBRID_MP_WORKER_PROBE"
 
+# Option L 的 worker 端消融開關（doc 34 step 2）。設為 "1" 時 worker 退回逐塊同步讀檔，
+# 也就是 round 9 之前的形狀，作為量測的控制組。
+#
+# 為何是環境變數而不是參數或 monkeypatch：`perf_measure.py --no-prefetch` 是在**父行程**
+# 的命名空間上替換 `prefetch_tile_reads`，而 spawn 出來的 worker 會重新 import 這個模組、
+# 拿到乾淨的原函式——那個旋鈕碰不到 worker（doc 25 §2.2 對 `_save_tile_array` 記過同一件
+# 事）。環境變數會被 spawn 的 child 繼承，是上面 `_MP_PROBE_ENV` 已經在用的同一條路。
+# 沒設時的成本是每批一次 `os.environ.get`。
+_MP_NO_PREFETCH_ENV = "HYBRID_MP_NO_PREFETCH"
+
 # 上一次 `run_batch(workers>1)` 收到的 worker 端 TIMINGS，供量測腳本在跑完後取用。
 # 每個元素是 `{"worker": <name>, "timings": {...}}`。
 LAST_MP_WORKER_TIMINGS: List[dict] = []
@@ -92,6 +104,37 @@ def _install_worker_probe():
         return None
 
 
+def _drain_task_queue(task_q):
+    """把 worker 的工作佇列包成 ``(ihc, dish, (abs_x, abs_y))`` 的產生器。
+
+    ``prefetch_tile_reads`` 要的是一個可迭代的 tile 來源，而 worker 這邊的來源是一條
+    跨行程佇列加一個毒丸哨兵。包成產生器是唯一需要的轉接，佇列語意一字不改：每塊仍只
+    被一個 worker ``get`` 到一次，毒丸仍然結束這個 worker。
+    """
+    while True:
+        task = task_q.get()
+        if task is _MP_POISON:
+            return
+        ihc_path, dish_path, ax, ay = task
+        yield ihc_path, dish_path, (ax, ay)
+
+
+def _inline_tile_reads(tiles, pool, depth: int = 1):
+    """``prefetch_tile_reads`` 的控制組：在消費該塊的當下、於呼叫端執行緒同步讀。
+
+    產生器契約與 ``prefetch_tile_reads`` 完全相同（含把讀檔例外裝進 future，好讓
+    ``.result()`` 在同一個位置重拋），故兩臂之間**只差「位元組在哪一刻被解碼」**這一件事，
+    迴圈本體一行都不必分岔（playbook 反模式 #7：一次只變一件事）。
+    """
+    for item in tiles:
+        fut: Future = Future()
+        try:
+            fut.set_result(_read_tile_pair(item[0], item[1]))
+        except Exception as exc:             # noqa: BLE001 — 與預讀臂同樣延到消費點重拋
+            fut.set_exception(exc)
+        yield item, fut
+
+
 def _mp_tile_worker(
     task_q,
     result_q,
@@ -103,9 +146,9 @@ def _mp_tile_worker(
     """Worker 行程進入點：載一次模型，然後把工作佇列抽乾。
 
     迴圈結構刻意與 ``run_batch`` 的單行程迴圈**逐行對應**（深度 1 的 GPU/CPU 重疊：
-    背景執行緒跑前一塊的 CPU 後段，主執行緒跑下一塊的 GPU 前段），因為那個重疊本身
-    就值 doc 18 §2 量到的 −8.0%。少了它，每個 worker 都會退化成 round-3 之前的序列
-    版本，多行程賺到的會被這裡賠掉。
+    背景執行緒跑前一塊的 CPU 後段，主執行緒跑下一塊的 GPU 前段；再加上 doc 34 step 2
+    起的第三條臂——下一塊的讀檔），因為那個重疊本身就值 doc 18 §2 量到的 −8.0%。少了
+    它，每個 worker 都會退化成 round-3 之前的序列版本，多行程賺到的會被這裡賠掉。
 
     以 ``result_q`` 回報四種訊息：
       - ``("ready", None)``：模型已載完（供父行程量測 init 是否平行）。
@@ -131,18 +174,38 @@ def _mp_tile_worker(
         dish_cellpose = _init_dish_cellpose_segmenter()
         result_q.put(("ready", None))
 
+        # 讀檔提前一塊（doc 30 Option L，doc 34 step 2 把它從單行程路徑搬到這裡）。
+        # `workers=4` 才是實際出貨的組態，而 round 9 只把 Option L 接上單行程路徑，
+        # 等於量到的 −1.75% 全部落在生產不跑的那條路上（doc 33 follow-up 3）。
+        #
+        # 用**獨立**的單執行緒池，理由與 `run_batch` 那邊一字不差：上面的 tile-cpu 是跑
+        # `detect_all_dots` 的背景臂，共用一條會把讀取排在前一塊的 CPU 後段之後，正好
+        # 序列化掉這個改動存在的理由。每個 worker 各自一條，四個行程就是四條，彼此不共享。
+        read_tiles = (_inline_tile_reads
+                      if os.environ.get(_MP_NO_PREFETCH_ENV) == "1"
+                      else prefetch_tile_reads)
         pending: Optional[Tuple[int, int, Future]] = None
         with _frozen_gc_generation(), \
-                ThreadPoolExecutor(max_workers=1, thread_name_prefix="tile-cpu") as pool:
-            while True:
-                task = task_q.get()
-                if task is _MP_POISON:
-                    break
-                ihc_path, dish_path, ax, ay = task
+                ThreadPoolExecutor(max_workers=1, thread_name_prefix="tile-cpu") as pool, \
+                ThreadPoolExecutor(max_workers=1,
+                                   thread_name_prefix="tile-read") as rpool:
+            # 預讀會讓本 worker 比今日多從佇列拿一塊在手上。動態派工下這只是把「取工作」
+            # 提前一塊，每塊仍恰好被一個 worker 處理一次；四個 worker 合計多握 4 塊，
+            # 對 27,565 塊的負載平衡影響可忽略。
+            for (ihc_path, dish_path, (ax, ay)), read_fut in read_tiles(
+                    _drain_task_queue(task_q), rpool):
+                try:
+                    preread = read_fut.result()
+                except Exception as exc:     # noqa: BLE001 — 見下方註解
+                    # 預讀的失敗必須在「消費該塊的這一刻」浮出來，且必須算在**它自己那
+                    # 一塊**頭上，語意與過去同步讀檔失敗完全一致（記錄後往下走 tg is None
+                    # 那條 fail-fast），不能靜默丟掉、也不能記到別塊身上。
+                    logger.error("Tile tile_x%d_y%d 讀取失敗: %s", ax, ay, exc)
+                    preread = None
 
-                tg = _process_precut_tile_gpu(
+                tg = None if preread is None else _process_precut_tile_gpu(
                     ihc_path, dish_path, ax, ay, geometry,
-                    unet, cellpose, dish_cellpose, output_dir,
+                    unet, cellpose, dish_cellpose, output_dir, preread=preread,
                 )
                 if tg is None:
                     result_q.put(("error", (
