@@ -20,10 +20,11 @@
 | 上傳 PATCH 回 500 `[WinError 183]`（檔案已存在） | `tuspyserver/info.py` 用 `os.rename`，Windows 上目標已存在會失敗 | 同檔案用 `_RenameIsReplace` proxy 把該模組的 `os.rename` 換成 `os.replace` |
 | `AttributeError: module 'SimpleITK' has no attribute 'TransformixImageFilter'` | 裝到的是 stock SimpleITK 而非 SimpleElastix 時，module 匯入期就掛 | ~~`module2_alignment.py` 加 `hasattr` guard~~ **已還原**（2026-07-28，見下方註記）——`.venv` 裝的是 SimpleElastix 所以不受影響，但**任何 stock SimpleITK 的環境仍會 import 就掛** |
 | `ModuleNotFoundError: No module named 'resource'` | `m0_stitch._ensure_nofile_limit` 用 POSIX 的 `resource` | `try/except ImportError` + 早退（Windows 沒有 fd 上限問題） |
-| `shutil.rmtree` 撞 `WinError 32` | pyvips 對 `.v` 暫存檔的 mmap handle 尚未釋放 | `module1_preprocess.py` 改 `ignore_errors=True`——清暫存失敗不該讓已完成的前處理整條中止 |
+| `shutil.rmtree` 撞 `WinError 32` | pyvips 對 `.v` 暫存檔的 mmap handle 尚未釋放 | ~~`module1_preprocess.py` 改 `ignore_errors=True`~~ **已還原**（見下方註記）——Linux 上不會發生此錯誤，且該寫法會把真正的清理失敗無聲吞掉 |
 
-> **`module2_alignment.py` 已完整還原（2026-07-28）**：依組員要求，`thriple_image_layer` 的演算法
-> 行為不得更動，該檔案已 `git checkout` 回改動前的版本，與 `dcbf11f` 逐字節相同。跟著回來的是
+> **整個 `thriple_image_layer/` 已完整還原（2026-07-28）**：依組員要求，該資料夾的演算法行為不得
+> 更動，`module2_alignment.py` 與 `module1_preprocess.py` 都已 `git checkout` 回改動前的版本
+> ——`git diff dcbf11f -- backend/algorithms/thriple_image_layer/` 為空。跟著回來的是
 > **非剛性配準強制開啟、寫死 `SimpleElastixWarper`**（原本加的 `config.valis.non_rigid_method`
 > 開關已不存在）。注意 `module4_aligned_layers.py:42` 仍在讀 `config.valis.non_rigid_method`，
 > 但它現在管不到 module2 了——兩邊會對不起來，是已知的待處理項。
@@ -255,6 +256,25 @@ core region 對 ROI 恰好鋪滿一次（`hits.min() == 1 and hits.max() == 1`�
 | **取消任務** | FastAPI `BackgroundTasks` 無法取消。要換執行模型（例如 process pool + 可中斷的 job registry）。 |
 | **真 CZI 的完整對準實跑** | `picture/` 裡三張真檔沒有端到端跑過一次。測試用的是 `D:\tsgh_storage_test` 假造的 run 資料夾（進度本來就是從磁碟產物推的）＋ `D:\tsgh_test_slides` 合成切片，因為真跑一次要數小時。 |
 | **ROI + `--resume`** | 見 §5 已知缺口。 |
+
+---
+
+## 7b. 改到 Linux 跑要注意的
+
+§1 那些 Windows 相容性問題在 Linux 上都不存在（`tus_compat.py` 整個檔案是 `sys.platform ==
+"win32"` 包起來的，Linux 完全不執行），但下面這些是**換平台不會消失、甚至只在 Linux 出現**的：
+
+- **`ulimit -n`（RLIMIT_NOFILE）** ← 只在 Linux 咬人。縫合會把整片的 tile 同時開著（真實切片
+  27,565 個），Linux 常見預設 soft limit 是 **1,024**，會在整片分析跑完數小時後的最後一步炸。
+  `_ensure_nofile_limit()` 會自己把 soft 提到 hard，但 **hard 不夠就沒救**——上機前確認
+  `ulimit -Hn`，Docker 用 `--ulimit nofile=1048576:1048576`。
+- **記憶體**：非剛性配準在 32 GB 機器上 OOM 是記憶體問題不是平台問題；整片 hybrid 分析的
+  peak RSS 記錄是 **61–62 GB**（BACKLOG §1 item 7）。
+- **磁碟**：整片 precut 暫存約 49 GB，加上 `_stitch_scratch`。
+- **SimpleElastix 的 wheel 只有三個平台**（macOS arm64 / **linux x86_64** / win amd64）。
+  x86_64 照 `uv.lock` 裝沒問題；**aarch64 Linux 裝不起來**，而 `module2_alignment.py` 還原後
+  沒有 import guard，後端會 import 就掛。
+- **檔名大小寫**：Linux 區分大小寫，`HER2_40X.czi` ≠ `her2_40x.czi`。
 
 ---
 
