@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Iterator, List, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 import pyvips
 
@@ -106,7 +106,20 @@ class PrecutStream:
         tile_size: int = 1024,
         overlap: int = 256,
         workers: int = 8,
+        region: Optional[Tuple[int, int, int, int]] = None,
     ) -> None:
+        """``region`` = ``(x, y, w, h)`` 的分析範圍（ROI），單位為**全片像素**；
+        ``None`` 表示整張片（原行為）。
+
+        格線在 ROI 的尺寸上算，再整體平移回 ROI 原點，因此 ``positions`` 與 tile 檔名
+        帶的仍是**全片絕對座標**——``compute_tile_geometry`` 的切線、核心區歸屬去重、
+        ``filter_and_absolutize`` 的質心絕對化全部照舊，不需要任何額外的座標換算。
+
+        ROI 邊界不會被切出去：``_overlap_window_coords`` 的最後一格會往回貼齊範圍
+        邊界，所以每一塊都完整落在 ROI 內（前提是 ROI 邊長 ≥ ``tile_size``，下方檢查）。
+        邊界上的細胞由 ``clear_slide_edge_cells`` 依 ``geometry.edge_flags()`` 清除——
+        對 ROI 而言那正是「被範圍切一半的細胞不該計入」。
+        """
         self._ihc_img = _open_rgb(Path(ihc_path))
         self._dish_img = _open_rgb(Path(dish_path))
 
@@ -120,7 +133,17 @@ class PrecutStream:
                 f"vs dish={(self._dish_img.height, self._dish_img.width)}"
             )
 
-        h, w = self._ihc_img.height, self._ihc_img.width
+        full_h, full_w = self._ihc_img.height, self._ihc_img.width
+        origin_x, origin_y, h, w = 0, 0, full_h, full_w
+        if region is not None:
+            origin_x, origin_y, w, h = region
+            if origin_x < 0 or origin_y < 0 or w <= 0 or h <= 0:
+                raise ValueError(f"ROI 不合法: {region}")
+            if origin_x + w > full_w or origin_y + h > full_h:
+                raise ValueError(
+                    f"ROI {region} 超出切片範圍 {full_w}x{full_h}（x+w / y+h 不得越界）"
+                )
+
         if min(h, w) < tile_size:
             raise ValueError(
                 f"patch 邊長 {h}x{w} 小於最小允許尺寸 {tile_size}px——拒絕處理。"
@@ -132,7 +155,11 @@ class PrecutStream:
         self.dish_out_dir.mkdir(parents=True, exist_ok=True)
         self.tile_size = tile_size
         self.workers = workers
-        self.positions = chunk_offsets(h, w, tile_size, overlap)
+        self.region = region
+        self.positions = [
+            (x + origin_x, y + origin_y)
+            for (x, y) in chunk_offsets(h, w, tile_size, overlap)
+        ]
 
     def _cut(self, pos: Tuple[int, int]) -> Tuple[Path, Path, Tuple[int, int]]:
         x, y = pos

@@ -15,11 +15,14 @@ every test after it.
 """
 from __future__ import annotations
 
-import resource
-
 import pytest
 
-from m0_module import m0_stitch as HP
+# POSIX only. Windows has no RLIMIT_NOFILE and `_ensure_nofile_limit` returns
+# immediately there, so there is no guard to exercise -- skip the module rather
+# than fail collection on the import.
+resource = pytest.importorskip("resource")
+
+from m0_module import m0_stitch as HP  # noqa: E402
 
 
 @pytest.fixture

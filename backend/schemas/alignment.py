@@ -63,6 +63,16 @@ class RunSummary(BaseModel):
     job_id: Optional[str] = None  # a step still executing server-side, if any
 
 
+class PublishedRun(BaseModel):
+    """Which run the viewer's `aligned_*` slide_ids currently resolve to.
+
+    Those ids are global and get taken over by whichever run published last, so
+    the layers on screen do not necessarily belong to the run selected in the
+    panel. None means nothing has been published since the backend started."""
+
+    run_id: Optional[str] = None
+
+
 class ModalityConfigIn(BaseModel):
     name: str
     filename: str

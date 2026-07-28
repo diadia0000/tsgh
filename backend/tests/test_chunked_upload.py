@@ -14,6 +14,8 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from starlette.testclient import TestClient
+
+from backend.api import tus_compat  # noqa: F401  -- Windows shims; must precede tuspyserver
 from tuspyserver import create_tus_router
 
 from backend.api import alignment

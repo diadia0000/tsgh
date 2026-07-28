@@ -11,9 +11,11 @@ Resumable CZI upload is delegated to the `tuspyserver` tus implementation
 run's czi_input/ directory the pipeline reads from.
 """
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+
+from backend.api import tus_compat  # noqa: F401  -- Windows shims; must precede tuspyserver
 from tuspyserver import create_tus_router
 
 from backend.algorithms.thriple_image_layer.module1_preprocess import CziPreprocessor
@@ -25,6 +27,7 @@ from backend.io import pyramid
 from backend.schemas.alignment import (
     STORAGE_DIR,
     AlignmentConfigIn,
+    PublishedRun,
     RunSummary,
     is_run_id,
     run_base,
@@ -65,6 +68,14 @@ tus_router = create_tus_router(
     files_dir=str(_TUS_INCOMING),
     on_upload_complete=_place_uploaded_czi,
 )
+
+
+# Whose artifacts the aligned_* slide_ids currently point at. In-memory like
+# pyramid's own registry (it dies with the process, and so must this), and
+# reported by GET /published so the viewer can say which run it is showing --
+# the ids are global, so selecting another run in the panel does NOT change the
+# images on screen until that run publishes.
+_published_run_id: Optional[str] = None
 
 
 def _publish_aligned_result(result_tiff: Path) -> dict:
@@ -134,16 +145,26 @@ def list_runs() -> List[RunSummary]:
     return summaries
 
 
+@router.get("/published", response_model=PublishedRun)
+def published_run() -> PublishedRun:
+    """Which run the viewer is currently showing. Lets the UI label the layers
+    instead of leaving the user to assume they belong to the selected run."""
+    return PublishedRun(run_id=_published_run_id)
+
+
 @router.post("/publish")
 def publish_run(body: AlignmentConfigIn) -> dict:
     """Re-point the viewer at an already-finished run's TIFFs. `aligned_result`
     is one global slide_id, taken over by whichever run ran thumbnail last, so a
     resumed run has to reclaim it -- pointer only, no recomputation."""
+    global _published_run_id
     config = body.to_registration_config()
     result_tiff = _merged_tiff(config)
     if not result_tiff.is_file():
         raise HTTPException(404, "this run has no thumbnail result to publish")
-    return {**_publish_aligned_result(result_tiff), **_publish_aligned_layers(config)}
+    published = {**_publish_aligned_result(result_tiff), **_publish_aligned_layers(config)}
+    _published_run_id = body.run_id
+    return published
 
 
 @router.post("/preprocess", response_model=JobAccepted)
@@ -185,12 +206,15 @@ def run_thumbnail(body: AlignmentConfigIn, background_tasks: BackgroundTasks) ->
     config = body.to_registration_config()
 
     def _run():
+        global _published_run_id
         generate_thumbnail(config)
         result_tiff = _merged_tiff(config)
-        return str(result_tiff), {
+        metadata = {
             "level": config.thumbnail.level,
             **_publish_aligned_result(result_tiff),
             **_publish_aligned_layers(config),
         }
+        _published_run_id = body.run_id
+        return str(result_tiff), metadata
 
     return JobAccepted(job_id=submit_job(background_tasks, _run, key=body.run_id))

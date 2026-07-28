@@ -37,7 +37,6 @@ overlay_image）。對真實 WSI（~156222×134028）這是數百 GB 的記憶�
 from __future__ import annotations
 
 import logging
-import resource
 import shutil
 from bisect import bisect_right
 from dataclasses import dataclass, replace
@@ -46,6 +45,11 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import pyvips
+
+try:
+    import resource  # POSIX only；Windows 沒有這個模組，見 _ensure_nofile_limit
+except ImportError:
+    resource = None
 
 try:
     from ..hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
@@ -125,17 +129,21 @@ def _cut_lines(starts: List[int], overlap: int) -> List[int]:
     return [starts[i] + overlap // 2 for i in range(1, len(starts))]
 
 
-def _validate_axis(starts: List[int], stride: int, axis: str) -> None:
+def _validate_axis(starts: List[int], stride: int, axis: str, origin: int = 0) -> None:
     """驗證單一軸的分塊起點構成完整無缺格的格線（對齊 ``_overlap_window_coords``）。
 
     約定（見 ``m2_segmentation._overlap_window_coords`` / ``m0_reader.chunk_offsets``）：
-    起點為 ``0, stride, 2*stride, ...``，最後一格貼齊邊界 (``length - tile``)，故最後一段
-    間距落在 ``[1, stride]``；其餘相鄰間距必等於 ``stride``。任一違反即代表分塊有缺格 /
-    重複 / 對不上格線。
+    起點為 ``origin, origin+stride, origin+2*stride, ...``，最後一格貼齊邊界
+    (``origin + length - tile``)，故最後一段間距落在 ``[1, stride]``；其餘相鄰間距必等於
+    ``stride``。任一違反即代表分塊有缺格 / 重複 / 對不上格線。
+
+    ``origin`` 是這批分塊所涵蓋範圍的左上角：整片分析為 ``0``，只分析 ROI 時則為 ROI
+    的起點（見 ``m0_reader.PrecutStream(region=...)``）。它由呼叫端明確傳入而非從
+    ``starts[0]`` 推得——推得就等於放棄「第一格不見了」這個檢查。
     """
-    if starts[0] != 0:
+    if starts[0] != origin:
         raise ValueError(
-            f"{axis} 軸起點必須從 0 開始，實得 {starts[0]}——分塊未對齊格線。"
+            f"{axis} 軸起點必須從 {origin} 開始，實得 {starts[0]}——分塊未對齊格線。"
         )
     n = len(starts)
     for i in range(1, n):
@@ -193,6 +201,7 @@ def compute_tile_geometry(
     positions: List[Tuple[int, int]],
     tile_size: int,
     overlap: int,
+    origin: Tuple[int, int] = (0, 0),
 ) -> TileGeometry:
     """由整批分塊左上角座標算出縫合幾何，並驗證格線完整。
 
@@ -204,6 +213,10 @@ def compute_tile_geometry(
         tile_size: 分塊邊長（pixels）；與 ``config.default_tile_size`` 同值。
         overlap: 相鄰分塊重疊寬度（pixels）；與 ``config.window_overlap_px`` 同值。
             切線取在後一塊起點再進 ``overlap // 2`` 處（同舊 ``StitchAccumulator``）。
+        origin: 這批分塊涵蓋範圍的左上角 ``(x, y)``。整片分析是 ``(0, 0)``（預設）；
+            只分析 ROI 時為 ROI 起點——``positions`` 一律是全片絕對座標，改變的只有
+            格線從哪裡開始。切線、核心區與質心絕對化的算法本身與原點無關
+            （``core_crop_bounds`` 對最外欄用的是該塊自己的 ``abs_x``，不是 0）。
 
     Returns:
         ``TileGeometry``。
@@ -222,8 +235,8 @@ def compute_tile_geometry(
 
     x_starts = sorted({x for x, _y in positions})
     y_starts = sorted({y for _x, y in positions})
-    _validate_axis(x_starts, stride, "x")
-    _validate_axis(y_starts, stride, "y")
+    _validate_axis(x_starts, stride, "x", origin[0])
+    _validate_axis(y_starts, stride, "y", origin[1])
 
     # 完整矩形格線：無重複，且恰為 x_starts × y_starts 的笛卡兒積（否則有缺塊）。
     if len(set(positions)) != len(positions):
@@ -356,7 +369,12 @@ def _ensure_nofile_limit(needed: int) -> None:
 
     故在開任何檔之前先檢查：軟上限不夠就自己往上提（soft→hard 一律允許，不需
     特權），硬上限也不夠才大聲失敗並講清楚要調多少。
+
+    Windows 沒有 per-process 的 RLIMIT_NOFILE（``resource`` 模組不存在），核心的
+    handle table 也沒有這種等價上限，所以那邊沒有東西可檢查、直接跳過。
     """
+    if resource is None:
+        return
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     if soft == resource.RLIM_INFINITY or soft >= needed:
         return

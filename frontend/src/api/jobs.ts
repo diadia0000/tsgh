@@ -19,6 +19,13 @@ export function useJob(jobId: string | null) {
       const status = query.state.data?.status
       return status && TERMINAL.has(status) ? false : 6000
     },
+    // Keep polling while the tab is in the background. These jobs run for
+    // minutes to hours and the user will switch windows; with the default
+    // (false) the interval pauses when the tab is hidden, which does not just
+    // freeze the status display -- PipelinePanel submits each alignment step
+    // only after the previous job's poll reports "done", so a backgrounded tab
+    // stalls the whole chain until the user comes back.
+    refetchIntervalInBackground: true,
     queryFn: async () => {
       const { data, error } = await api.GET('/api/jobs/{job_id}', {
         params: { path: { job_id: jobId! } },
