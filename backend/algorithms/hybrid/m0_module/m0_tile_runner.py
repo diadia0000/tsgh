@@ -8,6 +8,7 @@ M0 逐塊執行層：單一 precut tile 的 GPU 前段 / CPU 後段。
 import gc
 import logging
 import time
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -164,8 +165,50 @@ def _init_dish_cellpose_segmenter() -> CellposeSegmenter:
     )
 
 
+class _PeriodicFreezer:
+    """把「凍結之後才產生」的累積結果，每隔一段再折進 GC 永久世代一次。
+
+    ``gc.freeze()`` 只涵蓋**呼叫當下**已存在的物件圖。``run_batch`` 的 tile 迴圈在那之後
+    還要跑數小時，每塊都往 ``per_tile_owned`` append 全新的 ``CellAnalysisResult``——整片
+    27,565 塊共 356,255 個，每個都是受追蹤、且被之後每一次 ``gc.collect()`` 重掃的物件。
+    doc 27 §6.4 實測這讓每次 collect 從 doc 16 的 1.2 ms 爬回 **80.5 ms（2,218.4 s，
+    16.1% wall）**，等於把 doc 16 的成果整個吃掉。見
+    ``docs/hybrid-pipeline/28-gc-collect-round2-plan.md`` Option H。
+
+    以**累積細胞數**（非塊數）為節奏：成長跟的是細胞數而不是塊數，背景塊（整片 55.8%）
+    一顆細胞都不產生，用塊數當門檻會在密集區太鬆、在背景區白跑。門檻式計數自動適應這件事。
+
+    ``gc.freeze()`` 本身是 O(1) 的 linked-list splice，不隨已凍結量或新增量成長——
+    ``scripts/gc_refreeze_probe.py`` Exp 1 實測每次 0.00004–0.0005 ms，四種節奏（每 1 /
+    10 / 100 / 1000 塊）之間沒有實質差異。這是 doc 28 §3 唯一「未驗證就設計」的假設，先量
+    再用；量出來是免費的，所以節奏的取捨不在 freeze 成本，而在下面這件事。
+
+    **節奏不取「每塊」的理由**：freeze 會把當下**所有**受追蹤物件永久化，不只我們想釘住的
+    結果清單。已在飛的暫存物件若之後成為循環垃圾，被凍住就再也不會被回收（到整批結束
+    ``unfreeze`` 為止）。凍越頻繁，曝險次數越多。取 5,000 顆細胞 → 整片約 71 次，
+    collect 端的殘餘成本約數秒（probe Exp 2 外推），兩邊都便宜。
+    """
+
+    def __init__(self, every_cells: int) -> None:
+        self.every_cells = every_cells
+        self.pending = 0
+        self.n_freezes = 0
+
+    def note(self, n_cells: int) -> None:
+        """記入一塊的產出；累積量過門檻就把新物件折進永久世代。"""
+        self.pending += n_cells
+        if self.pending >= self.every_cells:
+            gc.freeze()
+            self.pending = 0
+            self.n_freezes += 1
+
+
+# 每累積這麼多顆細胞就再 freeze 一次。見 _PeriodicFreezer docstring 的取值理由。
+_REFREEZE_EVERY_CELLS = 5_000
+
+
 @contextmanager
-def _frozen_gc_generation():
+def _frozen_gc_generation(refreeze_every_cells: int = _REFREEZE_EVERY_CELLS):
     """把當下已存在的受追蹤物件移進 GC 永久世代，離開時還原。
 
     三個 GPU 模型（UNet++ / 兩個 Cellpose）在整批期間都活著且可達，generational GC
@@ -183,10 +226,15 @@ def _frozen_gc_generation():
     所有受追蹤物件永久凍結、之後再也不回收 → 跨請求的無界記憶體成長，正是本專案
     memory-bounded 不變量要擋的失效模式。此處無其他呼叫端會 freeze，故 unfreeze
     （會解凍全部）不會誤傷別人凍結的物件。
+
+    yield 出的 ``_PeriodicFreezer`` 供呼叫端在迴圈中回報每塊產出；``gc.freeze()`` 可能因此
+    被呼叫 N≥1 次（**追加式**：每次只是把當下受追蹤的再併進永久世代，不需成對的 unfreeze），
+    但 ``gc.unfreeze()`` 仍**恰好一次**、仍在 ``finally``，成功與 fail-fast 兩條路徑都一樣。
+    ``scripts/verify_gc_freeze.py`` 守的就是這個基數。
     """
     gc.freeze()
     try:
-        yield
+        yield _PeriodicFreezer(refreeze_every_cells)
     finally:
         gc.unfreeze()
 
@@ -205,6 +253,7 @@ def _process_precut_tile_gpu(
     cellpose_segmenter: CellposeSegmenter,
     dish_cellpose_segmenter: CellposeSegmenter,
     output_dir: Path,
+    preread: Optional[Tuple[np.ndarray, np.ndarray]] = None,
 ) -> Optional[_TileGpuResult]:
     """單塊的 **GPU 前段**：讀檔 → M1→M2→M3b 三個前向，回傳交接狀態。
 
@@ -213,16 +262,23 @@ def _process_precut_tile_gpu(
       - ``None``：讀檔 / 維度等真實錯誤（呼叫端據此 fail-fast）。
       - ``chunk is None`` 的 ``_TileGpuResult``：背景塊（核心遮罩全空）。
       - 完整 ``_TileGpuResult``：待跑 CPU 後段。
+
+    ``preread``：已在別處（背景執行緒）讀好的 ``(ihc, dish)``。給定時不再自己讀檔——這是
+    ``prefetch_tile_reads`` 的讀取提前一塊、與前一塊 GPU 前向重疊用的入口（doc 30 Option
+    L）。不給則維持原本在此同步讀檔的行為，多行程 worker 與既有呼叫端一行都不必改。
     """
     tile_name = f"tile_x{abs_x}_y{abs_y}"
     start_time = time.perf_counter()
 
-    try:
-        ihc = _read_rgb(ihc_tile_path)
-        dish = _read_rgb(dish_tile_path)
-    except Exception as exc:
-        logger.error("Tile %s 讀取失敗: %s", tile_name, exc)
-        return None
+    if preread is not None:
+        ihc, dish = preread
+    else:
+        try:
+            ihc = _read_rgb(ihc_tile_path)
+            dish = _read_rgb(dish_tile_path)
+        except Exception as exc:
+            logger.error("Tile %s 讀取失敗: %s", tile_name, exc)
+            return None
 
     if ihc.shape[:2] != dish.shape[:2]:
         logger.error(
@@ -545,3 +601,42 @@ def _read_rgb(src: Path) -> np.ndarray:
     elif image.shape[2] == 4:
         image = image[:, :, :3]
     return image.astype(np.uint8)
+
+
+def _read_tile_pair(ihc_path: Path, dish_path: Path) -> Tuple[np.ndarray, np.ndarray]:
+    """讀入一塊的 IHC/DISH 兩張圖。可在背景執行緒跑（純 skimage/numpy，不碰 torch）。"""
+    return _read_rgb(ihc_path), _read_rgb(dish_path)
+
+
+def prefetch_tile_reads(tiles, pool, depth: int = 1):
+    """把每塊的讀檔提前 ``depth`` 塊發出，與前一塊的 GPU 前向重疊。
+
+    ``_process_precut_tile_gpu`` 原本在主執行緒上、GPU 前向**之前**同步讀兩個檔
+    （``_read_rgb`` ×2）。裁切規模下這幾乎免費（doc 18 §6.3 量到 1.22% wall，當場停損），
+    因為 ~49 GB 的 precut 暫存幾乎整份都還在 OS page cache 裡；整片規模下行程自身 RSS
+    峰值 61.13 GB 把 page cache 擠掉，同一個讀取變成真的磁碟 I/O，doc 27 §6.4 量到
+    **17.2% wall（2,368.5 s）**。見 ``30-tile-read-io-plan.md`` Option L。
+
+    這與 doc 18 §4.2 對**寫**側做過的事（Precut A：切塊與分析迴圈重疊）是同一手，只是
+    往下游挪一站，挪到消費那些檔案的讀取上。
+
+    量出來的可遮蔽性（round 9，match24 組成對齊錨點，見 33 號文件）：組織塊每塊讀
+    14.2 ms、GPU 前向 ~595 ms（UNet + 兩次 Cellpose）；背景塊每塊讀 6.7 ms、GPU 前向
+    ~30 ms（只有 UNet，``core_mask.sum() == 0`` 快速路徑）。兩族群都有比讀取大得多的
+    GPU 工作可以躲，組織塊尤其寬裕——而讀取成本有 62.7% 落在組織塊上。
+
+    ``depth=1``：同時最多兩塊的像素在飛（約 12 MB），記憶體有界性與現行「最多兩塊在飛」
+    的兩段式管線一致。處理順序完全不變，只變「位元組在哪一刻被解碼」，故不觸及
+    ``_finish_batch`` 的全域排序或縫合的座標讀取（doc 18 §4.2 已確立處理順序可變）。
+
+    產出 ``((ihc_path, dish_path, (abs_x, abs_y)), future)``；``future.result()`` 會把
+    背景執行緒裡的讀檔例外原樣重拋到**消費該塊的那一刻**，呼叫端據此走與今日同一條
+    fail-fast 路徑（讀檔失敗 → 整批中止），不會被靜默吞掉。
+    """
+    q = deque()
+    for item in tiles:
+        q.append((item, pool.submit(_read_tile_pair, item[0], item[1])))
+        if len(q) > depth:
+            yield q.popleft()
+    while q:
+        yield q.popleft()

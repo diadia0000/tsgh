@@ -63,6 +63,7 @@ try:
         _init_unet_inferencer,
         _process_precut_tile_cpu,
         _process_precut_tile_gpu,
+        prefetch_tile_reads,
         _run_tiles_multiprocess,
         _skip_completed,
         _stitch_overlay_slide,
@@ -93,6 +94,7 @@ except ImportError:
         _init_unet_inferencer,
         _process_precut_tile_cpu,
         _process_precut_tile_gpu,
+        prefetch_tile_reads,
         _run_tiles_multiprocess,
         _skip_completed,
         _stitch_overlay_slide,
@@ -258,7 +260,12 @@ def run_batch(
     def _collect(entry: Tuple[int, int, Future]) -> None:
         """收一塊已提交的 CPU 後段結果並累計統計；其真實錯誤在此 raise → fail-fast。"""
         e_ax, e_ay, fut = entry
-        _record(e_ax, e_ay, fut.result())
+        owned = fut.result()
+        _record(e_ax, e_ay, owned)
+        # 把這塊新增的結果計入再凍結節奏。只掛在單行程路徑上：多行程時 _record 由父行程
+        # 在 _frozen_gc_generation 之外呼叫，在那裡 freeze 就成了沒有配對 unfreeze 的洩漏
+        # （doc 15 擋的正是這個），而父行程本來就不逐塊 collect，也沒有這個成本可省。
+        refreezer.note(len(owned))
 
     # 兩段式管線（單一背景執行緒，管線深度 1）：三個 GPU 模型仍只在主行程 / 單一 CUDA
     # context 載入一次並重用，且**所有 GPU 前向仍只在主執行緒序列執行**（背景執行緒完全
@@ -266,15 +273,27 @@ def run_batch(
     # （detect_all_dots + 落地寫檔，原本讓 GPU 整段閒置）丟到背景執行緒，與『下一塊的 GPU
     # 前向』重疊執行，藉此填補 GPU 閒置。fail-fast 與 empty_cache/gc 清理語意皆保留（見下）。
     pending: Optional[Tuple[int, int, Future]] = None
-    with _frozen_gc_generation(), \
-            ThreadPoolExecutor(max_workers=1, thread_name_prefix="tile-cpu") as pool:
-        for idx, (ihc_path, dish_path, (ax, ay)) in enumerate(tiles, start=1):
+    with _frozen_gc_generation() as refreezer, \
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="tile-cpu") as pool, \
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="tile-read") as rpool:
+        # 讀檔提前一塊（doc 30 Option L）：本塊的 GPU 前向跑的同時，下一塊的兩個檔已在
+        # 背景解碼。用**獨立**的單執行緒池，不跟上面 tile-cpu 那條（跑 detect_all_dots
+        # 的背景臂）互搶——那是兩份不相干的工作，共用一條會把讀取排在 CPU 後段之後。
+        for idx, ((ihc_path, dish_path, (ax, ay)), read_fut) in enumerate(
+                prefetch_tile_reads(tiles, rpool), start=1):
             logger.info(
                 "[%d/%d] 處理 tile: %s", idx, remaining, dish_path.stem
             )
-            tg = _process_precut_tile_gpu(
+            try:
+                preread = read_fut.result()
+            except Exception as exc:
+                # 預讀的失敗必須在「消費該塊的這一刻」浮出來，語意與過去同步讀檔失敗
+                # 完全一致（記錄後往下走 tg is None 那條 fail-fast），不能靜默丟掉。
+                logger.error("Tile tile_x%d_y%d 讀取失敗: %s", ax, ay, exc)
+                preread = None
+            tg = None if preread is None else _process_precut_tile_gpu(
                 ihc_path, dish_path, ax, ay, geometry,
-                unet, cellpose, dish_cellpose, output_dir,
+                unet, cellpose, dish_cellpose, output_dir, preread=preread,
             )
             if tg is None:
                 # 真實錯誤：此塊是單一玻片之一，任一塊失敗即整片不可信 → fail-fast 中止整批。
@@ -294,6 +313,8 @@ def run_batch(
             # 兩者都維持「每塊一次」。改成每 N 塊掃一次（N=4/8/16）已實測並否決：在
             # gc.freeze() 之後整批 gc 只剩 0.52 s，最多再省 0.36 s（<0.1% wall，遠在雜訊內），
             # 卻讓 peak RSS 變成所有配置中最高的一個。零收益的層一律砍掉。見 doc 16 §4.2。
+            # 每次 collect 的**掃描量**則由下方 refreezer 定期收斂（doc 28 Option H）——
+            # 不然整批累積的結果會讓這一行從 1.2 ms 一路爬到 80.5 ms。
             try:
                 if cuda.is_available():
                     cuda.empty_cache()

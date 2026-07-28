@@ -17,6 +17,7 @@ Available:
   _init_dish_cellpose_segmenter → m0_module.m0_tile_runner
   _process_precut_tile_gpu      → m0_module.m0_tile_runner
   _process_precut_tile_cpu      → m0_module.m0_tile_runner
+  prefetch_tile_reads           → m0_module.m0_tile_runner
   _run_tiles_multiprocess       → m0_module.m0_multiprocess
   LAST_MP_WORKER_TIMINGS        → m0_module.m0_multiprocess
   _CKPT_DIRNAME                 → m0_module.m0_checkpoint
@@ -41,6 +42,7 @@ try:
         _init_unet_inferencer,
         _process_precut_tile_cpu,
         _process_precut_tile_gpu,
+        prefetch_tile_reads,
     )
     from .m0_module.m0_multiprocess import (
         LAST_MP_WORKER_TIMINGS,
@@ -69,6 +71,7 @@ except ImportError:
         _init_unet_inferencer,
         _process_precut_tile_cpu,
         _process_precut_tile_gpu,
+        prefetch_tile_reads,
     )
     from m0_module.m0_multiprocess import (
         LAST_MP_WORKER_TIMINGS,
@@ -95,6 +98,7 @@ __all__ = [
     "_init_dish_cellpose_segmenter",
     "_process_precut_tile_gpu",
     "_process_precut_tile_cpu",
+    "prefetch_tile_reads",
     "_run_tiles_multiprocess",
     "LAST_MP_WORKER_TIMINGS",
     "_CKPT_DIRNAME",
