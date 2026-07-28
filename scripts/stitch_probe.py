@@ -52,10 +52,17 @@ HYBRID = Path(__file__).resolve().parent.parent / "backend" / "algorithms" / "hy
 sys.path.insert(0, str(HYBRID))
 sys.path.insert(0, str(HYBRID.parent.parent.parent))
 
-import hybrid_pipeline as HP  # noqa: E402
 from config import config  # noqa: E402
-from m0_reader import chunk_offsets  # noqa: E402
-from m0_stitch import compute_tile_geometry, core_crop_bounds  # noqa: E402
+from m0_module.m0_reader import chunk_offsets  # noqa: E402
+# The M0 split moved these into m0_module/; hybrid_pipeline re-exports only a
+# subset, and _join_overlay_tiles (needed to time join and encode separately)
+# is not among them, so import it from the defining module directly.
+from m0_module.m0_stitch import (  # noqa: E402
+    compute_tile_geometry,
+    core_crop_bounds,
+    _join_overlay_tiles,
+    _stitch_overlay_slide,
+)
 
 
 def build_inputs(out_dir: Path, positions, geometry, tile: int,
@@ -154,7 +161,7 @@ def run_ablation(out_dir, geometry, gp: float, only: list[str] | None) -> list[d
         kwargs = dict(BASELINE, **override)
 
         t0 = time.perf_counter()
-        slide = HP._join_overlay_tiles(out_dir, geometry)
+        slide = _join_overlay_tiles(out_dir, geometry)
         join_s = time.perf_counter() - t0
 
         t1 = time.perf_counter()
@@ -270,7 +277,7 @@ def main() -> None:
         result["ablations"] = run_ablation(out_dir, geometry, gp, only)
     else:
         t0 = time.perf_counter()
-        HP._stitch_overlay_slide(out_dir, geometry)
+        _stitch_overlay_slide(out_dir, geometry)
         stitch_s = time.perf_counter() - t0
         result["stitch_s"] = round(stitch_s, 3)
         result["s_per_gigapixel"] = round(stitch_s / gp, 3)

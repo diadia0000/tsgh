@@ -59,6 +59,7 @@ import psutil  # noqa: E402
 # timing registry
 # ------------------------------------------------------------------
 TIMINGS: dict[str, dict] = {}
+GC_SERIES: list[float] = []          # per-call gc.collect() ms, in call order
 
 
 def _rec(bucket: str, dt: float, extra: dict | None = None):
@@ -196,6 +197,62 @@ def _seg_label() -> str:
 
 
 _blank_ctx = threading.local()
+
+# doc 30 §3/§4 step 2: B2r_tile_read's 2,368.5 s is an aggregate over tissue AND
+# background tiles, and Option L (one-tile-ahead prefetch) can only hide a read behind
+# whatever GPU work that same tile does. Tissue tiles run 2x Cellpose (~261 ms) and have
+# plenty to hide behind; background tiles short-circuit at `core_mask.sum() == 0` after
+# only the UNet forward (~27 ms) and may not. Which population owns the cost decides
+# whether the prefetch is worth building, and the aggregate cannot answer it.
+#
+# The tile's population is not known at read time -- it is decided by the UNet forward
+# that runs *after* both reads. So each read is stashed under its own path and attributed
+# retroactively when _process_precut_tile_gpu returns: `chunk is None` == background.
+#
+# Keying by path rather than by thread is deliberate: since doc 30 Option L landed, the
+# reads run on the `tile-read` prefetch thread, one tile AHEAD of the GPU stage that
+# classifies them, so nothing thread-local or call-stack-scoped can connect the two. Path
+# keying works identically whether the read was prefetched or done inline (the
+# multiprocess worker still reads inline), which is what makes the two paths comparable.
+_read_by_path: dict[str, float] = {}
+
+
+def wrap_tile_read_split():
+    """Split B2r_tile_read into tissue/background by the tile's own outcome.
+
+    Wraps whatever _process_precut_tile_gpu is currently installed (so it composes
+    with wrap_tile_boundary's cuda-event shim rather than replacing it).
+    """
+    orig_read = TR._read_rgb
+
+    @functools.wraps(orig_read)
+    def read_shim(src, *a, **k):
+        t0 = time.perf_counter()
+        out = orig_read(src, *a, **k)
+        dt = time.perf_counter() - t0
+        _rec("B2r_tile_read", dt)
+        _read_by_path[str(src)] = dt
+        return out
+
+    TR._read_rgb = read_shim
+
+    orig_tile = HP._process_precut_tile_gpu
+
+    @functools.wraps(orig_tile)
+    def tile_shim(ihc_tile_path, dish_tile_path, *a, **k):
+        out = orig_tile(ihc_tile_path, dish_tile_path, *a, **k)
+        # out is None on a real read/dimension error -- that tile has no population.
+        dts = [_read_by_path.pop(str(p), None)
+               for p in (ihc_tile_path, dish_tile_path)]
+        if out is not None:
+            bucket = ("B2r_tile_read_bg" if getattr(out, "chunk", None) is None
+                      else "B2r_tile_read_tissue")
+            for dt in dts:
+                if dt is not None:
+                    _rec(bucket, dt)
+        return out
+
+    HP._process_precut_tile_gpu = tile_shim
 
 
 def wrap_save_tile_array():
@@ -348,8 +405,10 @@ def install_wrappers():
     wrap_mkdir()
     wrap(TR, "export_per_cell_images", "B2_percell_crops")
     wrap(TR, "render_overlay_image", "B2_render_overlay")
-    # B2r read
-    wrap(TR, "_read_rgb", "B2r_tile_read")
+    # B2r read -- must come after wrap_tile_boundary() above so it wraps that shim
+    # rather than replacing it. Does its own B2r_tile_read accounting, plus the
+    # tissue/background split doc 30 §4 step 2 needs.
+    wrap_tile_read_split()
     # B3 M3
     wrap(TR, "build_all_positive_results", "B3_build_results")
     wrap(TR, "enlarge_cell_instances", "B3_enlarge_cells")
@@ -377,7 +436,13 @@ def install_wrappers():
     def gc_shim(*a, **k):
         t0 = time.perf_counter()
         r = _orig_gc(*a, **k)
-        _rec("B4_gc_collect", time.perf_counter() - t0)
+        dt = time.perf_counter() - t0
+        _rec("B4_gc_collect", dt)
+        # doc 28's regression is invisible in the bucket total at crop scale -- it is a
+        # *trend* over the length of one batch (1.2 ms early, 80.5 ms late). Totals
+        # cannot distinguish "flat and cheap" from "climbing but short", so keep the
+        # per-call series; the report divides it into deciles.
+        GC_SERIES.append(round(dt * 1000.0, 4))
         return r
 
     gc.collect = gc_shim
@@ -404,6 +469,21 @@ def dir_bytes(p: Path) -> int:
             except OSError:
                 pass
     return total
+
+
+def _deciles(series: list[float]) -> dict:
+    """Mean per-call cost in each tenth of the batch, plus the last/first ratio.
+
+    A flat profile means the scan scope stayed bounded for the whole batch; a rising
+    one is doc 27 §6.4's regression, whatever the total happens to be.
+    """
+    n = len(series)
+    if n < 10:
+        return {"n": n, "means_ms": [], "last_over_first": None}
+    step = n // 10
+    means = [round(sum(series[i * step:(i + 1) * step]) / step, 4) for i in range(10)]
+    ratio = round(means[-1] / means[0], 2) if means[0] > 0 else None
+    return {"n": n, "means_ms": means, "last_over_first": ratio}
 
 
 def _sum_worker_timings(per_worker: list) -> dict:
@@ -467,6 +547,16 @@ def main():
     ap.add_argument("--stream-precut", action="store_true",
                     help="overlap phase A precut with the analysis loop (doc 17 §4-4); "
                          "phaseA_precut_s then measures only the grid computation")
+    ap.add_argument("--no-refreeze", action="store_true",
+                    help="ablate doc 28 Option H: neuter the periodic gc.freeze() so "
+                         "only the original one-shot freeze runs. This is the control "
+                         "group for the re-freeze change -- without it there is no way "
+                         "to detect a negative optimisation (playbook anti-pattern #3)")
+    ap.add_argument("--no-prefetch", action="store_true",
+                    help="ablate doc 30 Option L: read each tile's two files inline at "
+                         "the moment it is consumed, i.e. the pre-round-9 behaviour, so "
+                         "the prefetch can be attributed on its own (playbook "
+                         "anti-pattern #6/#7)")
     ap.add_argument("--metrics-dir", default=None)
     args = ap.parse_args()
 
@@ -479,6 +569,32 @@ def main():
     metrics_dir.mkdir(parents=True, exist_ok=True)
 
     install_wrappers()
+
+    if args.no_refreeze:
+        # Neuter the cadence rather than the whole context manager: the one-shot
+        # entry freeze (doc 15/16, already shipped and validated) must stay, so the
+        # only difference between the two arms is Option H itself.
+        TR._PeriodicFreezer.note = lambda self, n_cells: None
+        print("[perf_measure] doc 28 Option H ABLATED (control arm)")
+
+    if args.no_prefetch:
+        # Read inline, at the moment the tile is consumed, on the calling thread --
+        # which is what _process_precut_tile_gpu did itself before doc 30 Option L.
+        # Same generator contract, so run_batch's loop is unchanged and the arms
+        # differ only in *when* the bytes are decoded.
+        from concurrent.futures import Future as _Future
+
+        def _inline_reads(tiles, pool, depth=1):
+            for item in tiles:
+                fut = _Future()
+                try:
+                    fut.set_result(TR._read_tile_pair(item[0], item[1]))
+                except Exception as exc:                      # noqa: BLE001
+                    fut.set_exception(exc)
+                yield item, fut
+
+        HP.prefetch_tile_reads = _inline_reads
+        print("[perf_measure] doc 30 Option L ABLATED (control arm)")
 
     from config import config as CFG, compute_config_hash  # noqa
 
@@ -579,6 +695,9 @@ def main():
         },
         "stats": stats,
         "timings": TIMINGS,
+        "gc_collect_ms_deciles": _deciles(GC_SERIES),
+        "gc_refreeze_ablated": args.no_refreeze,
+        "prefetch_ablated": args.no_prefetch,
         "worker_timings": HP.LAST_MP_WORKER_TIMINGS,
         "worker_timings_total": _sum_worker_timings(HP.LAST_MP_WORKER_TIMINGS),
         "cuda_alloc_conf": os.environ.get("PYTORCH_CUDA_ALLOC_CONF", ""),
