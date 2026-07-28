@@ -187,6 +187,8 @@ ROI 切出來的 tile **目錄**如果之後用 dir-scan 路徑重掃（例如 `
 
 ## 6. 驗證紀錄
 
+### 6.1 這批工作本身（合併前）
+
 | 項目 | 結果 |
 |---|---|
 | 測試 | **62 passed, 1 skipped**（`tests/` 51+1、`backend/tests/` 11，**分開跑**） |
@@ -195,6 +197,32 @@ ROI 切出來的 tile **目錄**如果之後用 dir-scan 路徑重掃（例如 `
 | ROI（UI 操作） | 13 秒 `done`，自動切到標註 overlay |
 | tile 數對比 | 整張 2048² 合成切片 = 9 tiles；ROI (512,512,1024,1024) = 1 tile |
 | numpy 2 全流程 | M0→M4 GPU 實跑，三個產物齊全 |
+
+### 6.2 併入 main 之後的複驗（2026-07-28）
+
+併進去的時候 `origin/main` 已經往前 8 個 commit（round-9 的 prefetch / gc re-freeze /
+stitch pyramid levels / 判讀依據修改），`hybrid_pipeline.py` 與 `m0_stitch.py` 兩邊都動到，
+由 git 自動合併。所以整套重驗了一次：
+
+| 項目 | 結果 |
+|---|---|
+| 測試 | **80 passed, 1 skipped**（`tests/` 69+1、`backend/tests/` 11） |
+| 前端 | `npm run build`（`tsc -b` + vite）通過、`oxlint` 乾淨 |
+| 後端啟動 | `uvicorn backend.main:app` 正常起來 |
+| `GET /api/tiles` | `["TEST_DISH","TEST_IHC","hybrid_overlay"]`；`.dzi` 與實際 tile JPEG 都取得到 |
+| `GET /api/alignment/runs` | 5 個 run 的進度正確（`demo-done` 四步齊全） |
+| `POST /api/alignment/publish` + `GET /published` | publish `demo-done` 後 `aligned_*` 三個 id 上線，`/published` 回報 `demo-done` |
+| **ROI 分析端到端** | 15.1 秒 `done`，`{success: 0, skipped: 1}`，`overlay_slide.tiff` 仍是 1024×1024（ROI 有生效） |
+| `GET /api/hybrid/result` / `report.csv` | summary 正確（UTF-8 無誤）、CSV 下得下來 |
+| 錯誤路徑 | 壞 slide_id → 404；ROI 只給一個參數 → 422 |
+
+> 合併後 `run_batch` 裡 ROI 的 `origin` 傳遞邏輯完整保留，沒有被 prefetch 那批改動蓋掉；
+> 對方那 18 個新測試（寫於 numpy 1 時代）在 numpy 2 上也全綠。
+>
+> 另外要知道的：這次重解把 **starlette 從 0.4x 拉到 1.3.1、fastapi 到 0.140.5**（`app.routes`
+> 現在是 `_IncludedRouter` 包起來的，用舊寫法列路由會看起來像「沒註冊」，實際有）。
+> tus 上傳（POST 201 + PATCH 204，含斷點續傳）由 `backend/tests/test_chunked_upload.py`
+> 在新 starlette 上驗過。
 
 新增測試 **`tests/test_precut_roi.py`**（10 個案例）：格線平移、tile 不越界、ROI 全覆蓋、
 寫出的像素與檔名座標一致、origin-aware 幾何、**少掉第一欄仍然要報錯**、
