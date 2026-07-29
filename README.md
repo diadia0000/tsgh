@@ -75,85 +75,26 @@ Takes a single tile, an arbitrary ROI, or a full WSI of any size. `PrecutStream`
 
 ```bash
 cd backend/algorithms/hybrid
-cp config_example.py config.py
-# Edit config.py — set model paths, tile directories, output_dir, slide_id
+
+python hybrid_pipeline.py --test                            # bundled test_picture ROI pair
+python hybrid_pipeline.py --ihc a.tiff --dish b.tiff        # any size
+python hybrid_pipeline.py --ihc a.tiff --dish b.tiff --output /path/to/out
+python hybrid_pipeline.py --ihc a.tiff --dish b.tiff --workers 4 --resume   # unattended full slide
 ```
 
-#### Basic Usage
+| Flag | Meaning |
+|---|---|
+| `--test` | Run the bundled `test_picture/` ROI pair through the full precut+analysis path |
+| `--ihc` / `--dish` | Input pair (tile, ROI, or WSI) |
+| `--output` | Output directory (default `config.output_dir`) |
+| `--workers N` | Cross-tile parallelism: N `spawn`-ed processes, each with its own models and CUDA context. Default 1 |
+| `--resume` | Checkpoint each finished tile to `output/_resume/`; a re-run skips completed tiles |
 
-```bash
-# Bundled smoke-test ROI pair (test_picture/), full precut+analysis path
-python hybrid_pipeline.py --test
+Tiles pair by filename coordinate `tile_x{int}_y{int}`. There is no `--batch` mode — `--ihc`/`--dish` already precuts internally.
 
-# Single ROI/WSI image pair, any size — precut then analyzed
-python hybrid_pipeline.py \
-  --ihc roi_ihc.tiff \
-  --dish roi_dish.tiff
+`workers=4` is the practical setting for a full slide on a 32 GB card; it needs materially more RAM/VRAM than a small ROI request (a full 27k-tile slide measured ~60 GB peak RSS and ~30 GB VRAM at `workers=4`). `config.cuda_alloc_conf = "expandable_segments:True"` (already the default in `config_example.py`) is required at `workers>1` to avoid intermittent CUDA allocator OOM.
 
-# Custom output directory
-python hybrid_pipeline.py --test --output /path/to/output
-```
-
-Tile pairing during precut is by filename coordinate: `tile_x{int}_y{int}`. There is no `--batch` flag — `--ihc`/`--dish` already accepts a whole WSI and precuts it internally (`PrecutStream`), so there is no separate "batch over a directory of pre-cut tiles" mode.
-
-**Single-process default got faster too**: a one-line config fix (`dot_detect_n_jobs: int = 1`, replacing an unbounded joblib fan-out inside `detect_all_dots`) measured **1.60x** at `workers=1` — the production default — because the removed background threads were starving the GPU main thread of the GIL, not because the CPU stage itself got cheaper. Detail: [`docs/hybrid-pipeline/23-next-optimization-cycle-implementation.md`](docs/hybrid-pipeline/23-next-optimization-cycle-implementation.md) §4.
-
-**Cross-tile multiprocessing (`workers=N`)**: `run_batch()` (called internally, not yet exposed as a CLI flag on `hybrid_pipeline.py`) accepts a `workers` argument that runs `N` `spawn`-ed processes, each with its own model set and CUDA context, over a shared dynamic tile queue. Measured **3.09x** at `workers=3` on the reference RTX 5090 (round 5); after the `dot_detect_n_jobs` fix landed, a worker-count re-sweep (round 6) revised the recommendation down to **`workers=4`** for unattended jobs / `workers=5` when a restart is cheap. `run_batch()` defaults to `workers=4`, the production setting below; `backend/api/hybrid.py`'s single-tile endpoint explicitly overrides it to `workers=1` so a one-tile request doesn't pay N workers' model-init cost. **Round 8 (2026-07-27) ran the full-WSI-scale validation that gated production and it passed**: on the real 27,565-tile slide, `workers=1` took 3.82 h and `workers=4` took 1.73 h (**2.216x measured speedup**, correctness veto passed). **Round 12 (2026-07-29) re-ran `workers=4` on current code — the first re-run since round 8 — and the speedup is now 1.745x** (5,854.9 s against round 10's 10,217.7 s at `workers=1`; correctness veto passed and tighter than round 8's, −0.002% rows). The tile-parallel arm itself did not regress (2.279x with the stitch excluded, inside the 2.1x–2.5x band the slide's 55.8% background composition imposes); the loss is entirely **Phase D stitch, now 32.3% of the `workers=4` wall** — see [`docs/hybrid-pipeline/39-round-12-multiprocess-scaling-ceiling-implementation.md`](docs/hybrid-pipeline/39-round-12-multiprocess-scaling-ceiling-implementation.md). `workers=4` is recommended for production; it peaked at **93.3% of the reference card's 32 GB (~2.2 GB headroom)**, so treat 32 GB VRAM as a hard floor. The intermittent CUDA allocator OOM this recommendation used to be gated on (first seen at `workers≥6`, later also observed at the shipped `workers=4`) is now **root-caused and mitigated (round 11)**: `config.cuda_alloc_conf = "expandable_segments:True"` eliminated it in a 12-repeat sweep at `workers=4` (4/12 → 0/12 OOM, +0.67% wall). **This is now the shipped default in `config_example.py`** (commit `b3fa47d`), so production `workers=4` runs on the tighter peak-framebuffer figure the knob produces — **92.2% of the card**, not round 8's 93.3%/~2.2 GB-headroom figure measured without it. The knob removes a failure mode; it does not create headroom. Full detail: [`docs/hybrid-pipeline/21-cross-tile-multiprocessing-implementation.md`](docs/hybrid-pipeline/21-cross-tile-multiprocessing-implementation.md) (round 5), [`docs/hybrid-pipeline/23-next-optimization-cycle-implementation.md`](docs/hybrid-pipeline/23-next-optimization-cycle-implementation.md) §6 (round 6 re-tune), [`docs/hybrid-pipeline/27-remaining-work-implementation.md`](docs/hybrid-pipeline/27-remaining-work-implementation.md) §5–§6 (round 8 full-slide validation), and [`docs/hybrid-pipeline/37-round-11-backlog-implementation.md`](docs/hybrid-pipeline/37-round-11-backlog-implementation.md) §3 (round 11 allocator fix). `scripts/perf_measure.py --mp-workers N` is the current way to exercise it; `run_batch(..., checkpoint=True)` (or `--resume`) enables opt-in partial-resume so an interrupted long-running batch doesn't have to restart from tile 0.
-
-#### Key Configuration Parameters
-
-A representative subset of `Config` (see `config_example.py` for the full, commented list — it also includes ~40 DISH dot-detection tuning parameters):
-
-```python
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import List, Optional, Tuple
-
-@dataclass
-class Config:
-    # Tile input directories / test ROI / output
-    ihc_tile_dir: Path = ...              # default: <hybrid dir>/tile/her2
-    dish_tile_dir: Path = ...             # default: <hybrid dir>/tile/dish
-    ihc_test_path: Path = ...             # bundled ROI used by --test
-    dish_test_path: Path = ...
-    output_dir: Path = ...                # default: <hybrid dir>/output
-
-    # Model paths (M1/M2/M3b)
-    unet_model_path: Path = ...
-    cellpose_model_path: Path = ...
-    cellpose_dish_model_path: Path = ...
-
-    # UNet++ parameters (M1)
-    unet_encoder_name: str = "timm-efficientnet-b4"
-    unet_image_size: Tuple[int, int] = (1024, 1024)
-
-    # Cellpose parameters (M2: cell segmentation)
-    cellpose_diameter: Optional[float] = None   # auto-detect
-    cellpose_flow_threshold: float = 0.6
-    cellpose_cellprob_threshold: float = -0.8
-    cellpose_batch_size: int = 16               # per-tile internal patch batch, not cross-tile
-    dot_detect_n_jobs: int = 1                  # joblib workers for detect_all_dots; keep at 1 (see below)
-
-    # Tiling / sliding-window deduplication (M0/M2/M3b)
-    default_tile_size: int = 1024
-    window_overlap_px: int = 256          # overlap between adjacent windows
-    window_dedup_iomin: float = 0.5       # IoMin threshold for deduplication
-
-    # Amplification criteria (M3) — see m3_dot_detection.py for the full ASCO/CAP logic
-    score_cep17_min_count: int = 2        # CEP17 < this and not 0/0 → excluded
-    dot_amplification_ratio: float = 2.0  # score = HER2/CEP17 ≥ 2.0 → amplified
-
-    # Export (M4)
-    cell_crop_size: int = 100
-    slide_id: str = "unknown"
-    model_version: str = "v1.0.0"
-```
-
-**Copy `config_example.py` → `config.py` for the full parameter list.**
-
-### Triple Image Layer Pipeline
-
-VALIS-based pipeline for CZI → BigTIFF → aligned tiles preprocessing.
+### Triple image layer pipeline (preprocessing)
 
 ```bash
 cd backend/algorithms/thriple_image_layer
