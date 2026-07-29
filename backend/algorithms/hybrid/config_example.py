@@ -181,9 +181,24 @@ class Config:
     # 跨 tile 多行程（run_batch(workers>1)）時給 worker 的 PYTORCH_CUDA_ALLOC_CONF。
     # 空字串 = 完全不碰環境變數 = PyTorch 預設配置器。父行程在多行程路徑上不碰 CUDA，
     # 故此值於 spawn 前寫入 environ 才會對 worker 生效（已設好的環境變數優先，不覆蓋）。
-    # `expandable_segments:True` 是 19 #7b 那顆「一個 worker 剛好漲到 24.76 GiB」
-    # 配置器氣球的候選解，用 scripts/alloc_conf_probe.py 掃。
-    cuda_alloc_conf: str = ""
+    #
+    # 預設值 `expandable_segments:True`（round 11 決定，見
+    # docs/hybrid-pipeline/37-round-11-backlog-implementation.md §3/§9）。這是
+    # `workers=4`（出貨組態）下 19 #7b／DISCOVERED #2 那顆「一個 worker 剛好漲到
+    # 24.76 GiB」配置器氣球的解法：round 8（doc 27 §5）在 workers=6、n=6 下量到
+    # 0-in-6 vs 1-in-6，統計上無法區分（Fisher p≈1.0），維持預設關閉；round 11
+    # 在 workers=4、n=12 下重掃，同一個 24.76 GiB 簽章在 control 臂復現 **4/12**，
+    # 開這個旋鈕後 **0/12**（Fisher p=0.047）。wall 代價 +0.67%，RSS 不變。
+    #
+    # 這個旋鈕不是免費午餐，且不能被誤讀成「解決了 VRAM 問題」：round 11 同時量到
+    # 開啟後**峰值 framebuffer 從 18.2 GB 升到 30.1 GB（32,607 MB 卡的 92.2%）**——
+    # `expandable_segments` 消掉的是配置器把記憶體碎片化到「176 MB 都要不到」的
+    # 失效模式，不是真的省記憶體；它會長進所有存在的餘裕。doc 27 §6.6 訂的
+    # 「32 GB 是這張卡的硬底線，workers=4 下量到 93.3% 占用、~2.2 GB 餘裕」在這個
+    # 預設值下**依然成立、而且餘裕只會更緊**：不要在 worker pool 裡加任何新的 GPU
+    # 函式庫或工作而不重新量測這個數字，`workers≥5` 在氣球被真正根治前仍不上桌。
+    # 用 scripts/alloc_conf_probe.py 在別的硬體 / worker 數上重掃。
+    cuda_alloc_conf: str = "expandable_segments:True"
     device: str = field(
         default_factory=lambda: "cuda" if cuda.is_available() else "cpu"
     )
