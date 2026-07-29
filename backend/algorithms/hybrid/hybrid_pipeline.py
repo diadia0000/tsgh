@@ -149,10 +149,12 @@ def run_batch(
             （``ihc_dir`` / ``dish_dir`` 不再被讀取），預切與本分析迴圈重疊執行，省掉
             「整批切完才開工」的序列等待；不給則維持原本掃目錄的行為。處理順序改變不
             影響輸出（全域重編號依 ``(abs_y, abs_x, cell_id)`` 排序、縫合按座標讀檔）。
-        workers: 跨 tile 平行的**行程**數。``1``（預設）= 今日的單行程雙臂路徑，
-            一行為變化都沒有；``>1`` 走 ``_run_tiles_multiprocess``，每個 worker 自帶
-            一份模型與 CUDA context。預設必須維持 1：API 的單塊請求不該為了平行度去付
-            N 份模型初始化成本（doc 20 §1 item 7）。
+        workers: 跨 tile 平行的**行程**數。``4``（預設，round 8 全片驗證通過、round 12
+            重測仍然通過的生產設定，見 docs/hybrid-pipeline/39-round-12-...）；``1`` 走
+            今日的單行程雙臂路徑，一行為變化都沒有；``>1`` 走 ``_run_tiles_multiprocess``，
+            每個 worker 自帶一份模型與 CUDA context。單塊 API 請求不該為了這個批次預設
+            去付 N 份模型初始化成本（doc 20 §1 item 7），故呼叫端（`backend/api/hybrid.py`）
+            明確傳入 ``workers=1`` 覆蓋這個預設，而不是依賴預設值。
         checkpoint: 是否啟用斷點續跑。``True`` 時每塊完成即把結果落地到
             ``output_dir/_resume/``，且**本次開始前**會先載入該目錄中屬於這批格線、
             且 config_hash 相符的塊並跳過它們。給無人看顧的整片跑用（27,565 塊時，
@@ -432,9 +434,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workers",
         type=int,
-        default=1,
-        help="跨 tile 平行的行程數（預設 1 = 單行程）。>1 尚未通過整片驗證，"
-             "見 docs/hybrid-pipeline/19-open-backlog.md #7",
+        default=4,
+        help="跨 tile 平行的行程數（預設 4 = round 8 全片驗證通過、round 12 重測仍通過"
+             "的生產設定，見 docs/hybrid-pipeline/39-round-12-multiprocess-scaling-"
+             "ceiling-implementation.md）。",
     )
     parser.add_argument(
         "--resume",

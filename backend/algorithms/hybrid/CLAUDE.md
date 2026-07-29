@@ -15,8 +15,9 @@ python hybrid_pipeline.py --test [--output DIR]                     # smoke-test
 python hybrid_pipeline.py --ihc a.tiff --dish b.tiff --workers 4 --resume   # unattended full-slide run
 ```
 
-`--workers N` (default 1) is `run_batch(workers=N)`; `--resume` is `run_batch(checkpoint=True)`. Both are
-documented under M0 below — `--workers>1` is not yet cleared for production.
+`--workers N` (default 4 — round 8's full-WSI validation cleared it for production, round 12
+re-confirmed on current code) is `run_batch(workers=N)`; `--resume` is `run_batch(checkpoint=True)`.
+Both are documented under M0 below.
 
 Tile pairing is by filename coordinate parsing `tile_x{int}_y{int}`.
 Key imports in `hybrid_pipeline.py`: all local-style — `m0_reader`, `m0_stitch`, `m1_overlay`, `m2_segmentation`, `m3_cell_detection`, `m4_export`.
@@ -84,8 +85,12 @@ to reuse tiles computed under a different config.
     re-imports and re-initializes its own models/context (VRAM ~2.8 GB and ~3.1 s init per worker); measured
     **3.09x at N=3** — see `docs/hybrid-pipeline/21-cross-tile-multiprocessing-implementation.md`. Workers only
     ever return `(abs_x, abs_y, owned)`; the global cell renumbering still happens exactly once, in the parent.
-    **`workers=1` remains the default** (the API path never passes it) and is not cleared for production use
-    until full-WSI validation lands. `run_batch()` also runs **fail-fast** at any worker count, raising
+    **`workers=4` is the default** — round 8's full-WSI validation cleared it for production and round 12
+    re-confirmed it on current code (2.216x → 1.745x after later optimizations shrank the denominator faster
+    than the numerator; see `docs/hybrid-pipeline/39-round-12-multiprocess-scaling-ceiling-implementation.md`).
+    `backend/api/hybrid.py`'s single-tile endpoint explicitly overrides this to `workers=1`, since a one-tile
+    request shouldn't pay N workers' model-init cost for parallelism it can't use. `run_batch()` also runs
+    **fail-fast** at any worker count, raising
     immediately if any tile errors — and under multiprocessing the parent terminates every sibling worker
     before re-raising — since all tiles are pieces of one slide and a silent skip would produce a slide with
     an undocumented hole.
