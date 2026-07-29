@@ -4,11 +4,6 @@ version = "0.1.0"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "valis-wsi",
-    # numpy 2. The valis fork's current HEAD requires it outright
-    # (`numpy>=2,<3; python_version >= '3.10'`), having flipped from the
-    # `numpy<2` the previously locked commit declared. Verified 2026-07-27:
-    # Valis.register() with this project's own config (DiskFD + LightGlue,
-    # non-rigid off) runs clean on numpy 2.4.6 / opencv 4.13 / skimage 0.26.
     "numpy>=2,<3",
     "cellpose[gui]",
     "segmentation-models-pytorch",
@@ -49,12 +44,6 @@ dependencies = [
     "openslide-bin>=4.0.0.13",
     "fastapi>=0.139.0",
     "uvicorn>=0.50.0",
-    # SimpleElastix build of SimpleITK: provides the same `SimpleITK` module
-    # PLUS the Elastix API (GetDefaultParameterMap / ElastixImageFilter) that
-    # valis non-rigid registration needs. Replaces the stock `simpleitk` wheel
-    # (dropped via the override below). Only a prerelease wheel exists for
-    # cp311/win_amd64; its version sorts below 3.0.0 so it still satisfies
-    # valis-wsi's `simpleitk<3.0.0` constraint conceptually.
     "simpleitk-simpleelastix==3.0.0a1.post183",
     "python-multipart>=0.0.32",
     "tuspyserver>=4.2.12",
@@ -62,18 +51,8 @@ dependencies = [
 
 [tool.uv]
 override-dependencies = [
-    # The numpy<2 / opencv<4.9 / scikit-image<0.25 overrides that used to live
-    # here are gone (2026-07-27). They existed only to hold the stack at the
-    # numpy 1 era the old valis commit required; valis HEAD now requires the
-    # opposite, and an override beats a package's own metadata, so leaving them
-    # would have installed a numpy-2 valis on top of numpy 1. The whole
-    # dependency set (179 packages, cellpose/smp/dinov3 included) resolves on
-    # numpy 2 with CUDA torch intact.
-    # Drop stock simpleitk (pulled transitively by valis-wsi). The marker never
-    # matches, so no `simpleitk` requirement remains; the SimpleITK module is
-    # instead provided by simpleitk-simpleelastix above. Without this, uv would
-    # reinstall stock simpleitk and clobber the Elastix-enabled build.
     "simpleitk ; python_version < '3.0'",
+    "opencv-python-headless ; python_version < '3.0'",
 ]
 
 # Pin torch/torchvision to the CUDA 13.0 wheels (matches the validated venv:
