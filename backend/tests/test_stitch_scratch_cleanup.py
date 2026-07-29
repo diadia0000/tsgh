@@ -3,16 +3,21 @@
 逐塊 overlay 已改為只寫進 ``_stitch_scratch/``（非產物，是 pyvips 惰性讀取的串流
 緩衝）。這裡用合成 tile 驗證兩件事：拼回的整片版面逐像素正確、且拼完暫存夾被刪掉
 ——否則「跑圖不落地中間檔」這個保證就破了。
+
+兩個縫合後端都要過（``config.stitch_backend``；round 13 / doc 40 §3 item 2 加的
+candidate B 走的是完全不同的讀寫路徑，版面與清理這兩個保證卻必須一模一樣）。
 """
 import sys
 from pathlib import Path
 
 import numpy as np
 import pyvips
+import pytest
 from skimage import io
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from backend.algorithms.hybrid.config import config  # noqa: E402
 from backend.algorithms.hybrid.m0_slide import (  # noqa: E402
     _STITCH_SCRATCH,
     _stitch_overlay_slide,
@@ -24,7 +29,9 @@ TILE = 64
 OVERLAP = 16
 
 
-def test_stitch_removes_scratch(tmp_path: Path) -> None:
+@pytest.mark.parametrize("backend", ["pyvips", "tifffile"])
+def test_stitch_removes_scratch(tmp_path: Path, backend: str, monkeypatch) -> None:
+    monkeypatch.setattr(config, "stitch_backend", backend, raising=False)
     # 2x2 格線，步距 = tile - overlap（與 precut 同一條格線規則）。
     step = TILE - OVERLAP
     positions = [(x, y) for y in (0, step) for x in (0, step)]
@@ -68,8 +75,4 @@ def test_stitch_removes_scratch(tmp_path: Path) -> None:
 
 
 if __name__ == "__main__":
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as d:
-        test_stitch_removes_scratch(Path(d))
-    print("OK")
+    raise SystemExit(pytest.main([__file__, "-q"]))

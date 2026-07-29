@@ -219,6 +219,24 @@ class Config:
     # 在 overlay_slide 的 tile 接縫（core-crop 邊界）畫藍色虛線，作為 tile 邊界視覺參考。
     draw_window_grid: bool = True
 
+    # ========== Phase D：slide 級 overlay 縫合的編碼器 ==========
+    # `"pyvips"`（預設）= 今日出貨的 `_join_overlay_tiles` + 單次 `tiffsave`。
+    # `"tifffile"` = round 12/13 的 candidate B：逐 band 從磁碟串流讀（讀在背景執行緒上
+    # 與編碼重疊，`_prefetch_bands`）、CPU box filter 產 pyramid、per-tile LZW + TIFF
+    # Predictor 2、tifffile 組容器。
+    #
+    # 為什麼 pyvips 沒有這個槓桿可用：它的讀被 `tiffsave` 融進編碼裡，本來就免費重疊，
+    # 這正是 round 10（doc 35 §3.2）量到兩個 tifffile 候選 0.788x/0.884x **比出貨版慢**
+    # 的原因——它們的讀是序列付的。round 12（doc 39 §4）把讀搬到背景執行緒後同一批候選
+    # 翻成 **1.365x（B）/ 1.581x（C）**，四組對照組都在 3% 內復現 doc 35。
+    #
+    # 預設仍是 `"pyvips"`：照 round 11 `expandable_segments` 的出貨模式，先掛旗量測，
+    # 翻預設是另一個獨立的部署決定（doc 40 §3 item 2/3）。輸出差異已過人工關卡——
+    # candidate B 的產物寫 1.89 GB（出貨版 2.44 GB，差在 Predictor 2），每層 pyramid 都
+    # 通過 `overlay_pyramid_audit.py`，且 2026-07-29 已在 QuPath 直接開起來確認渲染無異
+    # （doc 40 §1.4；doc 32 §5.1 的教訓是程式化檢查單獨不算數）。
+    stitch_backend: str = "pyvips"
+
 
 # 不進 config hash 的欄位：只影響「怎麼跑」、不可能影響「跑出什麼」的執行期旋鈕。
 #
@@ -228,7 +246,13 @@ class Config:
 # ——`_mp_tile_worker` 會比對「父行程 hash == worker hash」，而 spawn 的 worker 是重新
 # import config 的，拿不到父行程對單例的執行期修改，於是整批 fail-fast 中止。
 # （後者不是假設：`scripts/alloc_conf_probe.py` 第一次跑就撞上，那個護欄正確地擋下了。）
-_HASH_EXCLUDE = frozenset({"cuda_alloc_conf"})
+#
+# `stitch_backend` 也排除，但理由不同：它**確實**改變 overlay_slide.tiff 的位元組
+# （1.89 vs 2.44 GB）。排除的依據是 hash 的兩個消費端讀的都不是那個檔——worker 比對的是
+# 「父子演算法設定一致」，斷點續跑存的是每塊的 `owned` 細胞清單；兩者都只由 M1–M3 決定，
+# 而 Phase D 在它們全部結束之後才跑。把它算進 hash 只會讓「換個編碼器」白白丟掉一份
+# 整片、數小時的 checkpoint，換不到任何正確性。
+_HASH_EXCLUDE = frozenset({"cuda_alloc_conf", "stitch_backend"})
 
 
 def compute_config_hash(cfg: Config) -> str:

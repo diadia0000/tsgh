@@ -39,9 +39,10 @@ from __future__ import annotations
 import logging
 import shutil
 from bisect import bisect_right
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 try:  # 僅 POSIX 提供 resource/RLIMIT_NOFILE，見 _ensure_nofile_limit
     import resource
@@ -52,9 +53,11 @@ import numpy as np
 import pyvips
 
 try:
+    from ..config import config
     from ..hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
     from ..m2_segmentation import _relabel_sequential, _remove_border_cells
 except ImportError:
+    from config import config
     from hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
     from m2_segmentation import _relabel_sequential, _remove_border_cells
 
@@ -438,6 +441,34 @@ def _join_overlay_tiles(output_dir: Path, geometry: TileGeometry) -> pyvips.Imag
 def _stitch_overlay_slide(output_dir: Path, geometry: TileGeometry) -> None:
     """把 ``_stitch_scratch/`` 內的 tile 拼成一張全片 pyramid TIFF 並寫出，寫完刪暫存夾。
 
+    兩個後端，由 ``config.stitch_backend`` 選（預設 ``"pyvips"`` = 今日出貨行為）：
+
+    - ``"pyvips"`` — ``_join_overlay_tiles`` + 單次 ``tiffsave``。
+    - ``"tifffile"`` — round 12/13 的 candidate B：逐 band 串流讀（讀搬到背景執行緒與
+      編碼重疊）、CPU pyramid、per-tile LZW + Predictor 2、tifffile 組容器。
+      量到 **1.365x**（doc 39 §4，4.055 GP）。
+
+    兩條路徑產出的**版面**相同（同尺寸、同 128px tile、同 pyramid 層數），位元組則不同：
+    candidate B 套 TIFF Predictor 2 而出貨版沒有，故檔案較小（4 GP 下 1.89 vs 2.44 GB）。
+    這個差異已過人工關卡，見 ``config.stitch_backend`` 的註解。
+
+    刪除暫存夾**不放 finally**（兩條路徑皆然）：拼合失敗時保留暫存夾，才能重跑縫合而
+    不必重算整批。
+    """
+    backend = getattr(config, "stitch_backend", "pyvips")
+    if backend == "pyvips":
+        _stitch_overlay_slide_pyvips(output_dir, geometry)
+    elif backend == "tifffile":
+        _stitch_overlay_slide_tifffile(output_dir, geometry)
+    else:
+        raise ValueError(
+            f"config.stitch_backend 只接受 'pyvips' 或 'tifffile'，實得 {backend!r}。"
+        )
+
+
+def _stitch_overlay_slide_pyvips(output_dir: Path, geometry: TileGeometry) -> None:
+    """出貨後端：惰性 join 後單次 ``tiffsave``。
+
     壓縮採 **lzw（無失真）**：這是帶細胞邊界線 / 標籤文字 / 紅黑點的標註影像，JPEG
     的區塊假影會糊掉細線與小點，醫師判讀不宜；lzw 保真且仍可壓。
 
@@ -447,8 +478,10 @@ def _stitch_overlay_slide(output_dir: Path, geometry: TileGeometry) -> None:
     ``scripts/stitch_probe.py --ablate``。故此處維持 pyvips 預設，不加旋鈕：零貢獻的
     層一律不留（playbook step 4）。
 
+    這條路徑**沒有** ``tifffile`` 後端那個「把讀搬到背景執行緒」的槓桿可用，而且不需要：
+    ``tiffsave`` 把讀融進編碼裡，本來就免費重疊（doc 40 §1.2）。
+
     ``tiffsave`` 是同步的——回傳時惰性管線已把每格讀完寫出，故其後即可安全刪除暫存夾。
-    刪除**不放 finally**：拼合失敗時保留暫存夾，才能重跑縫合而不必重算整批。
     """
     overlay_dir = output_dir / _STITCH_SCRATCH
     slide = _join_overlay_tiles(output_dir, geometry)
@@ -476,6 +509,232 @@ def _stitch_overlay_slide(output_dir: Path, geometry: TileGeometry) -> None:
     )
     logger.info(
         "overlay_slide.tiff 縫合完成: %d×%d px", slide.width, slide.height
+    )
+    if overlay_dir.exists():
+        shutil.rmtree(overlay_dir)
+
+
+# ------------------------------------------------------------------
+# Phase D candidate B：band 串流 + 背景讀 + tifffile 容器（round 12/13）
+# ------------------------------------------------------------------
+# 為什麼是這個形狀：doc 35 §3.2 量到兩個 tifffile 候選都**比出貨的 pyvips 慢**
+# （0.788x / 0.884x），因為它們序列地付「讀 + join」這半（佔 baseline 自己 48.7% 的
+# wall），而 pyvips 把它融進 tiffsave 裡免費重疊掉了。doc 39 §4 把讀搬到背景執行緒後同
+# 一批候選翻成 1.365x / 1.581x。所以這裡照抄的不是「tifffile 比較快」，而是「讀被藏起
+# 來之後 tifffile 才比較快」——`_prefetch_bands` 是這條路徑存在的唯一理由。
+#
+# 全程只有「一個 band」等級的東西常駐（讀一條、編一條），與 `_join_overlay_tiles` 的
+# 惰性讀同樣有界；這是 Phase D 能在 16 GP 玻片上跑得起來的前提，不要改成整片載入。
+
+# 容器幾何必須與出貨版逐項相同，否則「比較快」可能只是「做得比較少」（doc 32 §3）：
+# 以下三個都是 pyvips tiffsave 的預設值，也就是今天 overlay_slide.tiff 的實際規格。
+_CONTAINER_TILE = 128    # tiffsave 預設 tile 邊長
+_MIN_LEVEL = 128         # pyvips 一路對半縮到某層塞得進一個 tile 為止
+_PYVIPS_DPI = 25.4       # pyvips 寫 1 px/mm；tifffile 預設不寫單位，對不上 QuPath 會
+                         # 算出不同的實體像素大小、以不同比例顯示（doc 32 §5）
+# per-tile LZW 的執行緒數。doc 39 §4 的 1.365x 就是在這個值下量到的
+# （`stitch_probe.py --encode-workers` 的預設）；不另開 config 旋鈕：這條路徑目前唯一
+# 有數字支撐的組態就是被量過的那一組。
+_ENCODE_THREADS = 8
+
+
+def _n_pyramid_levels(height: int, width: int) -> int:
+    """pyvips 對這個尺寸會寫出的**縮圖**層數（不含 level 0）。
+
+    規則是 ``max(h, w)`` 而非 ``min``：pyvips 一路對半縮，直到某層在**兩個**方向都塞得
+    進一個 tile 為止。用 ``min`` 會在寬扁的玻片上早停兩層，而少寫兩層 pyramid 的候選只
+    是做得比較少，速度不可比——doc 32 §3 第一次就踩到這個。
+    """
+    lv = 0
+    while max(height, width) > _MIN_LEVEL:
+        height, width, lv = height // 2, width // 2, lv + 1
+    return lv
+
+
+def _slide_dims(output_dir: Path, geometry: TileGeometry) -> Tuple[int, int]:
+    """整片尺寸 ``(height, width)``，只讀第一列與第一欄的檔頭。
+
+    同欄同寬、同列同高由 ``core_crop_bounds`` 的建構保證（見 ``_join_overlay_tiles``），
+    所以整片寬 = 第一列各格寬之和、整片高 = 第一欄各格高之和。
+
+    這裡刻意**不**走 ``_join_overlay_tiles``：那會為了問一個尺寸把全片 27,565 格同時開
+    著（`scripts/stitch_probe.py` 的 spike 就是這樣做的，但它沒把這段計時）。逐欄逐列讀
+    檔頭是 ``cols + rows`` 次開檔（整片約 332 次），且 pyvips 讀檔頭不解碼像素。
+    """
+    overlay_dir = output_dir / _STITCH_SCRATCH
+    xs = sorted(geometry.col_of)
+    ys = sorted(geometry.row_of)
+
+    def _header(ax: int, ay: int) -> pyvips.Image:
+        path = overlay_dir / f"tile_x{ax}_y{ay}.tiff"
+        if not path.exists():
+            raise FileNotFoundError(
+                f"{_STITCH_SCRATCH} 缺少 tile: {path}——每格應恰有一檔。"
+            )
+        return pyvips.Image.new_from_file(str(path), access="sequential")
+
+    width = sum(_header(ax, ys[0]).width for ax in xs)
+    height = sum(_header(xs[0], ay).height for ay in ys)
+    return height, width
+
+
+def _band_source(output_dir: Path, geometry: TileGeometry) -> Iterator[np.ndarray]:
+    """由上而下逐條吐出「整片寬」的水平 band，每列 tile 一條。
+
+    水平 join 用的是 ``_join_overlay_tiles`` 的同一招（``arrayjoin`` 會對非均勻格線誤
+    留白，見它的 docstring），差別只在這裡一次只實體化**一列**。
+    """
+    overlay_dir = output_dir / _STITCH_SCRATCH
+    xs = sorted(geometry.col_of)
+    for ay in sorted(geometry.row_of):
+        row = None
+        for ax in xs:
+            path = overlay_dir / f"tile_x{ax}_y{ay}.tiff"
+            if not path.exists():
+                raise FileNotFoundError(
+                    f"{_STITCH_SCRATCH} 缺少 tile: {path}——每格應恰有一檔。"
+                )
+            img = pyvips.Image.new_from_file(str(path), access="sequential")
+            row = img if row is None else row.join(img, "horizontal", expand=True)
+        buf = row.write_to_memory()
+        yield np.ndarray(buffer=buf, dtype=np.uint8,
+                         shape=(row.height, row.width, row.bands))
+
+
+def _prefetch_bands(src: Iterator[np.ndarray], pool: ThreadPoolExecutor
+                    ) -> Iterator[np.ndarray]:
+    """在呼叫端編碼第 k 條時，於背景執行緒讀第 k+1 條。
+
+    形狀與管線自己的 ``prefetch_tile_reads`` 相同：單執行緒、深度 1，所以最多兩條 band
+    同時常駐（正在編的那條、正在讀的那條）。深度**刻意**維持 1：一條 band 在整片尺度是
+    ~326 MB，而有界性正是 Phase D 跑得動 16 GP 玻片的前提（doc 21 §6 也在 tile 路徑上
+    量到更深的 pipelining 是負收益）。
+
+    只有一個執行緒會呼叫 ``next(src)``：下一次 fetch 是在前一個 future 解析**之後**才
+    submit，故 generator 不會被同時重入。
+    """
+    fut = pool.submit(next, src, None)
+    while True:
+        band = fut.result()
+        if band is None:
+            return
+        fut = pool.submit(next, src, None)
+        yield band
+
+
+def _shrink2_cpu(a: np.ndarray) -> np.ndarray:
+    """2x2 box shrink；奇數的列 / 欄先截掉，與 pyvips 的作法一致。"""
+    h, w = (a.shape[0] // 2) * 2, (a.shape[1] // 2) * 2
+    return ((a[:h:2, :w:2].astype(np.uint16) + a[1:h:2, :w:2]
+             + a[:h:2, 1:w:2] + a[1:h:2, 1:w:2] + 2) // 4).astype(np.uint8)
+
+
+def _encode_tile_row(rows: np.ndarray, pool: ThreadPoolExecutor) -> List[bytes]:
+    """把一整條 128px tile row 由左至右 LZW 編碼，**差分自己做**。
+
+    tifffile 對「已壓縮的輸入」只會把 Predictor tag *宣告*上去，不會幫你轉換位元組。
+    這件事做錯的產物是「開得起來但解碼成雜訊」——doc 32 §5.1 已經出貨過一次的無聲毀損。
+    Predictor 2 是 ``out[0] = in[0]; out[k] = in[k] - in[k-1]``，所以第一欄保留絕對值
+    （prepend 零，絕不是 prepend 第一欄自己）。
+    """
+    import imagecodecs
+
+    h, w = rows.shape[:2]
+    tiles = []
+    for y in range(0, h, _CONTAINER_TILE):
+        for x in range(0, w, _CONTAINER_TILE):
+            t = rows[y:y + _CONTAINER_TILE, x:x + _CONTAINER_TILE]
+            if t.shape[0] != _CONTAINER_TILE or t.shape[1] != _CONTAINER_TILE:
+                pad = np.zeros((_CONTAINER_TILE, _CONTAINER_TILE, 3), dtype=rows.dtype)
+                pad[:t.shape[0], :t.shape[1]] = t
+                t = pad
+            tiles.append(np.ascontiguousarray(t))
+
+    def enc(t: np.ndarray) -> bytes:
+        zero = np.zeros((t.shape[0], 1, t.shape[2]), dtype=t.dtype)
+        d = np.diff(t, axis=1, prepend=zero)
+        return imagecodecs.lzw_encode(np.ascontiguousarray(d).tobytes())
+
+    return list(pool.map(enc, tiles))
+
+
+def _stitch_overlay_slide_tifffile(output_dir: Path, geometry: TileGeometry) -> None:
+    """candidate B 後端：band 串流讀（背景執行緒）+ CPU pyramid + tifffile 容器。
+
+    每讀進一條 band 就餵給 ``feed(0, ...)``：湊滿 128 的整數倍高度就切出來編碼，同一塊
+    順手 shrink 一次推進下一層的緩衝區，遞迴到最後一層。任何一層都不會有超過一條 band
+    的資料常駐，這是與 ``_join_overlay_tiles`` 同等的有界性。
+    """
+    import tifffile
+
+    overlay_dir = output_dir / _STITCH_SCRATCH
+    xs = sorted(geometry.col_of)
+    # 一次只開一列，不是整片——出貨路徑的 27,565 個 fd 這裡不需要。
+    _ensure_nofile_limit(len(xs) + 256)
+
+    height, width = _slide_dims(output_dir, geometry)
+    n_lv = _n_pyramid_levels(height, width)
+
+    buf: List[Optional[np.ndarray]] = []
+    segs: List[List[bytes]] = []
+    shapes: List[List[int]] = []
+
+    def ensure(k: int) -> None:
+        while len(buf) <= k:
+            buf.append(None)
+            segs.append([])
+            shapes.append([0, 0])
+
+    def emit(k: int, chunk: np.ndarray, pool: ThreadPoolExecutor) -> None:
+        """編掉這層的一塊，並把它 shrink 一次餵進下一層。"""
+        segs[k].extend(_encode_tile_row(chunk, pool))
+        if k + 1 <= n_lv:
+            feed(k + 1, _shrink2_cpu(chunk), pool)
+
+    def feed(k: int, band: np.ndarray, pool: ThreadPoolExecutor) -> None:
+        ensure(k)
+        shapes[k][0] += band.shape[0]
+        shapes[k][1] = band.shape[1]
+        buf[k] = band if buf[k] is None else np.concatenate([buf[k], band], axis=0)
+        n = (buf[k].shape[0] // _CONTAINER_TILE) * _CONTAINER_TILE
+        if not n:
+            return
+        chunk, buf[k] = buf[k][:n], buf[k][n:]
+        emit(k, chunk, pool)
+
+    def flush(k: int, pool: ThreadPoolExecutor) -> None:
+        """收尾：每層剩下不滿一個 tile row 的殘量也要寫出去（_encode_tile_row 會補零）。"""
+        if k >= len(buf):
+            return
+        chunk, buf[k] = buf[k], None
+        if chunk is not None and chunk.shape[0]:
+            emit(k, chunk, pool)
+        flush(k + 1, pool)
+
+    with ThreadPoolExecutor(max_workers=_ENCODE_THREADS) as pool, \
+            ThreadPoolExecutor(max_workers=1,
+                               thread_name_prefix="stitch-band-read") as rpool:
+        for band in _prefetch_bands(_band_source(output_dir, geometry), rpool):
+            feed(0, band, pool)
+        flush(0, pool)
+
+    with tifffile.TiffWriter(str(output_dir / "overlay_slide.tiff"),
+                             bigtiff=True) as tif:
+        for i, (seg, (h, w)) in enumerate(zip(segs, shapes)):
+            tif.write(
+                iter(seg), shape=(h, w, 3), dtype=np.uint8,
+                tile=(_CONTAINER_TILE, _CONTAINER_TILE),
+                # predictor=True 只寫 tag；差分已由 _encode_tile_row 套用。出貨的 pyvips
+                # 路徑則是 predictor="none"——兩者都正確，差別只在檔案大小，重點是**每層
+                # IFD 的 tag 與資料一致**（doc 32 §5.1 壞掉的正是這個一致性）。
+                compression="lzw", predictor=True, photometric="rgb",
+                subfiletype=1 if i else 0,
+                resolution=(_PYVIPS_DPI, _PYVIPS_DPI), resolutionunit="inch",
+            )
+
+    logger.info(
+        "overlay_slide.tiff 縫合完成: %d×%d px（tifffile 後端，%d 層）",
+        shapes[0][1], shapes[0][0], len(segs),
     )
     if overlay_dir.exists():
         shutil.rmtree(overlay_dir)
