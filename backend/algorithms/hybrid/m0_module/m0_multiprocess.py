@@ -372,6 +372,14 @@ def _run_tiles_multiprocess(
         # 任一塊失敗 → 先停止供料、再終止所有兄弟行程，然後才往上拋。放兄弟跑完會產出
         # 「有未記載破洞」的玻片，正是單行程 fail-fast 設計要擋的失效模式（doc 20 §1 item 2）。
         stop_feeding.set()
+        # 被 terminate 的 worker 不會再讀 task_q，佇列裡尚未寫出的工作於是永遠卡在它自己的
+        # feeder 執行緒的 pipe write 上；而 multiprocessing 的 atexit（`util._exit_function`
+        # → `Queue._finalize_join`）會去 join 那條執行緒 → **正確的 fail-fast 變成一個永遠
+        # 不回來的行程**。doc 35 §6.2 記到 49 分鐘後人工砍掉；本輪用
+        # `scripts/exit_latency_probe.py` 重現並抓到堆疊，證實就是這兩條互等。
+        # `cancel_join_thread()` 的語義正是「行程結束時直接丟掉沒 flush 完的資料」——這批
+        # 已經放棄了，那些工作本來就不該再送到任何地方，所以丟掉是正確而非將就。
+        task_q.cancel_join_thread()
         _kill_all()
         raise
 
