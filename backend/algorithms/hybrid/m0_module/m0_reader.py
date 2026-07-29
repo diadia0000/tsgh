@@ -25,7 +25,8 @@ tile 以無失真 ``deflate`` 壓縮寫出：本模組以 pyvips 解碼，實測
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from itertools import islice
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
@@ -38,6 +39,9 @@ pyvips.cache_set_max(0)
 # 中繼 tile 壓縮：無失真 deflate，保持與 skimage 解碼逐位元一致的回歸基準
 # （沿用 ``scripts/tile_generator.py`` 慣例）。
 _TILE_COMPRESSION = "deflate"
+
+# ``PrecutStream.__iter__`` 同時在飛的切檔工作上限，以每條切檔執行緒計。見該處 docstring。
+_INFLIGHT_PER_WORKER = 8
 
 try:
     from ..m2_segmentation import _overlap_window_coords
@@ -175,8 +179,33 @@ class PrecutStream:
         return ihc_dst, dish_dst, pos
 
     def __iter__(self) -> Iterator[Tuple[Path, Path, Tuple[int, int]]]:
-        """以完成順序產出已落地的 tile 配對；任一塊切檔失敗在此 raise（fail-fast）。"""
-        with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            futures = [pool.submit(self._cut, pos) for pos in self.positions]
-            for fut in as_completed(futures):
-                yield fut.result()
+        """以完成順序產出已落地的 tile 配對；任一塊切檔失敗在此 raise（fail-fast）。
+
+        同時在飛的切檔工作以 ``workers * _INFLIGHT_PER_WORKER`` 為上限，而不是開場就把
+        整片 submit 出去。全部 submit 的版本讓「消費端放棄」變成一句空話：fail-fast 之後
+        ``_run_tiles_multiprocess._feed`` 會 break、本產生器被丟著，但佇列裡的切檔工作一件
+        都不會少做——本輪實測在第 8 塊中止的 576 塊批次，仍然把 576 塊全部切完
+        （``scripts/exit_latency_probe.py``）。整片規模等於在整批已放棄之後還要再切十幾分鐘、
+        寫掉數十 GB，正是 ``_feed`` 裡那句「中止後必須真的停下來」要擋、卻擋不到的事。
+
+        有界視窗不會讓切檔變成瓶頸：切一對塊約數十毫秒，而每塊的分析在 ``workers=1`` 是
+        數百毫秒，切檔本來就領先分析一個數量級，視窗只是不讓它領先「整片」。放棄時
+        ``cancel_futures=True`` 把還沒開跑的直接取消，只需等最多 ``workers`` 塊跑完。
+        完整跑完的那條路徑產出與順序性質一字不變。
+        """
+        pool = ThreadPoolExecutor(max_workers=self.workers)
+        try:
+            todo = iter(self.positions)
+            inflight = {
+                pool.submit(self._cut, pos)
+                for pos in islice(todo, self.workers * _INFLIGHT_PER_WORKER)
+            }
+            while inflight:
+                done, inflight = wait(inflight, return_when=FIRST_COMPLETED)
+                for fut in done:
+                    nxt = next(todo, None)
+                    if nxt is not None:
+                        inflight.add(pool.submit(self._cut, nxt))
+                    yield fut.result()
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
