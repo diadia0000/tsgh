@@ -1,6 +1,7 @@
 # tsgh — WSI / medical image pipeline
 
 Codebase specific conventions, paths, and notes are written in this file.
+This project backend algorithem is base on Linux, if you're on Windows, use WSL2 or a Linux VM, otherwise it might hit a lot unexpected errors.
 
 ## project rules
 
