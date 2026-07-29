@@ -145,7 +145,9 @@ IHC (HER2) + DISH pair (tile, ROI, or WSI)
                           m0_stitch joins _stitch_scratch/ into overlay_slide.tiff
 ```
 
-`_stitch_scratch/` is the one deliberate disk round-trip — pyvips reads it lazily (`access="sequential"`). Stitching from memory resurrects a ~400 GB full-canvas OOM.
+`_stitch_scratch/` is the one deliberate disk round-trip — it is read lazily, one horizontal band at a time, never as a whole image. Stitching from memory resurrects a ~400 GB full-canvas OOM.
+
+**Phase D stitch backend (`config.stitch_backend`):** defaults to **`"tifffile"`** as of round 13 — the overlay tiles are streamed band-by-band with the read overlapped onto a background thread, the pyramid built with a CPU box filter, and each 128px container tile LZW-encoded with TIFF Predictor 2. Measured on the real 27,565-tile slide at `workers=4`: **Phase D 1,889.8 → 987.8 s (1.913x)** and **end-to-end 5,854.9 → 4,877.4 s (1.200x)**, above the 1.135x projection and its 1.184x perfect-overlap floor, with the correctness veto passing on all four gates (`report.csv` +0.0014% rows, `overlay_pyramid_audit.py` PASS at every level, every pyramid level bit-exact against a 2×2 box shrink of the level above, and a by-hand QuPath render check). Two side effects worth knowing: **peak RSS dropped 45.6 → 17.0 GB** (band streaming replaces a lazy join holding all 27,565 tiles open, which relaxes the 61–62 GB host requirement round 8 recorded), and the artifact shrinks 7.50 → 5.85 GB because Predictor 2 applies where the old path wrote `predictor="none"`. The previous `"pyvips"` path (one `tiffsave`) is retained as a fallback and as the control arm for future measurement. Full detail: [`docs/hybrid-pipeline/41-round-13-phase-d-pipelined-stitch-implementation.md`](docs/hybrid-pipeline/41-round-13-phase-d-pipelined-stitch-implementation.md).
 
 **Scoring (M3):** per-cell `score = HER2/CEP17`, amplified if `score ≥ dot_amplification_ratio` (2.0). Cells are excluded (X) on drop-out, boundary contamination, or `CEP17 < score_cep17_min_count` (2) — except 0/0, which counts normally. `summary.txt` adds a case-level ASCO/CAP 2013 verdict.
 

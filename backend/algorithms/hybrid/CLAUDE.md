@@ -85,20 +85,34 @@ images. **`hybrid_data_types.py`** — `DetectedDot`, `CellAnalysisResult`, `Cel
 - A run leaves exactly 3 files in `output_dir/`: `report.csv`, `summary.txt`,
   `overlay_slide.tiff`. **No per-tile intermediates** — masks stay in memory and die
   with the chunk. `merge_overlay/` only when the caller passes `merge_dir`.
-- `_stitch_scratch/` is the one disk round-trip: a streaming buffer pyvips reads lazily
-  (`access="sequential"`). Stitching from in-memory tiles resurrects the ≈400GB
-  full-canvas OOM that killed the old `StitchAccumulator`.
+- `_stitch_scratch/` is the one disk round-trip: a streaming buffer, read lazily one band
+  at a time. Stitching from in-memory tiles resurrects the ≈400GB full-canvas OOM that
+  killed the old `StitchAccumulator`. Whichever backend runs, nothing larger than one
+  band of one level is ever resident — that boundedness is why Phase D survives a 16 GP
+  slide; do not "simplify" it into a whole-image load.
 - Its `rmtree` is deliberately **not** in a `finally` — a failed stitch keeps the tiles
   so it can be re-run without recomputing the batch
   (`backend/tests/test_stitch_scratch_cleanup.py`).
+- **Two stitch backends**, `config.stitch_backend`. Default **`"tifffile"`** (round 13):
+  band-streamed read on a background thread, CPU box pyramid, per-tile LZW + Predictor 2.
+  `"pyvips"` (`_join_overlay_tiles` + one `tiffsave`) is retained as fallback and as the
+  measurement control — do not delete it. Measured on the real slide: Phase D **1.913x**,
+  end-to-end **1.200x**, peak RSS **45.6 → 17.0 GB**, artifact 7.50 → 5.85 GB. The two
+  produce the same picture but different bytes (Predictor 2 vs `predictor="none"`); tests
+  assert every pyramid level is pixel-identical between them. `stitch_backend` is in
+  `config._HASH_EXCLUDE` on purpose — Phase D runs after M1–M3, so swapping encoders must
+  not invalidate a multi-hour resume checkpoint. See
+  `docs/hybrid-pipeline/41-round-13-phase-d-pipelined-stitch-implementation.md`.
 - No `pyvips.arrayjoin()` — it assumes a uniform grid and silently mis-pads at slide
-  edges; use the manual row-then-column `Image.join(..., expand=True)`.
+  edges; use the manual row-then-column `Image.join(..., expand=True)`. Both backends
+  build their rows this way.
 - Cross-tile parallelism must be **spawn**, never fork (a forked child inherits a broken
   CUDA context). ~2.8GB VRAM + ~3.1s init per worker; measured 3.09x at N=3, and 1.745x
   end-to-end at the shipped `workers=4` on the 27,565-tile slide (round 12; round 8 had
   2.216x — later optimizations shrank the `workers=1` denominator faster than the
-  numerator, and Phase D stitch is now 32.3% of the wall — see
-  `docs/hybrid-pipeline/39-round-12-multiprocess-scaling-ceiling-implementation.md`).
+  numerator). Phase D stitch was 32.3% of that wall and is now **20.3%** after round 13
+  — see `docs/hybrid-pipeline/39-round-12-multiprocess-scaling-ceiling-implementation.md`
+  and `docs/hybrid-pipeline/41-round-13-phase-d-pipelined-stitch-implementation.md`.
 - Global `cell_id` 1..N is assigned in exactly one place: `_finish_batch()`, in the
   parent, sorting `(abs_y, abs_x, cell_id)`. Workers only return `(abs_x, abs_y, owned)`.
 - **fail-fast at any worker count** — one bad tile aborts the batch (multiprocess kills
