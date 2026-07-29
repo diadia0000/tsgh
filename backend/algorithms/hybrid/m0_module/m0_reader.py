@@ -141,8 +141,6 @@ class PrecutStream:
         origin_x, origin_y, h, w = 0, 0, full_h, full_w
         if region is not None:
             origin_x, origin_y, w, h = region
-            if origin_x < 0 or origin_y < 0 or w <= 0 or h <= 0:
-                raise ValueError(f"ROI 不合法: {region}")
             if origin_x + w > full_w or origin_y + h > full_h:
                 raise ValueError(
                     f"ROI {region} 超出切片範圍 {full_w}x{full_h}（x+w / y+h 不得越界）"

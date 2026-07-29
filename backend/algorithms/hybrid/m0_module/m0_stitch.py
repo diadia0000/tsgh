@@ -43,13 +43,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-import numpy as np
-import pyvips
-
-try:
-    import resource  # POSIX only；Windows 沒有這個模組，見 _ensure_nofile_limit
+try:  # 僅 POSIX 提供 resource/RLIMIT_NOFILE，見 _ensure_nofile_limit
+    import resource
 except ImportError:
     resource = None
+
+import numpy as np
+import pyvips
 
 try:
     from ..hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
@@ -370,8 +370,8 @@ def _ensure_nofile_limit(needed: int) -> None:
     故在開任何檔之前先檢查：軟上限不夠就自己往上提（soft→hard 一律允許，不需
     特權），硬上限也不夠才大聲失敗並講清楚要調多少。
 
-    Windows 沒有 per-process 的 RLIMIT_NOFILE（``resource`` 模組不存在），核心的
-    handle table 也沒有這種等價上限，所以那邊沒有東西可檢查、直接跳過。
+    非 POSIX 平台沒有 per-process 的 RLIMIT_NOFILE（``resource`` 模組也不存在），
+    沒有東西可檢查，直接跳過。
     """
     if resource is None:
         return

@@ -18,9 +18,16 @@
 |---|---|---|
 | `ModuleNotFoundError: No module named 'fcntl'` | `tuspyserver` 4.2.12 是 POSIX-only，import 時就炸 | 新增 **`backend/api/tus_compat.py`**：`sys.platform == "win32"` 時裝一個 `fcntl` stub |
 | 上傳 PATCH 回 500 `[WinError 183]`（檔案已存在） | `tuspyserver/info.py` 用 `os.rename`，Windows 上目標已存在會失敗 | 同檔案用 `_RenameIsReplace` proxy 把該模組的 `os.rename` 換成 `os.replace` |
-| `AttributeError: module 'SimpleITK' has no attribute 'TransformixImageFilter'` | 裝到的是 stock SimpleITK 而非 SimpleElastix 時，module 匯入期就掛 | `module2_alignment.py` 加 `hasattr` guard，沒有就跳過 patch |
+| `AttributeError: module 'SimpleITK' has no attribute 'TransformixImageFilter'` | 裝到的是 stock SimpleITK 而非 SimpleElastix 時，module 匯入期就掛 | ~~`module2_alignment.py` 加 `hasattr` guard~~ **已還原**（2026-07-28，見下方註記）——`.venv` 裝的是 SimpleElastix 所以不受影響，但**任何 stock SimpleITK 的環境仍會 import 就掛** |
 | `ModuleNotFoundError: No module named 'resource'` | `m0_stitch._ensure_nofile_limit` 用 POSIX 的 `resource` | `try/except ImportError` + 早退（Windows 沒有 fd 上限問題） |
-| `shutil.rmtree` 撞 `WinError 32` | pyvips 對 `.v` 暫存檔的 mmap handle 尚未釋放 | `module1_preprocess.py` 改 `ignore_errors=True`——清暫存失敗不該讓已完成的前處理整條中止 |
+| `shutil.rmtree` 撞 `WinError 32` | pyvips 對 `.v` 暫存檔的 mmap handle 尚未釋放 | ~~`module1_preprocess.py` 改 `ignore_errors=True`~~ **已還原**（見下方註記）——Linux 上不會發生此錯誤，且該寫法會把真正的清理失敗無聲吞掉 |
+
+> **整個 `thriple_image_layer/` 已完整還原（2026-07-28）**：依組員要求，該資料夾的演算法行為不得
+> 更動，`module2_alignment.py` 與 `module1_preprocess.py` 都已 `git checkout` 回改動前的版本
+> ——`git diff dcbf11f -- backend/algorithms/thriple_image_layer/` 為空。跟著回來的是
+> **非剛性配準強制開啟、寫死 `SimpleElastixWarper`**（原本加的 `config.valis.non_rigid_method`
+> 開關已不存在）。注意 `module4_aligned_layers.py:42` 仍在讀 `config.valis.non_rigid_method`，
+> 但它現在管不到 module2 了——兩邊會對不起來，是已知的待處理項。
 
 > **`tus_compat` 的 import 順序是有意義的**：`backend/api/alignment.py` 裡它必須排在
 > `from tuspyserver import ...` **之前**，所以帶了 `# noqa: F401` 註記。不要讓 formatter 重排。
@@ -75,7 +82,11 @@ CUDA torch 沒有被降級，cellpose / smp / dinov3 都跟著解得動。
 
 > ⚠️ **環境分裂**：conda 的 `tsgh311` 仍是舊的（numpy 1.26.4 / torch 2.5.1+cu121）。
 > 新環境是 repo 內的 **`.venv`**（`uv sync` 產出）。跑後端請用 `.venv`，不要再用 conda 那個。
-> 另注意 `.venv` 內**沒有裝 pytest**，測試要透過 `uv run pytest`。
+>
+> ⚠️ **測試一定要用 `.venv\Scripts\python.exe -m pytest`。** `uv run pytest` 在這台會**安靜地**
+> 掉到 conda `tsgh311` 的 `pytest.exe`（PATH 上找得到），於是整套測試是在 **numpy 1.26.4 +
+> stock SimpleITK** 底下跑的，量到的東西跟實際 runtime 無關。`.venv` 原本沒裝 pytest 才會這樣，
+> 現已補裝。
 
 > ⚠️ **`config.py` 是 gitignored 的**：`backend/algorithms/hybrid/config.py` 不進版控。這台機器上
 > 那份是舊的，害 `test_config_parity` 5 個案例紅。從 `config_example.py` 重新產生後全綠
@@ -248,6 +259,25 @@ core region 對 ROI 恰好鋪滿一次（`hits.min() == 1 and hits.max() == 1`�
 
 ---
 
+## 7b. 改到 Linux 跑要注意的
+
+§1 那些 Windows 相容性問題在 Linux 上都不存在（`tus_compat.py` 整個檔案是 `sys.platform ==
+"win32"` 包起來的，Linux 完全不執行），但下面這些是**換平台不會消失、甚至只在 Linux 出現**的：
+
+- **`ulimit -n`（RLIMIT_NOFILE）** ← 只在 Linux 咬人。縫合會把整片的 tile 同時開著（真實切片
+  27,565 個），Linux 常見預設 soft limit 是 **1,024**，會在整片分析跑完數小時後的最後一步炸。
+  `_ensure_nofile_limit()` 會自己把 soft 提到 hard，但 **hard 不夠就沒救**——上機前確認
+  `ulimit -Hn`，Docker 用 `--ulimit nofile=1048576:1048576`。
+- **記憶體**：非剛性配準在 32 GB 機器上 OOM 是記憶體問題不是平台問題；整片 hybrid 分析的
+  peak RSS 記錄是 **61–62 GB**（BACKLOG §1 item 7）。
+- **磁碟**：整片 precut 暫存約 49 GB，加上 `_stitch_scratch`。
+- **SimpleElastix 的 wheel 只有三個平台**（macOS arm64 / **linux x86_64** / win amd64）。
+  x86_64 照 `uv.lock` 裝沒問題；**aarch64 Linux 裝不起來**，而 `module2_alignment.py` 還原後
+  沒有 import guard，後端會 import 就掛。
+- **檔名大小寫**：Linux 區分大小寫，`HER2_40X.czi` ≠ `her2_40x.czi`。
+
+---
+
 ## 8. 怎麼跑
 
 ```powershell
@@ -260,9 +290,9 @@ $env:TSGH_SLIDES_DIR   = "D:\tsgh_output\thriple_image_layer\viewer"   # 測試�
 # 前端
 cd frontend; npm run dev
 
-# 測試（.venv 內沒有 pytest，要用 uv run；兩個目錄分開跑，見 §6）
-uv run pytest tests
-uv run pytest backend/tests
+# 測試（一定要指名 .venv 的 python，別用 uv run pytest；兩個目錄分開跑，見 §6）
+& ".\.venv\Scripts\python.exe" -m pytest tests
+& ".\.venv\Scripts\python.exe" -m pytest backend/tests
 ```
 
 > 這台機器上 Chrome 連 `localhost` / `127.0.0.1:5173` 連不上（`curl` 卻是 200），

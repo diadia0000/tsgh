@@ -39,17 +39,8 @@ def _patch_transformix_moving_image():
     non-rigid registration crashes with "Input MovingImage is required but not set".
     Auto-attach a blank image sized from the transform parameter map whenever the map
     is set; valis's own later SetMovingImage (grid warp) overrides it.
-
-    Only the SimpleElastix build exposes TransformixImageFilter; the stock simpleitk
-    wheel does not. Nothing but non-rigid registration touches it, and that is off by
-    default (ValisConfig.non_rigid_method == "none"), so a stock build must not take
-    the whole backend down at import time -- skip the patch and let the non-rigid path
-    be the one that complains, if it is ever taken.
     """
     import SimpleITK as sitk
-
-    if not hasattr(sitk, "TransformixImageFilter"):
-        return
 
     _orig_set = sitk.TransformixImageFilter.SetTransformParameterMap
 
@@ -108,26 +99,16 @@ def align_images(
     matcher = feature_matcher.LightGlueMatcher(feature_detector=detector)
     
     max_image_dim_px = 1024
+    elastix_params = _build_elastix_params(max_image_dim_px)
 
-    # 選擇非剛性 warper（見 config.ValisConfig.non_rigid_method）。
-    if config.valis.non_rigid_method == "none":
-        # 跳過非剛性：cls=None 時 VALIS 只做 rigid+affine（registration.py:4750）。
-        # 避免 32GB 機器在 16-gigapixel 影像上跑非剛性 OOM。
-        non_rigid_registrar_cls = None
-        non_rigid_reg_params = {}
-    elif config.valis.non_rigid_method == "elastix":
-        # 原作者 B-spline：需 SimpleITK-SimpleElastix（Windows 難裝，通常在 Linux 跑）。
-        non_rigid_registrar_cls = non_rigid_registrars.SimpleElastixWarper
-        non_rigid_reg_params = {
-            "params": _build_elastix_params(max_image_dim_px),
-            "ammi_weight": 0.5,  # AdvancedMattesMutualInformation 互信息權重
-            "bending_penalty_weight": 0.03,  # 降低平滑懲罰以增加非剛性形變
-            "kp_weight": 0,  # 控制點權重（無控制點時會自動忽略）
-        }
-    else:
-        # VALIS 預設光流法：OpenCV，不需 SimpleElastix，Windows 可用。
-        non_rigid_registrar_cls = non_rigid_registrars.OpticalFlowWarper
-        non_rigid_reg_params = {}
+    non_rigid_reg_params = {
+        # 傳遞給 SimpleElastixWarper 的參數
+        # B-spline 天然無翻折問題，更適合醫學影像配準
+        "params": elastix_params,
+        "ammi_weight": 0.5,  # AdvancedMattesMutualInformation 互信息權重
+        "bending_penalty_weight": 0.03,  # 降低平滑懲罰以增加非剛性形變
+        "kp_weight": 0,  # 控制點權重（無控制點時會自動忽略）
+    }
 
     # 初始化 VALIS 配準器
     # 注意：matcher 內部已經包含 detector，不需要額外傳入 feature_detector_cls
@@ -139,19 +120,13 @@ def align_images(
         reference_img_f=reference_img_f,
         align_to_reference=config.valis.align_to_reference,
         img_list=img_list,
-        compose_non_rigid=non_rigid_registrar_cls is not None,
+        compose_non_rigid=True,
         max_processed_image_dim_px=1024,
         max_image_dim_px=max_image_dim_px,
-        non_rigid_registrar_cls=non_rigid_registrar_cls,
+        non_rigid_registrar_cls=non_rigid_registrars.SimpleElastixWarper,  # B-spline 配準
         non_rigid_reg_params=non_rigid_reg_params,
         matcher=matcher,
     )
-
-    # VALIS bug workaround：關閉非剛性時 non_rigid_reg_kwargs 不會被建立
-    # (registration.py:2151)，但 cleanup() 又無條件重設它 (registration.py:4791)，
-    # 會 AttributeError 讓已完成的配準前功盡棄。預先塞一個空 dict 讓 teardown 過關。
-    if non_rigid_registrar_cls is None and not hasattr(registrar, "non_rigid_reg_kwargs"):
-        registrar.non_rigid_reg_kwargs = {}
 
     # 執行配準
     print("開始執行配準...")

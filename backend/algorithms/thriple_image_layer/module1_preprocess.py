@@ -236,12 +236,11 @@ class CziPreprocessor:
                 traceback.print_exc()
                 raise RuntimeError(f"預處理失敗：組裝 {modality} 失敗: {e}") from e
 
-        # 清理暫存檔。Windows 上 pyvips 對 .v 檔的 memory-map handle 可能尚未釋放，
-        # rmtree 會撞 WinError 32；清理失敗不該讓已完成的前處理整條中止，故設為非致命。
+        # 清理暫存檔
         print("\n清理暫存檔...")
         if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir, ignore_errors=True)
-
+            shutil.rmtree(self.temp_dir)
+        
         print("全部完成!")
 
 
