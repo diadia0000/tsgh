@@ -113,6 +113,11 @@ images. **`hybrid_data_types.py`** — `DetectedDot`, `CellAnalysisResult`, `Cel
   numerator). Phase D stitch was 32.3% of that wall and is now **20.3%** after round 13
   — see `docs/hybrid-pipeline/39-round-12-multiprocess-scaling-ceiling-implementation.md`
   and `docs/hybrid-pipeline/41-round-13-phase-d-pipelined-stitch-implementation.md`.
+  **The 27,565-tile figure itself was measured on an unregistered canvas** — the
+  correct, registered slide is 35,700 tiles / 65.92% background, not 27,565 / 55.8%
+  (`docs/hybrid-pipeline/44-conform-intersection-shift-investigation.md`); on that
+  canvas round 15 measured `workers=1→4` at **2.05x end-to-end**, peak RSS **13.66 GB**
+  (`docs/hybrid-pipeline/46-round-15-eta-estimation-implementation.md` §3.7).
 - Global `cell_id` 1..N is assigned in exactly one place: `_finish_batch()`, in the
   parent, sorting `(abs_y, abs_x, cell_id)`. Workers only return `(abs_x, abs_y, owned)`.
 - **fail-fast at any worker count** — one bad tile aborts the batch (multiprocess kills
