@@ -14,16 +14,21 @@ from fastapi.responses import FileResponse
 from backend.algorithms.hybrid.config import config
 from backend.algorithms.hybrid.hybrid_pipeline import run_batch
 from backend.algorithms.hybrid.m0_slide import PrecutStream
-from backend.api.jobs import submit_job
+from backend.api.jobs import active_job, submit_job
 from backend.io import pyramid
 from backend.schemas.common import JobAccepted
-from backend.schemas.hybrid import HybridResult, HybridTileIn
+from backend.schemas.hybrid import HybridActive, HybridResult, HybridTileIn
 
 router = APIRouter(prefix="/api/hybrid")
 
 # slide_id the annotated overlay is served under, mirroring alignment's
 # `aligned_result`: one global id owned by the most recent run.
 OVERLAY_SLIDE_ID = "hybrid_overlay"
+
+# Every analysis writes the same output_dir, so two at once would interleave
+# their artifacts. One key for the whole endpoint (alignment keys per run_id
+# because it has one directory per run; this pipeline has only the default one).
+_JOB_KEY = "hybrid"
 
 
 @router.get("/result", response_model=HybridResult)
@@ -62,6 +67,17 @@ def hybrid_report_csv() -> FileResponse:
     return FileResponse(report, media_type="text/csv", filename="report.csv")
 
 
+@router.get("/summary.txt")
+def hybrid_summary_txt() -> FileResponse:
+    """The ASCO/CAP summary as a download, alongside /result which inlines the
+    same file for the on-screen report card. A doctor keeping the interpretation
+    for a case needs a file, not a panel they have to keep open."""
+    summary = config.output_dir / "summary.txt"
+    if not summary.is_file():
+        raise HTTPException(status_code=404, detail="no summary.txt -- run the analysis first")
+    return FileResponse(summary, media_type="text/plain; charset=utf-8", filename="summary.txt")
+
+
 @router.post("/tile", response_model=JobAccepted)
 def run_hybrid_tile(body: HybridTileIn, background_tasks: BackgroundTasks) -> JobAccepted:
     # Resolve slide_ids to paths here (guardrail 2); 404 up front on a bad id
@@ -89,4 +105,16 @@ def run_hybrid_tile(body: HybridTileIn, background_tasks: BackgroundTasks) -> Jo
                           tile_stream=stream, workers=1)
         return str(output_dir), stats
 
-    return JobAccepted(job_id=submit_job(background_tasks, _run))
+    # Keyed: a second submission while one is still running returns the running
+    # job's id instead of starting a rival run over the same output_dir.
+    return JobAccepted(job_id=submit_job(background_tasks, _run, key=_JOB_KEY))
+
+
+@router.get("/active", response_model=HybridActive)
+def hybrid_active() -> HybridActive:
+    """The unfinished analysis job, for a page that lost track of it.
+
+    job_id=None means nothing is running -- a normal state, not a 404. What
+    finished already is read back through /result, which reads the artifacts on
+    disk and so survives a backend restart too."""
+    return HybridActive(job_id=active_job(_JOB_KEY))

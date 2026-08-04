@@ -21,6 +21,17 @@ class HybridResult(BaseModel):
     overlay_slide_id: Optional[str] = None   # registered slide_id for the viewer
 
 
+class HybridActive(BaseModel):
+    """The analysis still executing server-side, if any.
+
+    A run outlives the browser tab that started it: the job id lives only in the
+    page's memory, so a reload -- or a crash mid-run -- would otherwise leave a
+    multi-hour job with nothing watching it, and no way back to its result except
+    running it again. The server is the one place that knows."""
+
+    job_id: Optional[str] = None
+
+
 class HybridTileIn(BaseModel):
     # slide_ids (not filesystem paths): the frontend addresses slides by id and
     # the endpoint resolves them under SLIDES_DIR (guardrail 2). output_dir /

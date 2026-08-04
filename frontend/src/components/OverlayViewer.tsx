@@ -26,6 +26,9 @@ export function OverlayViewer() {
   const viewerRef = useRef<OpenSeadragon.Viewer | null>(null)
   const [alpha, setAlpha] = useState<Record<LayerKey, number>>(INITIAL_ALPHA)
   const [error, setError] = useState<string | null>(null)
+  // The panel sits over the top-left corner of the slide; collapsing it is how
+  // you look at what it is covering.
+  const [panelOpen, setPanelOpen] = useState(true)
 
   const slides = useQuery({
     queryKey: ['slides'],
@@ -93,21 +96,84 @@ export function OverlayViewer() {
     if (i >= 0) viewerRef.current?.world.getItemAt(i)?.setOpacity(value)
   }
 
+  // OSD's own navigation buttons are disabled (they need image assets we do not
+  // ship offline), which left the wheel as the only way to zoom and no way at
+  // all to get back once you scrolled past the slide.
+  function zoomBy(factor: number) {
+    const viewer = viewerRef.current
+    if (!viewer) return
+    viewer.viewport.zoomBy(factor)
+    viewer.viewport.applyConstraints()
+  }
+
+  function fitToScreen() {
+    viewerRef.current?.viewport.goHome()
+  }
+
   return (
     // White base: the OSD canvas is transparent, so this shows through wherever a
     // layer's alpha < 1 — i.e. the "白色底圖" under the blended layers.
     <div className="relative h-full w-full bg-white">
       <div ref={containerRef} className="h-full w-full" />
 
+      {/* Always on screen, and deliberately outside the collapsible panel: 回到全圖
+          is what the user reaches for precisely when they are lost, which is the
+          worst moment to also have to find and reopen a panel. */}
       {ready && (
+        <div className="absolute bottom-3 left-3 flex flex-col gap-1">
+          <button
+            type="button"
+            onClick={() => zoomBy(1.5)}
+            aria-label="放大"
+            className="h-8 w-8 rounded-md bg-neutral-950/80 text-lg leading-none text-neutral-200 backdrop-blur hover:bg-neutral-800"
+          >
+            ＋
+          </button>
+          <button
+            type="button"
+            onClick={() => zoomBy(1 / 1.5)}
+            aria-label="縮小"
+            className="h-8 w-8 rounded-md bg-neutral-950/80 text-lg leading-none text-neutral-200 backdrop-blur hover:bg-neutral-800"
+          >
+            －
+          </button>
+          <button
+            type="button"
+            onClick={fitToScreen}
+            className="mt-1 rounded-md bg-neutral-950/80 px-2 py-1.5 text-xs text-neutral-200 backdrop-blur hover:bg-neutral-800"
+          >
+            回到全圖
+          </button>
+        </div>
+      )}
+
+      {ready && !panelOpen && (
+        <button
+          type="button"
+          onClick={() => setPanelOpen(true)}
+          className="absolute left-3 top-3 rounded-lg bg-neutral-950/80 px-3 py-1.5 text-xs text-neutral-200 backdrop-blur hover:bg-neutral-800"
+        >
+          圖層
+        </button>
+      )}
+
+      {ready && panelOpen && (
         <div className="absolute left-3 top-3 flex w-64 flex-col gap-3 rounded-lg bg-neutral-950/80 p-3 text-xs text-neutral-200 backdrop-blur">
-          <span className="font-semibold uppercase tracking-wide text-neutral-400">
-            圖層透明度
+          <span className="flex items-center justify-between">
+            <span className="font-semibold text-neutral-400">圖層透明度</span>
+            <button
+              type="button"
+              onClick={() => setPanelOpen(false)}
+              aria-label="收合圖層面板"
+              className="-my-1 rounded px-1.5 py-0.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+            >
+              ✕
+            </button>
           </span>
           <span className="-mt-2 break-all text-[11px] text-neutral-500">
             來源工作：
             <span className="font-mono text-neutral-300">
-              {published.data?.run_id ?? '未知（後端重啟前的結果）'}
+              {published.data?.run_id ?? '未知（系統重新啟動前的結果）'}
             </span>
           </span>
           {LAYERS.map((l) => {
@@ -148,7 +214,7 @@ export function OverlayViewer() {
       {slides.isError && (
         <div className="absolute inset-0 flex items-center justify-center p-6">
           <p className="max-w-md rounded-lg bg-red-950/80 px-4 py-3 text-center text-sm text-red-200">
-            無法取得切片清單(後端未啟動?)
+            無法取得切片清單，請確認系統是否已啟動
           </p>
         </div>
       )}

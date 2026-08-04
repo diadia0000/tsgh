@@ -30,7 +30,11 @@ export function useJob(jobId: string | null) {
       const { data, error } = await api.GET('/api/jobs/{job_id}', {
         params: { path: { job_id: jobId! } },
       })
-      if (error) throw new Error('job lookup failed')
+      // A dead backend yields neither: the fetch fails and openapi-fetch has no
+      // response to report. Returning undefined here makes react-query raise
+      // "data is undefined" with its query key attached, which is what the user
+      // ends up reading -- so name the actual situation instead.
+      if (error || !data) throw new Error('無法連線到系統，請確認服務是否仍在執行')
       return data
     },
   })

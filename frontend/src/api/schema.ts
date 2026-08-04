@@ -237,6 +237,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/hybrid/summary.txt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Hybrid Summary Txt
+         * @description The ASCO/CAP summary as a download, alongside /result which inlines the
+         *     same file for the on-screen report card. A doctor keeping the interpretation
+         *     for a case needs a file, not a panel they have to keep open.
+         */
+        get: operations["hybrid_summary_txt_api_hybrid_summary_txt_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/hybrid/tile": {
         parameters: {
             query?: never;
@@ -248,6 +270,30 @@ export interface paths {
         put?: never;
         /** Run Hybrid Tile */
         post: operations["run_hybrid_tile_api_hybrid_tile_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hybrid/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Hybrid Active
+         * @description The unfinished analysis job, for a page that lost track of it.
+         *
+         *     job_id=None means nothing is running -- a normal state, not a 404. What
+         *     finished already is read back through /result, which reads the artifacts on
+         *     disk and so survives a backend restart too.
+         */
+        get: operations["hybrid_active_api_hybrid_active_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -362,6 +408,19 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * HybridActive
+         * @description The analysis still executing server-side, if any.
+         *
+         *     A run outlives the browser tab that started it: the job id lives only in the
+         *     page's memory, so a reload -- or a crash mid-run -- would otherwise leave a
+         *     multi-hour job with nothing watching it, and no way back to its result except
+         *     running it again. The server is the one place that knows.
+         */
+        HybridActive: {
+            /** Job Id */
+            job_id?: string | null;
         };
         /**
          * HybridResult
@@ -961,6 +1020,26 @@ export interface operations {
             };
         };
     };
+    hybrid_summary_txt_api_hybrid_summary_txt_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     run_hybrid_tile_api_hybrid_tile_post: {
         parameters: {
             query?: never;
@@ -990,6 +1069,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    hybrid_active_api_hybrid_active_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HybridActive"];
                 };
             };
         };
