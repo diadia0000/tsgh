@@ -14,7 +14,7 @@ dependencies = [
     "albumentations",
     # valis HEAD also raised its floor to opencv >=4.10.
     "opencv-contrib-python-headless>=4.10,<5",
-    "scikit-image",
+    "scikit-image<0.26",
     "scikit-learn",
     "scipy",
     "pandas>=2",
