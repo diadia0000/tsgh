@@ -112,33 +112,26 @@ def evaluate_roi(config: RegistrationConfig) -> None:
     print(f"已儲存: Merged_ROI.png (R=Her2, G=HE, B=DISH)")
     
     # 計算疊合指標
-    dish_gray = color.rgb2gray(dish_roi)
-    he_gray = color.rgb2gray(he_roi)
-    her2_gray = color.rgb2gray(her2_roi)
-    
-    ncc_dish_he = np.corrcoef(he_gray.ravel(), dish_gray.ravel())[0, 1]
-    ncc_her2_he = np.corrcoef(he_gray.ravel(), her2_gray.ravel())[0, 1]
-    
+    grays = {
+        'DISH': color.rgb2gray(dish_roi).ravel(),
+        'HE': color.rgb2gray(he_roi).ravel(),
+        'Her2': color.rgb2gray(her2_roi).ravel(),
+    }
     # 將灰階值轉為離散bins計算MI
-    dish_bins = (dish_gray * 255).astype(int)
-    he_bins = (he_gray * 255).astype(int)
-    her2_bins = (her2_gray * 255).astype(int)
-    
-    mi_dish_he = mutual_info_score(he_bins.ravel(), dish_bins.ravel())
-    mi_her2_he = mutual_info_score(he_bins.ravel(), her2_bins.ravel())
+    bins = {k: (v * 255).astype(int) for k, v in grays.items()}
 
     # MI 未正規化 (nats)，上限隨影像熵浮動，不同 ROI/跑次之間不能直接比大小。
     # NMI 落在 [0, 1]，才是可以拿來比較的那個。
-    nmi_dish_he = normalized_mutual_info_score(he_bins.ravel(), dish_bins.ravel())
-    nmi_her2_he = normalized_mutual_info_score(he_bins.ravel(), her2_bins.ravel())
-
-    # 輸出指標報告
-    df = pd.DataFrame({
-        'Comparison': ['DISH vs HE', 'Her2 vs HE'],
-        'NCC_Score': [ncc_dish_he, ncc_her2_he],
-        'MI_Score': [mi_dish_he, mi_her2_he],
-        'NMI_Score': [nmi_dish_he, nmi_her2_he]
-    })
+    # DISH vs Her2 不經過 HE，直接看兩張染色之間對得準不準
+    df = pd.DataFrame([
+        {
+            'Comparison': f'{a} vs {b}',
+            'NCC_Score': np.corrcoef(grays[a], grays[b])[0, 1],
+            'MI_Score': mutual_info_score(bins[a], bins[b]),
+            'NMI_Score': normalized_mutual_info_score(bins[a], bins[b]),
+        }
+        for a, b in [('DISH', 'HE'), ('Her2', 'HE'), ('DISH', 'Her2')]
+    ])
 
     csv_path = output_dir / "Metrics.csv"
     df.to_csv(csv_path, index=False)
