@@ -217,7 +217,7 @@ class Config:
     # 重疊去重門檻：兩 instance 交集 / min(面積) ≥ 此值即視為同一顆（保留較大者）。
     window_dedup_iomin: float = 0.5
     # 在 overlay_slide 的 tile 接縫（core-crop 邊界）畫藍色虛線，作為 tile 邊界視覺參考。
-    draw_window_grid: bool = True
+    draw_window_grid: bool = False
 
     # ========== Phase D：slide 級 overlay 縫合的編碼器 ==========
     # `"tifffile"`（**預設，round 13 出貨**）= candidate B：逐 band 從磁碟串流讀（讀在

@@ -9,6 +9,7 @@ Available:
   TileGeometry                  → m0_module.m0_stitch
   compute_tile_geometry         → m0_module.m0_stitch
   core_crop_bounds              → m0_module.m0_stitch
+  dedup_cross_tile_duplicates   → m0_module.m0_stitch
   _STITCH_SCRATCH               → m0_module.m0_stitch
   _stitch_overlay_slide         → m0_module.m0_stitch
   _frozen_gc_generation         → m0_module.m0_tile_runner
@@ -33,6 +34,7 @@ try:
         TileGeometry,
         compute_tile_geometry,
         core_crop_bounds,
+        dedup_cross_tile_duplicates,
         _stitch_overlay_slide,
     )
     from .m0_module.m0_tile_runner import (
@@ -62,6 +64,7 @@ except ImportError:
         TileGeometry,
         compute_tile_geometry,
         core_crop_bounds,
+        dedup_cross_tile_duplicates,
         _stitch_overlay_slide,
     )
     from m0_module.m0_tile_runner import (
@@ -90,6 +93,7 @@ __all__ = [
     "TileGeometry",
     "compute_tile_geometry",
     "core_crop_bounds",
+    "dedup_cross_tile_duplicates",
     "_STITCH_SCRATCH",
     "_stitch_overlay_slide",
     "_frozen_gc_generation",
