@@ -143,3 +143,26 @@ def test_csv_exports_is_her2_positive_and_cell_type_columns(tmp_path):
     header = text.splitlines()[0]
     assert "is_her2_positive" in header and "cell_type" in header
     assert "classic_positive" in text and "non_classic_positive" in text
+
+
+def test_minority_population_below_5pct_does_not_flip_the_type():
+    """5% 門檻：雜訊等級的少數族群不得把 Type 1 拉成 Type 5。"""
+    cells = [_typed_cell(i, True, True) for i in range(100)]          # 100 顆典型陽性
+    cells.append(_typed_cell(200, False, True))                       # 1 顆非典型 (~1%)
+    cells.append(_typed_cell(201, False, False))                      # 1 顆陰性 (~1%)
+    ith = Her2IthSummary.from_results(cells)
+    assert ith.n_non_classic_positive == 1 and ith.n_negative == 1    # 有計數
+    assert ith.type_verdict() == "Type 1"                             # 但不算存在
+
+    # 拉到 5% 以上就該算存在：100 典型 + 6 非典型 + 6 陰性 → 各 ~5.4%
+    cells += [_typed_cell(300 + i, False, True) for i in range(5)]
+    cells += [_typed_cell(400 + i, False, False) for i in range(5)]
+    assert Her2IthSummary.from_results(cells).type_verdict() == "Type 5"
+
+
+def test_protein_positive_not_amplified_does_not_dilute_the_5pct_denominator():
+    """分母只含論文三桶：第四桶再大也不該把三桶稀釋到門檻以下。"""
+    cells = [_typed_cell(i, True, False) for i in range(1000)]        # 1000 顆蛋白陽性未擴增
+    cells += [_typed_cell(2000 + i, True, True) for i in range(10)]   # 10 顆典型陽性
+    cells += [_typed_cell(3000 + i, False, False) for i in range(10)] # 10 顆陰性
+    assert Her2IthSummary.from_results(cells).type_verdict() == "Type 3"

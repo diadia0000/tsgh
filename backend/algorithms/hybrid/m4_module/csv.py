@@ -132,6 +132,12 @@ class DotStatsSummary:
         )
 
 
+# 分型的「存在」門檻：低於這個佔比的族群視為偵測雜訊，不算存在。
+# 論文自己沒給分型門檻，但引用了 ASCO/CAP 對異質性的定義（5-50% 的細胞），
+# 取其下界 5%。全片幾萬顆細胞時，只看有無會讓三桶必定非零、永遠判成 Type 5。
+_ITH_MIN_FRACTION = 0.05
+
+
 @dataclass
 class Her2IthSummary:
     """細胞異質性 Type 1-5 分型摘要（Hou et al. 2017, Breast Cancer Res Treat 166:447-457）。
@@ -177,15 +183,22 @@ class Her2IthSummary:
         return s
 
     def type_verdict(self) -> str:
-        """依「哪幾類存在」查表定型（論文沒有比例門檻，只看有無）。
+        """依「哪幾類佔比 >= _ITH_MIN_FRACTION」查表定型。
+
+        分母只含論文定義的三桶；蛋白陽性未擴增不屬於任何 Type，不摻進分母，
+        否則它一大就會把三桶全稀釋到門檻以下。
 
         論文 64 例皆為 IHC 3+ 選材，必有典型陽性，故沒有涵蓋「無典型陽性」的
         組合（全空 / 只有陰性 / 非典型+陰性）；那三種一律回 "Indeterminate"，
         不可默默落到某個論文有定義的 Type。
         """
-        has_classic = self.n_classic_positive > 0
-        has_non_classic = self.n_non_classic_positive > 0
-        has_negative = self.n_negative > 0
+        total = self.n_classic_positive + self.n_non_classic_positive + self.n_negative
+        if total == 0:
+            return "Indeterminate"
+
+        has_classic = self.n_classic_positive / total >= _ITH_MIN_FRACTION
+        has_non_classic = self.n_non_classic_positive / total >= _ITH_MIN_FRACTION
+        has_negative = self.n_negative / total >= _ITH_MIN_FRACTION
 
         if has_classic and not has_non_classic and not has_negative:
             return "Type 1"
@@ -240,17 +253,6 @@ _VERDICT_GLOSS = {
 }
 
 
-# 分型結論的白話註解（同 _VERDICT_GLOSS 的用意：不看術語也能讀懂）。
-_TYPE_GLOSS = {
-    "Type 1": "整片只有一種癌細胞：蛋白多、基因也變多",
-    "Type 2": "整片只有基因變多、但蛋白沒表現出來的癌細胞",
-    "Type 3": "癌細胞和正常細胞混在一起",
-    "Type 4": "兩種癌細胞混在一起，一種有表現蛋白、一種沒有",
-    "Type 5": "三種細胞都有，最混雜",
-    "Indeterminate": "找不到典型癌細胞，這套分型不適用",
-}
-
-
 def _her2ith_lines(ith: Her2IthSummary) -> List[str]:
     """細胞異質性分型區塊；分母只含蛋白陽性細胞（典型陽性 + 蛋白陽性未擴增）。"""
     verdict = ith.type_verdict()
@@ -268,27 +270,28 @@ def _her2ith_lines(ith: Her2IthSummary) -> List[str]:
     else:
         not_amp_str = "N/A"
 
+    # 三桶佔比就是 type_verdict() 的判定依據，一併印出來才看得出為什麼是這個 Type。
+    typed_total = ith.n_classic_positive + ith.n_non_classic_positive + ith.n_negative
+
+    def _n_pct(n: int) -> str:
+        return str(n) if typed_total == 0 else f"{n}  ({n / typed_total * 100:.1f}%)"
+
     kv = [
-        ("分型結果", f"{verdict}（{_TYPE_GLOSS.get(verdict, '')}）"),
-        ("典型陽性(蛋白多，基因也變多)", str(ith.n_classic_positive)),
-        ("非典型陽性(基因變多，但蛋白沒表現)", str(ith.n_non_classic_positive)),
-        ("陰性(蛋白和基因都正常)", str(ith.n_negative)),
-        ("排除細胞(無法判讀，不進分型)", str(ith.n_excluded)),
-    ]
-    # 排除原因拆分：全 0 時不佔版面。
-    if ith.n_excluded > 0:
-        kv += [
-            ("  - 紅點<2(訊號太弱，算不出比值)", str(ith.n_excluded_low_cep17)),
-            ("  - 沒對到細胞核(兩張圖對位沒抓到)", str(ith.n_excluded_drop_out)),
-            ("  - 壓在組織邊界(判讀不可靠)", str(ith.n_excluded_out_of_bounds)),
-        ]
-    kv += [
-        ("蛋白陽性但基因未擴增比例(蛋白多，但基因沒變多)", not_amp_str),
+        ("分型結果", verdict),
+        ("典型陽性(咖啡色 + 黑/紅>=2)", _n_pct(ith.n_classic_positive)),
+        ("非典型陽性(沒咖啡色 + 黑/紅>=2)", _n_pct(ith.n_non_classic_positive)),
+        ("陰性(沒咖啡色 + 黑/紅<2)", _n_pct(ith.n_negative)),
+        ("排除細胞", str(ith.n_excluded)),
+        ("蛋白陽性但基因未擴增比例(咖啡色 + 黑/紅<2)", not_amp_str),
     ]
     kv_w = max(_display_width(k) for k, _ in kv) + 2
 
     bar = "=" * 46
-    lines = [bar, "  細胞異質性分型 Type 1-5（這片混了幾種細胞）", bar]
+    lines = [
+        bar,
+        f"  細胞異質性分型 Type 1-5（門檻 {_ITH_MIN_FRACTION:.0%}）",
+        bar,
+    ]
     lines += [f"  {_pad(k, kv_w)}{v}" for k, v in kv]
     lines.append("")
     return lines
