@@ -25,6 +25,7 @@ skills-lock.json
 .uv-cache/
 .csv
 .log
+.run-ui-backend.log
 scripts/
 docs/*
 !docs/UI/

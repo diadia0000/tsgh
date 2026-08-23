@@ -9,6 +9,24 @@ Automated HER2/CEP17 amplification analysis for histopathology. Precuts an IHC (
 
 ## Quick Start
 
+### Open the UI (Linux / WSL2)
+
+```bash
+./run-ui.sh
+```
+
+One command, first run included: it installs dependencies, creates `config.py`
+from the example if missing, points `TSGH_STORAGE_DIR` / `TSGH_SLIDES_DIR` at
+`~/tsgh_data/` (outside the checkout, deliberately), starts backend + frontend,
+waits for the backend to finish loading, and opens <http://localhost:5173>.
+Ctrl-C stops both. `--skip-deps` skips installation on later runs;
+`BACKEND_PORT` / `FRONTEND_PORT` override the ports.
+
+Analysis needs an NVIDIA GPU and the model files named in `config.py`; without
+them the UI still opens and slides are still viewable.
+
+### CLI pipeline
+
 ```bash
 # uv manages its own Python 3.11 venv from pyproject.toml (no requirements.txt)
 uv sync
