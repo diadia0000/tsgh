@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { OverlayViewer } from './components/OverlayViewer'
 import { PipelinePanel } from './components/PipelinePanel'
-import { HybridPanel } from './components/HybridPanel'
+import { HybridPanel, TILE_PX } from './components/HybridPanel'
 import { SlideViewer, type ImageRect } from './components/SlideViewer'
 
 function App() {
@@ -66,6 +66,10 @@ function App() {
               onViewportChange={setViewRect}
               roi={roi}
               onRoiChange={setRoi}
+              // One tile is the smallest region the analysis can run on, so the
+              // resize handle stops there instead of producing a box the panel
+              // would then have to reject.
+              minRoiPx={TILE_PX}
             />
             <button
               type="button"

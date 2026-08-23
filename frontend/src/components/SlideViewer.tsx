@@ -22,9 +22,9 @@ const SLIDE_NAMES: Record<string, { name: string; detail?: string }> = {
   hybrid_overlay: { name: '細胞分析結果', detail: '含判讀標註' },
 }
 
-/** Smallest box the drag handles will produce. Not the pipeline's minimum --
- *  HybridPanel owns that rule (it knows the tile size) and shows the warning;
- *  this only stops a drag past the anchor from inverting the rectangle. */
+/** Fallback for `minRoiPx`: just enough to stop a drag past the anchor from
+ *  inverting the rectangle. The real minimum is the pipeline's, and HybridPanel
+ *  owns that rule (it knows the tile size) -- it passes it in. */
 const MIN_DRAG_PX = 1
 
 export function SlideViewer({
@@ -32,6 +32,7 @@ export function SlideViewer({
   onViewportChange,
   roi,
   onRoiChange,
+  minRoiPx = MIN_DRAG_PX,
 }: {
   slideId: string
   /** Current viewport in *image* pixels, reported after every pan/zoom. This is
@@ -42,6 +43,8 @@ export function SlideViewer({
   /** Called while the user drags the box or its resize handle. Omit to render
    *  the box read-only. */
   onRoiChange?: (rect: ImageRect) => void
+  /** Smallest side the resize handle will produce, in image pixels. */
+  minRoiPx?: number
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
@@ -58,6 +61,8 @@ export function SlideViewer({
   roiRef.current = roi
   const onRoiChangeRef = useRef(onRoiChange)
   onRoiChangeRef.current = onRoiChange
+  const minRoiRef = useRef(minRoiPx)
+  minRoiRef.current = minRoiPx
 
   useEffect(() => {
     if (!containerRef.current || !slideId) return
@@ -130,7 +135,7 @@ export function SlideViewer({
       )
 
     if (!boxRef.current) {
-      boxRef.current = buildBox(viewer, roiRef, onRoiChangeRef)
+      boxRef.current = buildBox(viewer, roiRef, onRoiChangeRef, minRoiRef)
       viewer.addOverlay({ element: boxRef.current, location: place() })
     } else {
       viewer.updateOverlay(boxRef.current, place())
@@ -189,6 +194,7 @@ function buildBox(
   viewer: OpenSeadragon.Viewer,
   roiRef: { current: ImageRect | null | undefined },
   onChangeRef: { current: ((rect: ImageRect) => void) | undefined },
+  minRef: { current: number },
 ): HTMLDivElement {
   const el = document.createElement('div')
   Object.assign(el.style, {
@@ -271,8 +277,8 @@ function buildBox(
           }
         : {
             ...from,
-            w: Math.max(MIN_DRAG_PX, Math.min(Math.round(from.w + dx), size.x - from.x)),
-            h: Math.max(MIN_DRAG_PX, Math.min(Math.round(from.h + dy), size.y - from.y)),
+            w: Math.max(minRef.current, Math.min(Math.round(from.w + dx), size.x - from.x)),
+            h: Math.max(minRef.current, Math.min(Math.round(from.h + dy), size.y - from.y)),
           }
     onChangeRef.current?.(next)
     e.preventDefault()

@@ -6,17 +6,29 @@ dataflow contract (docs/UI/05-dataflow-api-contract.md) calls for
 BackgroundTasks + polling, not a hand-rolled WebSocket.
 """
 import uuid
+from contextvars import ContextVar
 from typing import Callable, Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
-from backend.schemas.common import JobStatus
+from backend.schemas.common import JobProgress, JobStatus
 
 router = APIRouter()
 
 _UNFINISHED = ("pending", "running")
 
 _jobs: Dict[str, dict] = {}
+
+# The job whose `run` is executing on this thread. Set by `_execute` so code
+# deep inside a pipeline call can report progress without the job id being
+# threaded down through every function it passes through -- which would mean
+# editing the algorithm layer, and progress reporting is not worth that.
+_current_job: ContextVar[Optional[str]] = ContextVar("current_job", default=None)
+
+
+def current_job_id() -> Optional[str]:
+    """The job running on this thread, or None outside a background job."""
+    return _current_job.get()
 
 
 def active_job(key: str) -> Optional[str]:
@@ -25,6 +37,19 @@ def active_job(key: str) -> Optional[str]:
         (jid for jid, j in _jobs.items() if j["key"] == key and j["status"] in _UNFINISHED),
         None,
     )
+
+
+def set_progress(job_id: str, phase: str, done: int, total: int, unit_label: str) -> None:
+    """Publish how far `job_id` has got, for /api/jobs/{id} to hand back.
+
+    Optional by design: a job that never calls this reports progress=None and
+    its panel falls back to estimating. Silently ignores an unknown job_id --
+    a progress update is never worth failing a running pipeline over.
+    """
+    job = _jobs.get(job_id)
+    if job is None:
+        return
+    job["progress"] = JobProgress(phase=phase, done=done, total=total, unit_label=unit_label)
 
 
 def submit_job(
@@ -55,10 +80,12 @@ def submit_job(
         "metadata": None,
         "error": None,
         "key": key,
+        "progress": None,
     }
 
     def _execute() -> None:
         _jobs[job_id]["status"] = "running"
+        token = _current_job.set(job_id)
         try:
             result_path, metadata = run()
             _jobs[job_id]["status"] = "done"
@@ -67,6 +94,8 @@ def submit_job(
         except Exception as e:
             _jobs[job_id]["status"] = "error"
             _jobs[job_id]["error"] = str(e)
+        finally:
+            _current_job.reset(token)
 
     background_tasks.add_task(_execute)
     return job_id

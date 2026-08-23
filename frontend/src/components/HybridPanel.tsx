@@ -5,6 +5,7 @@ import { useJob } from '../api/jobs'
 import type { components } from '../api/schema'
 import { CollapsibleSection } from './CollapsibleSection'
 import { parseSummary } from '../lib/summaryReport'
+import { computeHybridProgress, recordStitchRate } from '../lib/hybridProgress'
 import type { ImageRect } from './SlideViewer'
 
 type HybridResult = components['schemas']['HybridResult']
@@ -27,31 +28,24 @@ const STAGES = [
 const ALIGNED_IHC = 'aligned_her2'
 const ALIGNED_DISH = 'aligned_dish'
 
-// Mirrors config.default_tile_size / window_overlap_px
-// (backend/algorithms/hybrid/config.py). Only used for the "how big is this
-// job" estimate shown before submitting -- the backend computes the real grid.
-const TILE_PX = 1024
-const OVERLAP_PX = 256
-
-/** Tiles the backend's grid would produce for a w×h region (one axis at a time:
- *  stride = tile - overlap, with the last window snapped back to the edge). */
-function estimateTiles(w: number, h: number) {
-  const along = (extent: number) =>
-    extent <= TILE_PX ? 1 : Math.ceil((extent - TILE_PX) / (TILE_PX - OVERLAP_PX)) + 1
-  return along(w) * along(h)
-}
+// Mirrors config.default_tile_size (backend/algorithms/hybrid/config.py). One
+// tile is also the smallest region the pipeline can process, so it doubles as
+// the ROI's minimum side: PrecutStream rejects anything narrower.
+export const TILE_PX = 1024
 
 /** Where a fresh selection box starts: centred on what the user is looking at,
  *  inset to 80% of it. Inset rather than the full viewport so the frame and its
  *  resize handle are both on screen and clear of OSD's bottom-right navigator.
- *  Derived from the (already image-clamped) view rect, so it cannot start off
- *  the slide. */
+ *  Never smaller than one tile, so a box seeded while zoomed deep into the
+ *  tissue is still a runnable region. Derived from the (already image-clamped)
+ *  view rect and kept inside its right/bottom edge, so it cannot start off the
+ *  slide even when the minimum makes it wider than the viewport. */
 function boxFromView(view: ImageRect): ImageRect {
-  const w = Math.max(1, Math.round(view.w * 0.8))
-  const h = Math.max(1, Math.round(view.h * 0.8))
+  const w = Math.max(TILE_PX, Math.round(view.w * 0.8))
+  const h = Math.max(TILE_PX, Math.round(view.h * 0.8))
   return {
-    x: Math.round(view.x + (view.w - w) / 2),
-    y: Math.round(view.y + (view.h - h) / 2),
+    x: Math.max(0, Math.min(Math.round(view.x + (view.w - w) / 2), view.x + view.w - w)),
+    y: Math.max(0, Math.min(Math.round(view.y + (view.h - h) / 2), view.y + view.h - h)),
     w,
     h,
   }
@@ -171,6 +165,13 @@ export function HybridPanel({
   // adopted again on the next refetch.
   const adoptedJob = useRef(false)
   const job = useJob(jobId)
+  // When the tile counter ran out, i.e. when the uncounted tail began. Held as
+  // state (not a ref) because the bar has to re-render as it creeps.
+  const [tailStartedAt, setTailStartedAt] = useState<number | null>(null)
+  const [tailElapsed, setTailElapsed] = useState<number | null>(null)
+  // Tile count of the run being timed, so the finished run's stitch duration
+  // can be stored per tile rather than as a figure only that ROI size explains.
+  const tailTotal = useRef<number | null>(null)
 
   const slides = useQuery({
     queryKey: ['slides'],
@@ -210,6 +211,9 @@ export function HybridPanel({
       const now = Date.now()
       setStartedAt(now)
       setElapsed(0)
+      setTailStartedAt(null)
+      setTailElapsed(null)
+      tailTotal.current = null
       writeRunClock(id, now)
     },
     onError: (e) => setSubmitError(e instanceof Error ? e.message : '送出分析失敗'),
@@ -263,16 +267,48 @@ export function HybridPanel({
     return () => clearInterval(t)
   }, [startedAt, running])
 
+  // The pipeline counts tiles and nothing else; once that counter is exhausted
+  // the run is in its uncounted tail (last tile, global merge, overlay stitch).
+  // Latch the moment it happens -- it is the only timestamp the tail's estimate
+  // can be built from, and the counter stops changing after it.
+  const progressCounts = job.data?.progress ?? null
+  useEffect(() => {
+    if (!running || !progressCounts || progressCounts.total <= 0) return
+    if (progressCounts.done < progressCounts.total) return
+    tailTotal.current = progressCounts.total
+    setTailStartedAt((prev) => prev ?? Date.now())
+  }, [running, progressCounts])
+
+  useEffect(() => {
+    if (tailStartedAt === null || !running) return
+    const t = setInterval(() => setTailElapsed((Date.now() - tailStartedAt) / 1000), 250)
+    return () => clearInterval(t)
+  }, [tailStartedAt, running])
+
   // A finished run wrote three new files; pull the report and hand the overlay
   // to the viewer. Guarded by handledJobs so a re-render cannot re-fire it.
+  // Also the only point at which the tail's real duration is known, which is
+  // what lets the next run show an ETA for it.
   useEffect(() => {
     if (status !== 'done' || !jobId || handledJobs.current.has(jobId)) return
     handledJobs.current.add(jobId)
+    if (tailStartedAt !== null && tailTotal.current) {
+      recordStitchRate((Date.now() - tailStartedAt) / 1000, tailTotal.current)
+    }
     queryClient.invalidateQueries({ queryKey: ['slides'] })
     result.refetch().then(({ data }) => {
       if (data?.overlay_slide_id) onViewSlide?.(data.overlay_slide_id)
     })
-  }, [status, jobId, queryClient, result, onViewSlide])
+  }, [status, jobId, tailStartedAt, queryClient, result, onViewSlide])
+
+  const progress = computeHybridProgress({
+    progress: progressCounts,
+    elapsed,
+    // tailElapsed only starts ticking on the next interval, so read the latch
+    // itself for "are we in the tail" and treat the first frame as zero.
+    tailElapsed: tailStartedAt === null ? null : (tailElapsed ?? 0),
+    done: status === 'done',
+  })
 
   const report = parseSummary(result.data?.summary)
   const options = slides.data ?? []
@@ -360,8 +396,8 @@ export function HybridPanel({
         <div className="mb-3 rounded-md border border-neutral-800 p-2">
           <div className="mb-1 flex items-center justify-between">
             <span className="text-xs font-medium text-neutral-400">分析範圍</span>
-            <span className="text-xs text-neutral-500">
-              {roi ? `約 ${estimateTiles(roi.w, roi.h)} 個影像區塊` : '整張切片'}
+            <span className="font-mono text-xs text-neutral-500">
+              {roi ? `${roi.w} × ${roi.h} px` : '整張切片'}
             </span>
           </div>
 
@@ -409,8 +445,17 @@ export function HybridPanel({
                     type="number"
                     value={roi[k]}
                     disabled={busy}
+                    min={k === 'w' || k === 'h' ? TILE_PX : 0}
                     onChange={(e) =>
                       setRoi({ ...roi, [k]: Math.max(0, Number(e.target.value) || 0) })
+                    }
+                    // Snapped up on blur rather than on every keystroke: clamping
+                    // while typing would rewrite "2" into the minimum before the
+                    // rest of "2048" is entered.
+                    onBlur={() =>
+                      (k === 'w' || k === 'h') &&
+                      roi[k] < TILE_PX &&
+                      setRoi({ ...roi, [k]: TILE_PX })
                     }
                     className="w-full rounded border border-neutral-700 bg-neutral-900 px-1 py-0.5 font-mono text-[11px] text-neutral-200 disabled:opacity-40"
                   />
@@ -455,9 +500,35 @@ export function HybridPanel({
           {running && (
             <>
               <p className="mt-2 text-xs text-violet-300">分析進行中，可以離開或關閉頁面，回來後會自動接續</p>
-              <div className="mt-2 h-1 overflow-hidden rounded-full bg-neutral-800">
-                <div className="animate-indeterminate h-full w-1/3 rounded-full bg-violet-500" />
-              </div>
+              <p className="mt-2 text-xs text-neutral-400">{progress.caption}</p>
+              {/* No counter at all -- an older backend, or the pipeline stopped
+                  announcing tiles. Keep the old indeterminate bar rather than
+                  show a percentage with nothing behind it. */}
+              {progressCounts === null ? (
+                <div className="mt-2 h-1 overflow-hidden rounded-full bg-neutral-800">
+                  <div className="animate-indeterminate h-full w-1/3 rounded-full bg-violet-500" />
+                </div>
+              ) : (
+                <>
+                  <div className="mt-2 flex items-baseline justify-between text-xs">
+                    <span className="font-mono text-neutral-300">{progress.percent.toFixed(0)}%</span>
+                    {/* Absent until something backs it: on the first run of a
+                        machine the tail has no measured rate, and an ETA with
+                        nothing behind it is a guess dressed as a number. */}
+                    <span className="text-neutral-500">
+                      {progress.eta !== null
+                        ? `預估剩餘 ${progress.eta}${progress.estimated ? '（估計）' : ''}`
+                        : '尚無時間可估'}
+                    </span>
+                  </div>
+                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-neutral-800">
+                    <div
+                      className="h-full rounded-full bg-violet-500 transition-[width] duration-500"
+                      style={{ width: `${Math.max(progress.percent, 2)}%` }}
+                    />
+                  </div>
+                </>
+              )}
             </>
           )}
           {job.data?.error && (

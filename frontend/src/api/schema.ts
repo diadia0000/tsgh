@@ -466,6 +466,28 @@ export interface components {
             /** Job Id */
             job_id: string;
         };
+        /**
+         * JobProgress
+         * @description How far a long job has got, when the job knows. Absent (None on
+         *     JobStatus) whenever nothing is publishing it -- the alignment pipeline
+         *     reports only step transitions, and its panel estimates from those.
+         *
+         *     `done`/`total` count the units named by `unit_label`; `phase` says which
+         *     stretch of the run is executing, because a pipeline's last phase can be
+         *     long and have no counter of its own. A client must treat done == total as
+         *     "this phase's counter is exhausted", not as "the job is finished" -- only
+         *     status == "done" means that.
+         */
+        JobProgress: {
+            /** Phase */
+            phase: string;
+            /** Done */
+            done: number;
+            /** Total */
+            total: number;
+            /** Unit Label */
+            unit_label: string;
+        };
         /** JobStatus */
         JobStatus: {
             /** Job Id */
@@ -482,6 +504,7 @@ export interface components {
             error?: string | null;
             /** Key */
             key?: string | null;
+            progress?: components["schemas"]["JobProgress"] | null;
         };
         /** ModalityConfigIn */
         ModalityConfigIn: {

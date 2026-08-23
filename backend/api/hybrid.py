@@ -14,7 +14,8 @@ from fastapi.responses import FileResponse
 from backend.algorithms.hybrid.config import config
 from backend.algorithms.hybrid.hybrid_pipeline import run_batch
 from backend.algorithms.hybrid.m0_slide import PrecutStream
-from backend.api.jobs import active_job, submit_job
+from backend.api import hybrid_progress
+from backend.api.jobs import active_job, current_job_id, set_progress, submit_job
 from backend.io import pyramid
 from backend.schemas.common import JobAccepted
 from backend.schemas.hybrid import HybridActive, HybridResult, HybridTileIn
@@ -29,6 +30,10 @@ OVERLAY_SLIDE_ID = "hybrid_overlay"
 # their artifacts. One key for the whole endpoint (alignment keys per run_id
 # because it has one directory per run; this pipeline has only the default one).
 _JOB_KEY = "hybrid"
+
+# Republish the pipeline's per-tile log line as job progress (see
+# hybrid_progress). Installed at import, so it is attached before any request.
+hybrid_progress.install()
 
 
 @router.get("/result", response_model=HybridResult)
@@ -101,6 +106,13 @@ def run_hybrid_tile(body: HybridTileIn, background_tasks: BackgroundTasks) -> Jo
             overlap=config.window_overlap_px,
             region=body.region(),   # None = whole slide
         )
+        # The grid is known as soon as the stream exists (it is derived from the
+        # file headers, no pixels decoded), so the panel gets a denominator
+        # immediately rather than an empty bar until the first tile finishes.
+        job_id = current_job_id()
+        if job_id is not None:
+            set_progress(job_id, hybrid_progress.PHASE_ANALYZE, 0,
+                         len(stream.positions), hybrid_progress.UNIT_TILE)
         stats = run_batch(ihc_out, dish_out, output_dir, merge_dir=merge_dir,
                           tile_stream=stream, workers=1)
         return str(output_dir), stats
