@@ -5,10 +5,11 @@ This project backend algorithem is base on Linux, if you're on Windows, use WSL2
 
 ## project rules
 
-1. Before editing any file, read it first. Before modifying a function, use codegraph for all callers. Research before you edit.
-2. @rules/codegraph-first.md
-3. @rules/karpathy_rule.md
-4. @rules/no-regression.md ← **不得破壞既有功能。這條優先於任何「順手改好」的衝動。**
+1. if you need to write,edit,check any code, read this rule first rules/context7.md
+2. if you are working on frontend, read this rules first rules/frontend-backend-boundary.md
+3. @rules/codegraph-first.md
+4. @rules/karpathy_rule.md
+5. @rules/no-regression.md ← **不得破壞既有功能。這條優先於任何「順手改好」的衝動。**
 
 ## 執行環境（兩台，2026-07-28 起）
 

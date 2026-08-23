@@ -108,8 +108,8 @@ class Config:
     dot_seed_dilate_radius: int = 3
 
     # --- 紅點 (CEP17) ---
-    dot_red_h: float = 5.0                 # H-maxima 深度（a* 通道）
-    dot_red_a_min: float = 17.0             # a* 下限（越大越紅），粉紅組織 ~15
+    dot_red_h: float = 3.0                 # H-maxima 深度（a* 通道）
+    dot_red_a_min: float = 14.0             # a* 下限（越大越紅），粉紅組織 ~15
     dot_red_min_area: int = 5               # 連通區最小面積 (px²)
     dot_red_max_area: int = 400
     dot_red_min_circularity: float = 0.55   # 4π·area / perimeter²
@@ -128,7 +128,7 @@ class Config:
     dot_black_min_solidity: float = 0.50
     dot_black_ring_gap: int = 2
     dot_black_ring_width: int = 5
-    dot_black_min_contrast: float = 14.0    # mean_L*(ring) - mean_L*(blob)
+    dot_black_min_contrast: float = 10.0    # mean_L*(ring) - mean_L*(blob)
     dot_black_min_ring_l: float = 30.0      # 環形平均 L* 下限（非暗核中心）
     dot_black_max_chroma: float = 24.0      # sqrt(a²+b²) 上限（中性黑色）
     dot_black_max_median_chroma: float = 22.0
@@ -217,7 +217,7 @@ class Config:
     # 重疊去重門檻：兩 instance 交集 / min(面積) ≥ 此值即視為同一顆（保留較大者）。
     window_dedup_iomin: float = 0.5
     # 在 overlay_slide 的 tile 接縫（core-crop 邊界）畫藍色虛線，作為 tile 邊界視覺參考。
-    draw_window_grid: bool = True
+    draw_window_grid: bool = False
 
     # ========== Phase D：slide 級 overlay 縫合的編碼器 ==========
     # `"tifffile"`（**預設，round 13 出貨**）= candidate B：逐 band 從磁碟串流讀（讀在

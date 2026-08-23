@@ -1,11 +1,17 @@
 # ============================================================
-# Docker Compose for tsgh project
+# Docker Compose for tsgh project — backend (tsgh) + frontend
 # ============================================================
 # 使用方式：
 #   建立映像：docker compose build
 #   啟動容器：docker compose up -d
-#   進入容器：docker compose exec tsgh bash
+#   進入後端容器：docker compose exec tsgh bash
+#   進入前端容器：docker compose exec frontend sh
 #   停止容器：docker compose down
+#
+# frontend 用 network_mode: "service:tsgh" 跟後端共用 network namespace，
+# 所以 frontend/vite.config.ts 裡的 proxy target 127.0.0.1:8000 不用改，
+# 兩個 container 看到的 127.0.0.1 是同一份。副作用：frontend 自己不能宣告
+# ports，要對外的 port 都得掛在 tsgh service 底下（見下面 5173）。
 # ============================================================
 
 services:
@@ -15,7 +21,7 @@ services:
       dockerfile: Dockerfile
     image: tsgh-pytorch:latest
     container_name: tsgh-container
-    
+
     # GPU 支援（需要 NVIDIA Container Toolkit）
     deploy:
       resources:
@@ -24,7 +30,7 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    
+
     # 資料卷掛載（根據您的需求調整）
     volumes:
       # 掛載專案目錄（開發模式）
@@ -42,16 +48,41 @@ services:
       # backend/main.py 讀這個；容器內一定要 0.0.0.0，127.0.0.1 從外面連不到
       - TSGH_HOST=0.0.0.0
 
-    # 讓 host 能連到容器內跑起來的後端（backend/main.py 監聽 8000）
+    # 讓 host 能連到容器內跑起來的服務：8000 是後端(backend/main.py)，
+    # 5173 是前端(Vite dev server)——frontend 跟這個 service 共用網路，
+    # 所以掛在這裡而不是 frontend service 底下。
     ports:
       - "8000:8000"
+      - "5173:5173"
 
     # 保持容器運行
     stdin_open: true
     tty: true
-    
+
     # 工作目錄
     working_dir: /app
-    
+
     # 預設命令
     command: /bin/bash
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: tsgh-frontend
+
+    # 跟 tsgh 共用 network namespace，127.0.0.1 兩邊互通
+    # （選這個而不是 Docker DNS，代價是 tsgh 沒啟動 frontend 也連不上）
+    network_mode: "service:tsgh"
+    depends_on:
+      - tsgh
+
+    volumes:
+      # 掛載前端原始碼（開發模式）
+      - ./frontend:/app
+      # 蓋住上面的 bind mount，讓 image 裡 npm ci 裝好的 node_modules
+      # 不會被 host（可能沒裝過 node_modules）蓋成空的
+      - /app/node_modules
+
+    stdin_open: true
+    tty: true

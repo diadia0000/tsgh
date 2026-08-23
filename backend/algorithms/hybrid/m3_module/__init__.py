@@ -7,6 +7,7 @@ from .m3_cells_generator import (
 )
 from .m3_dot_detection import (
     CellDotResult,
+    build_off_population_results,
     detect_all_dots,
     merge_dot_results_to_cell_analysis,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "CellDotResult",
     "DetectedDot",
     "build_all_positive_results",
+    "build_off_population_results",
     "detect_all_dots",
     "elastic_dish_nucleus_matching",
     "enlarge_cell_instances",

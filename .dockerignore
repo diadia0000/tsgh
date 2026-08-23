@@ -26,16 +26,21 @@ env
 *.temp
 
 # 大型資料檔案（根據需要調整）
-*.wsi
-*.svs
-*.ndpi
-*.tif
-*.tiff
-*.h5
-*.hdf5
-
+# 注意：不加 **/ 前綴的話 Docker 只會排除根目錄下的檔案，
+# 巢狀路徑（如 backend/algorithms/**/*.tiff）不會被排除。
+**/*.wsi
+**/*.svs
+**/*.ndpi
+**/*.tif
+**/*.tiff
+**/*.czi
+**/*.h5
+**/*.hdf5
+picture/
+cell_mask/
+.pytest_cache/
 # Output 資料夾（如果很大的話）
-# output/
+
 # results/
 
 # 其他

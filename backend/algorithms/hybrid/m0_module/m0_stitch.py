@@ -33,6 +33,12 @@ overlay_image）。對真實 WSI（~156222×134028）這是數百 GB 的記憶�
 質心 core-ownership 去重（交接 §5.4）：把每個分塊沿 ``overlap/2`` 切出互不重疊、
 鋪滿全圖的「核心區」；一顆細胞只算在「其質心落在哪個分塊核心區」的那一塊。重疊帶
 的重複偵測因此自動消除——不需再跑 IoMin。
+
+（2026-08 更新：上一句的假設只在「兩塊對同一顆細胞算出**完全相同**的質心」時成立。
+兩塊各自獨立跑一次 M1/M2 前向，靠近接縫時同一顆細胞的質心常有幾個像素落差，兩邊
+的 core-ownership 判定就可能都落在「自己那一塊」，於是各自合法保留一次 → ghost row。
+真正的安全網是 ``dedup_cross_tile_duplicates()``，在 ``_finish_batch`` 的全域合併點
+跑一次。）
 """
 from __future__ import annotations
 
@@ -51,6 +57,7 @@ except ImportError:
 
 import numpy as np
 import pyvips
+from scipy.spatial import cKDTree
 
 try:
     from ..config import config
@@ -78,7 +85,8 @@ class ChunkResult:
     abs_y: int
     instance_mask: np.ndarray        # (th, tw) int32, 局部細胞 ID（已清真實 slide 邊、relabel）
     dish_nucleus_mask: np.ndarray    # (th, tw) int32, 局部 DISH 核 ID（detect_all_dots 過濾後）
-    dish_mask_overlay: np.ndarray    # (th, tw, 3) uint8, 標註 overlay 的底圖
+    dish_mask_overlay: np.ndarray    # (th, tw, 3) uint8, M2/M3 計算用（UNet++ 核心遮罩後的 DISH）
+    dish: np.ndarray                 # (th, tw, 3) uint8, 原始未遮罩 DISH，標註 overlay 的底圖
     results: List[CellAnalysisResult]
     all_dots: List[DetectedDot]
     per_cell_dots: Dict[int, CellDotResult]
@@ -333,7 +341,8 @@ def filter_and_absolutize(
     的對應，供該排序使用（質心雖已絕對化，但排序鍵約定用分塊座標而非質心）。
 
     **不處理 per_cell_dots / all_dots / dish 核 ID**：``report.csv`` 欄位為
-    ``cell_id, centroid_x, centroid_y, reddot, blackdot, score``、``summary.txt`` 只需
+    ``cell_id, centroid_x, centroid_y, reddot, blackdot, score, is_her2_positive,
+    cell_type``、``summary.txt`` 只需
     彙總 count，兩者皆只讀 ``CellAnalysisResult`` 欄位（見 m4_module/csv.py），故表格
     路徑不需要點位 / 核 ID。點位與 DISH 核的視覺化（overlay、per-cell crop）改在
     per-chunk 層以局部 ID 產出（另一支任務負責），本函式不涉入。
@@ -359,6 +368,110 @@ def filter_and_absolutize(
         if bisect_right(cuts_x, gxc) == col and bisect_right(cuts_y, gyc) == row:
             owned.append(replace(r, centroid_x=gxc, centroid_y=gyc))
     return owned
+
+
+def dedup_cross_tile_duplicates(
+    per_tile_owned: List[Tuple[int, int, List[CellAnalysisResult]]],
+    max_distance_px: float,
+) -> List[Tuple[int, int, List[CellAnalysisResult]]]:
+    """Ghost-row 修復：同一顆物理細胞被兩個相鄰分塊各自獨立偵測、質心因各自的
+    M1/M2 前向推論而些微不同，導致兩邊的 core-ownership 判定都落在「自己那一塊」，
+    因而被 ``filter_and_absolutize`` 各自合法保留一次。
+
+    在全域合併點（``filter_and_absolutize`` 之後、``cell_id`` 重新編號之前）補一道
+    保險：只比對「不同分塊」來源的細胞，質心距離 < ``max_distance_px`` 者視為同一顆
+    物理細胞。同一分塊內部的偵測完全不受影響——Cellpose 不會在同一次推論裡把同一顆
+    細胞切成兩個 instance，只有不同分塊的獨立推論之間才有這種落差；真實相鄰但不同的
+    兩顆細胞，中心距通常遠大於這個刻意設得很小的門檻，不會被誤合併。
+
+    每組重複只保留 1 筆，取捨依序：未被排除(``excluded=False``) > 較高
+    ``blue_region_count`` > 較多紅+黑點總數（訊號較完整、較可能是未被裁切的那份
+    偵測）> 以 ``(abs_y, abs_x, cell_id)`` 決定性打平。
+
+    Args:
+        per_tile_owned: 每塊 ``(abs_x, abs_y, owned_results)``，來自
+            ``filter_and_absolutize`` 的輸出。
+        max_distance_px: 判定為同一顆物理細胞的最大質心距離；``<= 0`` 為 no-op。
+
+    Returns:
+        與輸入同型的 ``per_tile_owned``，重複組只保留 1 筆。
+    """
+    if max_distance_px <= 0:
+        return per_tile_owned
+
+    flat_entries: List[Tuple[int, int, CellAnalysisResult]] = [
+        (ax, ay, r) for ax, ay, results in per_tile_owned for r in results
+    ]
+    if len(flat_entries) < 2:
+        return per_tile_owned
+
+    coords = np.array(
+        [[e[2].centroid_y, e[2].centroid_x] for e in flat_entries], dtype=np.float64
+    )
+    pairs = cKDTree(coords).query_pairs(r=max_distance_px)
+
+    parent = list(range(len(flat_entries)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    any_merged = False
+    for i, j in pairs:
+        if flat_entries[i][:2] != flat_entries[j][:2]:  # 僅跨塊才合併
+            union(i, j)
+            any_merged = True
+
+    if not any_merged:
+        return per_tile_owned
+
+    groups: Dict[int, List[int]] = {}
+    for idx in range(len(flat_entries)):
+        groups.setdefault(find(idx), []).append(idx)
+
+    def _rank(idx: int):
+        ax, ay, r = flat_entries[idx]
+        return (
+            r.excluded,
+            -r.blue_region_count,
+            -(r.her2_dot_count + r.cep17_dot_count),
+            ay, ax, r.cell_id,
+        )
+
+    drop: set = set()
+    n_groups_merged = 0
+    for idxs in groups.values():
+        if len(idxs) == 1:
+            continue
+        keep = min(idxs, key=_rank)
+        drop.update(i for i in idxs if i != keep)
+        n_groups_merged += 1
+
+    if not drop:
+        return per_tile_owned
+
+    logger.info(
+        "Ghost-row dedup: %d 組跨塊重複偵測 → 各保留 1 顆，共移除 %d 列。",
+        n_groups_merged, len(drop),
+    )
+
+    kept_by_tile: Dict[Tuple[int, int], List[CellAnalysisResult]] = {}
+    for idx, (ax, ay, r) in enumerate(flat_entries):
+        if idx in drop:
+            continue
+        kept_by_tile.setdefault((ax, ay), []).append(r)
+
+    return [
+        (ax, ay, kept_by_tile.get((ax, ay), []))
+        for ax, ay, _results in per_tile_owned
+    ]
 
 
 def _ensure_nofile_limit(needed: int) -> None:

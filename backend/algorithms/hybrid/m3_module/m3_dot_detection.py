@@ -25,7 +25,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from joblib import Parallel, delayed
-from scipy.ndimage import find_objects
+from scipy.ndimage import center_of_mass, find_objects
 
 try:
     from ..hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
@@ -114,7 +114,8 @@ def detect_all_dots(
             1=序列，其他正整數=指定行程數。
 
     Returns:
-        (all_dots, per_cell_results, filtered_dish_nucleus_mask)
+        (all_dots, per_cell_results, dish_nucleus_mask)——第三項即傳入的**原始未過濾**
+        遮罩（供 off-population 判讀哪些核沒被任何 IHC 細胞贏走）。
     """
     if dish_image.ndim != 3 or dish_image.shape[2] != 3:
         raise ValueError(f"dish_image 必須為 (H,W,3) RGB，實際 {dish_image.shape}")
@@ -133,7 +134,14 @@ def detect_all_dots(
     min_inside_ratio = float(
         getattr(config, "dish_nucleus_core_min_inside_ratio", 1.0)
     )
-    dish_nucleus_mask, out_of_bounds_nucleus_mask = _filter_dish_nucleus_by_core_mask(
+    # 只取 out_of_bounds_nucleus_mask（下方 oob_overlap_cells 的邊界污染判定不變）；
+    # 配對／計點／off-population 一律吃「未過濾」的原始 dish_nucleus_mask——核心外
+    # 的核不該在 matching 發生前就被抹成 0，否則這些核永遠沒機會被判定為
+    # off-population（蛋白陰性族群）。IHC 細胞本身只存在於 core_mask 內（M2 是在
+    # core_mask 融合過的影像上跑，core_mask 全空時 M1 直接 short-circuit 整塊），
+    # 故此改動不影響既有配對會配到「哪些」核，只影響「未配對」核是否還留著可供
+    # off-population 判讀。
+    _, out_of_bounds_nucleus_mask = _filter_dish_nucleus_by_core_mask(
         dish_nucleus_mask, core_mask, min_inside_ratio=min_inside_ratio
     )
 
@@ -323,7 +331,7 @@ def _finalize_per_cell(
     oob_overlap_cells: Set[int],
     cfg: object,
 ) -> None:
-    """填入計數、ratio、score、藍區數量、excluded、is_amplified（in-place）。
+    """填入計數、ratio、score、藍區數量、excluded/exclusion_reason、is_amplified（in-place）。
 
     Score(r,b)：r=HER2 黑點、b=CEP17 紅點。b < score_cep17_min_count（預設 2）且
     「有訊號」（非 0/0）→ 紅點不足、無法計算 Score，直接排除打 X（low_cep17）；
@@ -356,17 +364,21 @@ def _finalize_per_cell(
             and cdr.cell_id in drop_out_ids
         ):
             cdr.excluded = True
+            cdr.exclusion_reason = "drop_out"
         elif (
             cdr.blue_region_count == 0
             and cdr.cell_id in oob_overlap_cells
         ):
             cdr.excluded = True
+            cdr.exclusion_reason = "out_of_bounds"
         elif cdr.cep17_dot_count < cep17_min and not (
             cdr.her2_dot_count == 0 and cdr.cep17_dot_count == 0
         ):
             cdr.excluded = True
+            cdr.exclusion_reason = "low_cep17"
         else:
             cdr.excluded = False
+            cdr.exclusion_reason = ""
 
         if cdr.excluded:
             cdr.score = 0.0
@@ -404,4 +416,137 @@ def merge_dot_results_to_cell_analysis(
         res.score = cdr.score
         res.blue_region_count = cdr.blue_region_count
         res.excluded = cdr.excluded
+        res.exclusion_reason = cdr.exclusion_reason
     return cell_results
+
+
+# ------------------------------------------------------------------
+# Off-population（蛋白陰性族群）：未被任何 IHC 細胞贏走的 DISH 核
+# ------------------------------------------------------------------
+
+def build_off_population_results(
+    dish_image: np.ndarray,
+    dish_nucleus_mask: np.ndarray,
+    matched_dish_ids: Set[int],
+    config: object,
+    id_offset: int,
+) -> Tuple[List[CellAnalysisResult], List[DetectedDot]]:
+    """蛋白陰性族群：從未被任一 IHC 細胞贏走的 DISH 核建出 CellAnalysisResult。
+
+    ``dish_image`` 必須是**原始、未遮罩**的 DISH 影像（不可傳 ``dish_mask_overlay``）：
+    核心遮罩版在 IHC core 之外一律白填，而本函式鎖定的族群依定義多半就在核外，用遮罩版
+    會把整個 ROI 濾成空、結構性恆為 0/0。
+    ``dish_nucleus_mask`` 必須是**未過濾**版本（``detect_all_dots`` 回傳的即是）。
+    ``matched_dish_ids`` = 所有 IHC 細胞 ``assigned_dish_ids`` 的聯集；不在其中的核
+    一視同仁視為 off-population（核心外、reach 之外、曾候選但競爭落敗，三者統一
+    處理、不特判來源）。
+
+    對每顆未配對核，在它自己的核範圍內重跑與 IHC 細胞相同的紅/黑點偵測 + 擴增
+    判定（沿用 ``_detect_red_dots`` / ``_detect_black_dots`` / ``_merge_close_dots`` /
+    ``_finalize_per_cell``，``drop_out_ids`` / ``oob_overlap_cells`` 一律傳空集合——
+    那兩種排除語意是 IHC-cell-specific，本族群沒有「競爭落敗」或「壓在邊界」的概念；
+    唯一沿用的排除規則是 cep17 訊號不足，與 IHC 側一致）。
+
+    ``cell_id`` = 原始核 id + ``id_offset``，避免與同塊 IHC 細胞局部 id 撞號
+    （全域重編號仍只在 ``_finish_batch`` 發生）。
+
+    回傳 ``(results, dots)``——第二項是這族群偵測到的紅/黑點（``cell_id`` 同樣已加
+    ``id_offset``），由呼叫端併入 ``all_dots``，否則 overlay 上的橘色未配對核會沒有
+    任何紅黑點標記。
+    """
+    if dish_nucleus_mask.size == 0 or int(dish_nucleus_mask.max()) <= 0:
+        return [], []
+
+    all_dish_ids = [int(v) for v in np.unique(dish_nucleus_mask) if v != 0]
+    unmatched_ids = [d for d in all_dish_ids if d not in matched_dish_ids]
+    if not unmatched_ids:
+        return [], []
+
+    centroids = center_of_mass(
+        np.ones(dish_nucleus_mask.shape, dtype=np.uint8),
+        labels=dish_nucleus_mask,
+        index=unmatched_ids,
+    )
+
+    L, a, b = _rgb_to_lab(dish_image)
+    bg_threshold = float(getattr(config, "dot_background_l_threshold", 95.0))
+    bg_mask_global = L > bg_threshold
+    default_merge_distance = float(getattr(config, "dot_merge_distance", 3.0))
+    red_merge_distance = float(
+        getattr(config, "dot_red_merge_distance", default_merge_distance)
+    )
+    black_merge_distance = float(
+        getattr(config, "dot_black_merge_distance", default_merge_distance)
+    )
+
+    slices = find_objects(dish_nucleus_mask)
+    per_cell: Dict[int, CellDotResult] = {}
+    dish_ids_by_cell: Dict[int, List[int]] = {}
+
+    for did in unmatched_ids:
+        per_cell[did] = CellDotResult(cell_id=did)
+        dish_ids_by_cell[did] = [did]
+        sl = slices[did - 1] if did - 1 < len(slices) else None
+        if sl is None:
+            continue
+        region_local = dish_nucleus_mask[sl] == did
+        bg_local = bg_mask_global[sl]
+        roi_local = region_local & (~bg_local)
+        if not roi_local.any():
+            continue
+        L_local, a_local, b_local = L[sl], a[sl], b[sl]
+        red = _detect_red_dots(
+            a=a_local, cell_roi=roi_local, bg_mask=bg_local, cfg=config, cell_id=did,
+        )
+        black = _detect_black_dots(
+            L=L_local, a=a_local, b=b_local, cell_roi=roi_local, bg_mask=bg_local,
+            cfg=config, cell_id=did,
+        )
+        red = _merge_close_dots(red, red_merge_distance)
+        black = _merge_close_dots(black, black_merge_distance)
+        y0, x0 = sl[0].start, sl[1].start
+        for d in red:
+            d.y += y0
+            d.x += x0
+        for d in black:
+            d.y += y0
+            d.x += x0
+        per_cell[did].cep17_dots = red
+        per_cell[did].her2_dots = black
+
+    _finalize_per_cell(
+        per_cell, dish_ids_by_cell,
+        drop_out_ids=set(), oob_overlap_cells=set(), cfg=config,
+    )
+
+    results: List[CellAnalysisResult] = []
+    dots: List[DetectedDot] = []
+    for did, (cy, cx) in zip(unmatched_ids, centroids):
+        if np.isnan(cy) or np.isnan(cx):
+            continue
+        cdr = per_cell[did]
+        for d in cdr.cep17_dots + cdr.her2_dots:
+            d.cell_id = did + id_offset
+            dots.append(d)
+        results.append(
+            CellAnalysisResult(
+                cell_id=did + id_offset,
+                centroid_x=float(cx),
+                centroid_y=float(cy),
+                is_her2_positive=False,
+                her2_dot_count=cdr.her2_dot_count,
+                cep17_dot_count=cdr.cep17_dot_count,
+                her2_cep17_ratio=cdr.her2_cep17_ratio,
+                is_amplified=cdr.is_amplified,
+                score=cdr.score,
+                blue_region_count=cdr.blue_region_count,
+                excluded=cdr.excluded,
+                exclusion_reason=cdr.exclusion_reason,
+            )
+        )
+
+    logger.info(
+        "Off-population 標註完成: %d 個未配對 DISH 核, 紅黑點 %d",
+        len(results), len(dots),
+    )
+    return results, dots

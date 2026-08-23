@@ -92,14 +92,24 @@ def _detect_red_dots(
     label_img = label(dot_region, connectivity=2)
     props = regionprops(label_img, intensity_image=a_masked)
 
+    def _log_reject(prop, gate: str, detail: str) -> None:
+        """Debug-log 一個被某道閘門擋下的紅點候選（供下界調參用）。"""
+        logger.debug(
+            "紅點排除 cell=%d c=(%.0f,%.0f) gate=%s %s",
+            cell_id, prop.centroid[0], prop.centroid[1], gate, detail,
+        )
+
     dots: List[DetectedDot] = []
     for p in props:
         if p.area < min_area or p.area > max_area:
+            _log_reject(p, "area", f"area={p.area} range=[{min_area},{max_area}]")
             continue
         circ = _circularity(p.area, p.perimeter)
         if circ < min_circ:
+            _log_reject(p, "circularity", f"circ={circ:.2f} min={min_circ:.2f}")
             continue
         if p.solidity < min_sol:
+            _log_reject(p, "solidity", f"solidity={p.solidity:.2f} min={min_sol:.2f}")
             continue
 
         rows, cols = p.coords[:, 0], p.coords[:, 1]
@@ -115,10 +125,12 @@ def _detect_red_dots(
             intensity_imgs=(a,),
         )
         if ring_stats is None:
+            _log_reject(p, "ring_empty", "no valid ring pixels")
             continue
         mean_a_ring = ring_stats[0]
         contrast = mean_a_dot - mean_a_ring
         if contrast < min_contrast:
+            _log_reject(p, "contrast", f"contrast={contrast:.1f} min={min_contrast:.1f}")
             continue
 
         cy, cx = p.centroid
@@ -133,6 +145,11 @@ def _detect_red_dots(
             score=mean_a_dot,
         ))
 
+    if props:
+        logger.debug(
+            "紅點偵測 cell=%d 接受=%d / 候選blob=%d",
+            cell_id, len(dots), len(props),
+        )
     return dots
 
 

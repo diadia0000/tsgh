@@ -62,7 +62,7 @@ def generate_thumbnail(
     dish_warped.tiffsave(
         str(dish_temp),
         compression='jpeg',
-        Q=95,
+        Q=100,
         rgbjpeg=True,
         tile=True,
         tile_width=1024,
@@ -77,7 +77,7 @@ def generate_thumbnail(
     her2_warped.tiffsave(
         str(her2_temp),
         compression='jpeg',
-        Q=95,
+        Q=100,
         rgbjpeg=True,
         tile=True,
         tile_width=1024,
@@ -115,7 +115,7 @@ def generate_thumbnail(
         str(output_path),
         pyramid=True,
         bigtiff=True,
-        Q=95,
+        Q=100,
         compression='jpeg',
     )
 

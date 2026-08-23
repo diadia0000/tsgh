@@ -73,6 +73,7 @@ try:
         PrecutStream,
         TileGeometry,
         compute_tile_geometry,
+        dedup_cross_tile_duplicates,
     )
 except ImportError:
     from config import config, compute_config_hash
@@ -105,6 +106,7 @@ except ImportError:
         PrecutStream,
         TileGeometry,
         compute_tile_geometry,
+        dedup_cross_tile_duplicates,
     )
 
 # ------------------------------------------------------------------
@@ -130,42 +132,30 @@ def run_batch(
     workers: int = 4,
     checkpoint: bool = False,
 ) -> dict:
-    """批次處理『已預切』tile 目錄：逐塊分析 → 全域合併細胞表 → slide 級 overlay 縫合。
+    """批次處理已預切 tile 目錄：逐塊分析 → 全域合併細胞表 → slide 級 overlay 縫合。
 
     ``ihc_dir`` / ``dish_dir`` 為 ``precut_paired_tiles`` 產出的、以
     ``tile_x{int}_y{int}`` 命名的重疊 tile 檔目錄（兩路同名同格線）。
-
-    整批的所有 tile 是**同一張玻片**被切開的碎片，必須全數成功、每格恰一檔，
-    slide 級輸出才可信。因此本函式採 **fail-fast**：任何一塊發生真實錯誤
-    （``process_precut_tile`` 回傳 ``None``：讀檔 / 維度不符）即 raise 中止整批，
-    而非「記錄後續跑」——這是有意偏離舊 ``run_batch`` 行為（舊行為適用於各自獨立、
-    互不相關的影像；現在每塊是單一玻片的一部分，靜默略過會產出「有未記載破洞」的
-    玻片，比大聲崩潰更糟）。
 
     Args:
         ihc_dir: 已預切 IHC tile 目錄。
         dish_dir: 已預切 DISH tile 目錄。
         output_dir: 輸出根目錄。
-        merge_dir: 合併影像目錄 (可選)，用於產出 merge overlay。
-        tile_stream: 可選的 ``m0_reader.PrecutStream``。給定時**改由它供給 tile**
-            （``ihc_dir`` / ``dish_dir`` 不再被讀取），預切與本分析迴圈重疊執行，省掉
-            「整批切完才開工」的序列等待；不給則維持原本掃目錄的行為。處理順序改變不
-            影響輸出（全域重編號依 ``(abs_y, abs_x, cell_id)`` 排序、縫合按座標讀檔）。
-        workers: 跨 tile 平行的**行程**數。``4``（預設，round 8 全片驗證通過、round 12
-            重測仍然通過的生產設定，見 docs/hybrid-pipeline/39-round-12-...）；``1`` 走
-            今日的單行程雙臂路徑，一行為變化都沒有；``>1`` 走 ``_run_tiles_multiprocess``，
-            每個 worker 自帶一份模型與 CUDA context。單塊 API 請求不該為了這個批次預設
-            去付 N 份模型初始化成本（doc 20 §1 item 7），故呼叫端（`backend/api/hybrid.py`）
-            明確傳入 ``workers=1`` 覆蓋這個預設，而不是依賴預設值。
-        checkpoint: 是否啟用斷點續跑。``True`` 時每塊完成即把結果落地到
-            ``output_dir/_resume/``，且**本次開始前**會先載入該目錄中屬於這批格線、
-            且 config_hash 相符的塊並跳過它們。給無人看顧的整片跑用（27,565 塊時，
-            第 25,000 塊失敗不該賠掉前面數小時）；預設 ``False``，API 的單塊請求開了
-            只是白付 I/O。**不放寬 fail-fast**：任一塊失敗照樣中止整批。
+        merge_dir: 合併影像目錄（可選），用於產出 merge overlay。
+        tile_stream: 可選的 ``m0_reader.PrecutStream``。給定時改由它供給 tile，
+            ``ihc_dir`` / ``dish_dir`` 不再被讀取；不給則掃描目錄。全域重編號依
+            ``(abs_y, abs_x, cell_id)`` 排序、縫合按座標讀檔，故供 tile 的順序不影響輸出。
+        workers: 跨 tile 平行的行程數。預設 ``4``；``1`` 走單行程路徑；``>1`` 走
+            ``_run_tiles_multiprocess``，每個 worker 自帶一份模型與 CUDA context。
+            單塊 API 請求（`backend/api/hybrid.py`）應明確傳入 ``workers=1``。
+        checkpoint: 是否啟用斷點續跑。``True`` 時每塊完成即落地到
+            ``output_dir/_resume/``；執行前會先載入該目錄中屬於這批格線、
+            config_hash 相符的塊並跳過。預設 ``False``。不放寬 fail-fast：
+            任一塊失敗仍中止整批。
 
     Returns:
-        ``{"success": int, "skipped": int}`` 統計。批次內任一塊真實失敗即
-        raise 中止整批（見上），故統計裡不設 ``failed`` 計數。
+        ``{"success": int, "skipped": int}`` 統計。任一塊真實失敗即
+        raise 中止整批，故統計裡不設 ``failed`` 計數。
     """
     run_id = uuid.uuid4().hex[:8]
     cfg_hash = compute_config_hash(config)
@@ -364,6 +354,11 @@ def _finish_batch(
     """
     # 全域合併：攤平所有塊的 owned 結果，依正典幾何序 (abs_y, abs_x, cell_id) 排序後
     # 重新編號成 1..N。這是唯一發生全域 cell 編號的地方；質心等其他欄位保留。
+    # Ghost-row 安全網：兩塊各自獨立偵測到同一顆物理細胞、質心差幾個像素時，
+    # core-ownership 去重會兩邊都留下（見 m0_stitch 模組 docstring）。
+    ghost_dedup_px = float(getattr(config, "ghost_dedup_distance_px", 6.0))
+    per_tile_owned = dedup_cross_tile_duplicates(per_tile_owned, ghost_dedup_px)
+
     flat = [
         (ay, ax, r.cell_id, r)
         for ax, ay, results in per_tile_owned

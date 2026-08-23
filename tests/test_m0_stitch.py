@@ -22,6 +22,7 @@ from m0_module.m0_stitch import (
     clear_slide_edge_cells,
     compute_tile_geometry,
     core_crop_bounds,
+    dedup_cross_tile_duplicates,
     filter_and_absolutize,
 )
 
@@ -152,6 +153,7 @@ def _chunk(ax: int, ay: int, cells) -> ChunkResult:
     return ChunkResult(
         abs_x=ax, abs_y=ay, instance_mask=z, dish_nucleus_mask=z,
         dish_mask_overlay=np.zeros((TILE, TILE, 3), np.uint8),
+        dish=np.zeros((TILE, TILE, 3), np.uint8),
         results=list(cells), all_dots=[], per_cell_dots={},
     )
 
@@ -192,6 +194,47 @@ def test_single_tile_keeps_every_cell():
     g = compute_tile_geometry([(0, 0)], TILE, OVERLAP)
     cells = [_cell(i, float(i), float(i)) for i in range(1, 6)]
     assert len(filter_and_absolutize(_chunk(0, 0, cells), g, 0, 0)) == 5
+
+
+# ------------------------------------------------------------------
+# dedup_cross_tile_duplicates — the ghost-row safety net
+# ------------------------------------------------------------------
+
+def test_ghost_row_dedup_collapses_disagreeing_neighbour_estimates():
+    """Root-cause regression: two tiles independently estimate the SAME physical
+    cell's centroid a few px apart, straddling the cut. `filter_and_absolutize`
+    legitimately keeps both per its own contract -- `dedup_cross_tile_duplicates`
+    is the safety net that must catch it."""
+    g = compute_tile_geometry(grid(2, 1), TILE, OVERLAP)
+    cut = g.cuts_x[0]  # 896
+
+    left = filter_and_absolutize(_chunk(0, 0, [_cell(1, cut - 2, 10.0)]), g, 0, 0)
+    right = filter_and_absolutize(
+        _chunk(STRIDE, 0, [_cell(1, cut + 2 - STRIDE, 10.0)]), g, STRIDE, 0)
+    assert len(left) == 1 and len(right) == 1  # both kept: the bug
+
+    deduped = dedup_cross_tile_duplicates(
+        [(0, 0, left), (STRIDE, 0, right)], max_distance_px=6.0)
+    assert sum(len(r) for _ax, _ay, r in deduped) == 1
+
+
+def test_ghost_row_dedup_leaves_same_tile_neighbours_alone():
+    g = compute_tile_geometry([(0, 0)], TILE, OVERLAP)
+    owned = filter_and_absolutize(
+        _chunk(0, 0, [_cell(1, 100.0, 100.0), _cell(2, 102.0, 100.0)]), g, 0, 0)
+    deduped = dedup_cross_tile_duplicates([(0, 0, owned)], max_distance_px=6.0)
+    assert sum(len(r) for _ax, _ay, r in deduped) == 2
+
+
+def test_ghost_row_dedup_leaves_far_apart_cross_tile_cells_alone():
+    g = compute_tile_geometry(grid(2, 1), TILE, OVERLAP)
+    left = filter_and_absolutize(_chunk(0, 0, [_cell(1, 50.0, 10.0)]), g, 0, 0)
+    right = filter_and_absolutize(
+        _chunk(STRIDE, 0, [_cell(1, 700.0, 10.0)]), g, STRIDE, 0)
+    assert len(left) == 1 and len(right) == 1
+    deduped = dedup_cross_tile_duplicates(
+        [(0, 0, left), (STRIDE, 0, right)], max_distance_px=6.0)
+    assert sum(len(r) for _ax, _ay, r in deduped) == 2
 
 
 # ------------------------------------------------------------------

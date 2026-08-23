@@ -1,135 +1,53 @@
 # hybrid — IHC-DISH Overlay & Analysis Pipeline
 
-Per-tile **M0→M1→M2→M3→M4**: precut the ROI/WSI pair into overlapping 1024px tiles
-on disk, analyze each independently (fuse IHC/Her2 + DISH → segment cells → detect
-HER2/CEP17 dots → judge amplification), merge the per-tile cell tables globally,
-lazily stitch the overlay tiles into one QuPath-openable pyramid TIFF.
-Models are initialized once and reused for the whole batch.
+Per-tile **M0→M1→M2→M3→M4**: cut the ROI/WSI pair into overlapping 1024px tiles on disk,
+analyze each independently, merge cell tables globally, lazily stitch the overlay into one
+QuPath-openable pyramid TIFF. Models init once per batch.
 
-## Running (entry: `hybrid_pipeline.py`)
+## Running (`hybrid_pipeline.py`)
 
 ```bash
-python hybrid_pipeline.py --ihc a.tiff --dish b.tiff        # tile, ROI or full WSI — any size
-python hybrid_pipeline.py --test [--output DIR]             # bundled test_picture pair, same path
-python hybrid_pipeline.py --ihc a.tiff --dish b.tiff --workers 4 --resume   # unattended full slide
+python hybrid_pipeline.py --test [--output DIR]                             # bundled test pair
+python hybrid_pipeline.py --ihc a.tiff --dish b.tiff --workers 4 --resume   # full slide
 ```
 
-`_run_single_tile_cli()` builds a `PrecutStream` that cuts into
-`output_dir/_precut_scratch/{ihc,dish}` *while* `run_batch()` analyzes — the grid
-comes from the file header, so nothing waits for the full cut; that scratch dir is
-kept for inspection, never auto-deleted. `--test` and `backend/api/hybrid.py`'s
-`/api/hybrid/tile` take this same stream+batch path; the API also accepts an ROI
-(`roi_x/y/w/h`, four or none — `backend/schemas/hybrid.py`). Tiles pair by filename
-`tile_x{int}_y{int}`.
-
-`--workers N` → `run_batch(workers=N)`; `--resume` → `checkpoint=True`. `run_batch`
-defaults to **`workers=4`** — round 8's full-WSI validation cleared it for production and
-round 12 re-confirmed it on current code. `backend/api/hybrid.py` explicitly passes
-`workers=1`, since a single-tile request shouldn't pay N workers' model-init cost.
+`_run_single_tile_cli()` starts a `PrecutStream` writing into `output_dir/_precut_scratch/`
+(never auto-deleted) *while* `run_batch()` analyzes; `backend/api/hybrid.py`'s
+`/api/hybrid/tile` shares this path (optional ROI, `workers=1`). Tiles pair by filename
+`tile_x{int}_y{int}`. `--workers` default **4**.
 
 ## Configuration
 
-`config.py` is **gitignored**: `cp config_example.py config.py`, then edit paths.
-Key fields: `unet_model_path`, `cellpose_model_path` (M2), `cellpose_dish_model_path`
-(M3b), tile dirs, `output_dir`. `compute_config_hash()` is not written to the CSV; it
-guards spawn workers (hash must match the parent) and resume (won't reuse tiles cut
-under a different config).
+`config.py` is **gitignored**: `cp config_example.py config.py`, then edit the model paths,
+tile dirs, `output_dir`. `compute_config_hash()` guards spawn workers and resume.
 
 ## Architecture
 
-**M0 `m0_module/`** — slide layer. Inside the package files import each other directly;
-everything outside imports the `m0_slide.py` facade only (otherwise: cycles).
-
-- `m0_reader.py` — `PrecutStream`: pyvips `access="random"`, writes aligned
-  `tile_x{abs_x}_y{abs_y}.tiff` on the `tile_size`/`window_overlap_px` grid, short
-  edges white-filled, yielding each pair as it lands.
-- `m0_stitch.py` — `compute_tile_geometry()` derives cut lines + real-slide-edge flags
-  from the parsed tile positions alone (no WSI read-back), raising on gaps/dupes.
-  `clear_slide_edge_cells()` clears cells only on true slide edges.
-  `filter_and_absolutize()` dedups across tiles by **centroid core-ownership** — a cell
-  counts in the tile whose core (the strip inside overlap/2) holds its centroid, no
-  IoMin pass — absolutizes centroids by `+(abs_x, abs_y)`, and does *not* renumber
-  `cell_id`. `_stitch_overlay_slide()` joins `_stitch_scratch/`.
-- `m0_tile_runner.py` — `_process_precut_tile_gpu()` (M1→M2) /
-  `_process_precut_tile_cpu()` (M3 + writes) run two-stage: each tile's CPU tail
-  overlaps the next tile's GPU forward, with reads prefetched one tile ahead. Also
-  model init and `_frozen_gc_generation()`.
-- `m0_multiprocess.py` — `_run_tiles_multiprocess()`, **spawn**-based.
-- `m0_checkpoint.py` — `_checkpoint_{load,init,save}`, `_skip_completed`.
-
-**M1 `m1_overlay.py`** — UNet++ core mask → applied to IHC & DISH → 50/50 alpha blend
-(`overlay_alpha`) is M2's input; an empty core mask short-circuits to an empty CSV.
-
-**M2 `m2_segmentation.py`** — `CellposeSegmenter` → cell instance mask. Called with
-`remove_border=False`; interior seams are M0's job, not M2's.
-
-**M3 `m3_module/`** (`m3_cell_detection.py` is a re-export shim) —
-`build_all_positive_results()` (centroid per cell); `elastic_dish_nucleus_matching()`
-reach = `sqrt(factor×area/π)`, nearest-first with locking so a cell claims ≤1 nucleus;
-`detect_all_dots()` finds HER2 (black) / CEP17 (red) on a local LAB patch.
-Score = HER2/CEP17: drop-out, boundary contamination, or `cep17 <
-score_cep17_min_count` (default 2) → excluded (X), except 0/0 which counts normally;
-otherwise `score = ratio if ratio ≥ dot_amplification_ratio else 0`,
-`is_amplified = score > 0`.
-
-**M4 `m4_export.py`** — facade over `m4_module/{csv,overlay}.py`, the only import
-callers use. Pure library: renders to arrays (`render_overlay_image`) and writes the
-two global tables (`export_tile_csv`, `export_summary_statistics`); owns no slide-level
-image file.
-
-**`unet_inference.py`** — `UNetPPInference` (EfficientNet-B4), sliding-window on large
-images. **`hybrid_data_types.py`** — `DetectedDot`, `CellAnalysisResult`, `CellDotResult`.
+- **M0 `m0_module/`** — slide layer; outside code imports the `m0_slide.py` facade only (else:
+  import cycles). `m0_reader` streams aligned tiles; `m0_stitch` derives geometry from tile
+  names and dedups cells by **centroid core-ownership**; `m0_tile_runner` overlaps GPU
+  (M1→M2) with CPU (M3+writes); `m0_multiprocess` (spawn); `m0_checkpoint`.
+- **M1 `m1_overlay.py`** — UNet++ core mask → 50/50 IHC/DISH blend; empty mask → empty CSV.
+- **M2 `m2_segmentation.py`** — Cellpose instance mask, `remove_border=False` (seams are M0's).
+- **M3 `m3_module/`** — cell centroids, elastic DISH-nucleus matching (≤1 per cell), HER2
+  (black) / CEP17 (red) dots on LAB patches. Score = HER2/CEP17; drop-out, boundary
+  contamination, or `cep17 < score_cep17_min_count` excludes the cell (X), except 0/0.
+- **M4 `m4_export.py`** — facade over `m4_module/{csv,overlay}.py`; pure library, owns no file.
+- `unet_inference.py` (UNet++/EfficientNet-B4), `hybrid_data_types.py` (dot/cell dataclasses).
 
 ## Don't break these
 
 - A run leaves exactly 3 files in `output_dir/`: `report.csv`, `summary.txt`,
-  `overlay_slide.tiff`. **No per-tile intermediates** — masks stay in memory and die
-  with the chunk. `merge_overlay/` only when the caller passes `merge_dir`.
-- `_stitch_scratch/` is the one disk round-trip: a streaming buffer, read lazily one band
-  at a time. Stitching from in-memory tiles resurrects the ≈400GB full-canvas OOM that
-  killed the old `StitchAccumulator`. Whichever backend runs, nothing larger than one
-  band of one level is ever resident — that boundedness is why Phase D survives a 16 GP
-  slide; do not "simplify" it into a whole-image load.
-- Its `rmtree` is deliberately **not** in a `finally` — a failed stitch keeps the tiles
-  so it can be re-run without recomputing the batch
-  (`backend/tests/test_stitch_scratch_cleanup.py`).
-- **Two stitch backends**, `config.stitch_backend`. Default **`"tifffile"`** (round 13):
-  band-streamed read on a background thread, CPU box pyramid, per-tile LZW + Predictor 2.
-  `"pyvips"` (`_join_overlay_tiles` + one `tiffsave`) is retained as fallback and as the
-  measurement control — do not delete it. Measured on the real slide: Phase D **1.913x**,
-  end-to-end **1.200x**, peak RSS **45.6 → 17.0 GB**, artifact 7.50 → 5.85 GB. The two
-  produce the same picture but different bytes (Predictor 2 vs `predictor="none"`); tests
-  assert every pyramid level is pixel-identical between them. `stitch_backend` is in
-  `config._HASH_EXCLUDE` on purpose — Phase D runs after M1–M3, so swapping encoders must
-  not invalidate a multi-hour resume checkpoint. See
-  `docs/hybrid-pipeline/41-round-13-phase-d-pipelined-stitch-implementation.md`.
-- No `pyvips.arrayjoin()` — it assumes a uniform grid and silently mis-pads at slide
-  edges; use the manual row-then-column `Image.join(..., expand=True)`. Both backends
-  build their rows this way.
-- Cross-tile parallelism must be **spawn**, never fork (a forked child inherits a broken
-  CUDA context). ~2.8GB VRAM + ~3.1s init per worker; measured 3.09x at N=3, and 1.745x
-  end-to-end at the shipped `workers=4` on the 27,565-tile slide (round 12; round 8 had
-  2.216x — later optimizations shrank the `workers=1` denominator faster than the
-  numerator). Phase D stitch was 32.3% of that wall and is now **20.3%** after round 13
-  — see `docs/hybrid-pipeline/39-round-12-multiprocess-scaling-ceiling-implementation.md`
-  and `docs/hybrid-pipeline/41-round-13-phase-d-pipelined-stitch-implementation.md`.
-  **The 27,565-tile figure itself was measured on an unregistered canvas** — the
-  correct, registered slide is 35,700 tiles / 65.92% background, not 27,565 / 55.8%
-  (`docs/hybrid-pipeline/44-conform-intersection-shift-investigation.md`); on that
-  canvas round 15 measured `workers=1→4` at **2.05x end-to-end**, peak RSS **13.66 GB**
-  (`docs/hybrid-pipeline/46-round-15-eta-estimation-implementation.md` §3.7).
-- Global `cell_id` 1..N is assigned in exactly one place: `_finish_batch()`, in the
-  parent, sorting `(abs_y, abs_x, cell_id)`. Workers only return `(abs_x, abs_y, owned)`.
-- **fail-fast at any worker count** — one bad tile aborts the batch (multiprocess kills
-  its siblings first), because a silent skip ships a slide with an undocumented hole.
-- Resume pickles each tile's `owned` to `_resume/*.pkl` (tmp+`os.replace`, one file per
-  tile so no lock is needed); a config-hash mismatch drops the whole checkpoint loudly.
-  Full coverage short-circuits to `_finish_batch()` without loading any model — also how
-  you re-run just the stitch. It does **not** relax fail-fast; it only makes retry cheap
-  (`tests/test_run_batch_resume.py`).
-
-## Invariants
-
-Images between modules are RGB `uint8 (H,W,3)` (enforced by `_read_rgb()`), converted to
-BGR only when drawing with OpenCV. core mask is `uint8{0,1} (H,W)`; instance mask is
-`int32 (H,W)`: background 0, cells 1..N.
+  `overlay_slide.tiff`. No per-tile intermediates.
+- `_stitch_scratch/` streams one band at a time — in-memory stitching resurrects the ≈400GB
+  OOM. Its `rmtree` is deliberately not in a `finally`, so a failed stitch can be re-run.
+- Two stitch backends (`config.stitch_backend`, default `"tifffile"`); keep `"pyvips"` as
+  fallback. It sits in `config._HASH_EXCLUDE` so swapping encoders won't kill a resume.
+- No `pyvips.arrayjoin()` — mis-pads at slide edges; use `Image.join(..., expand=True)`.
+- Cross-tile parallelism must be **spawn**, never fork (fork breaks the CUDA context).
+- Global `cell_id` 1..N assigned only in `_finish_batch()`, sorted `(abs_y, abs_x, cell_id)`.
+- **fail-fast at any worker count** — one bad tile aborts the batch; a silent skip ships a hole.
+- Resume pickles each tile's `owned` to `_resume/*.pkl`; hash mismatch drops it loudly. Full
+  coverage short-circuits to `_finish_batch()` — also how you re-run just the stitch.
+- Images are RGB `uint8 (H,W,3)` between modules, BGR only for OpenCV drawing. Core mask
+  `uint8{0,1} (H,W)`; instance mask `int32 (H,W)`, background 0, cells 1..N.

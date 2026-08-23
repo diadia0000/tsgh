@@ -23,7 +23,7 @@ from tqdm import tqdm
 try:
     from .config import create_default_config
 except ImportError:
-    from backend.algorithms.thriple_image_layer.config import create_default_config
+    from config import create_default_config
 
 def process_strip_worker(task: Dict[str, Any]) -> Tuple[bool, str, int]:
     """

@@ -37,6 +37,7 @@ try:
     from ..m3_cell_detection import (
         CellAnalysisResult,
         build_all_positive_results,
+        build_off_population_results,
         detect_all_dots,
         enlarge_cell_instances,
         merge_dot_results_to_cell_analysis,
@@ -60,6 +61,7 @@ except ImportError:
     from m3_cell_detection import (
         CellAnalysisResult,
         build_all_positive_results,
+        build_off_population_results,
         detect_all_dots,
         enlarge_cell_instances,
         merge_dot_results_to_cell_analysis,
@@ -103,6 +105,7 @@ class _ChunkGpuState:
     abs_x: int
     abs_y: int
     core_mask: np.ndarray                    # detect_all_dots 用來濾掉核心區外的 DISH 核
+    dish: np.ndarray                         # 原始未遮罩 DISH，off-population 點偵測用
     dish_mask_overlay: np.ndarray
     instance_mask: np.ndarray
     dish_nucleus_mask: np.ndarray            # segment_windowed 產出，尚未經 detect_all_dots 過濾
@@ -117,6 +120,7 @@ class _TileGpuResult:
     abs_y: int
     crop: Tuple[int, int, int, int]          # (lx0, lx1, ly0, ly1) 核心裁切界
     start_time: float
+    dish: np.ndarray                         # 原始未遮罩 DISH；chunk 為 None 時仍要有底圖可畫
     chunk: Optional[_ChunkGpuState]          # None = 背景塊（核心遮罩全空）
 
 
@@ -310,6 +314,7 @@ def _process_precut_tile_gpu(
         abs_y=abs_y,
         crop=(lx0, lx1, ly0, ly1),
         start_time=start_time,
+        dish=dish,
         chunk=chunk,
     )
 
@@ -338,22 +343,25 @@ def _process_precut_tile_cpu(
     )
 
     if tg.chunk is None:
-        # 背景塊（核心遮罩全空）：仍寫空白 placeholder，讓縫合每格恰有一檔。
+        # 背景塊（IHC 核心遮罩全空，無 Her2+ 訊號、未跑 M2/M3）：底圖仍用原始未遮罩
+        # DISH crop（而非填色 placeholder），讓拼回 overlay_slide 後這塊不是一片空白。
+        dish_crop = tg.dish[ly0:ly1, lx0:lx1]
         _write_blank_tile(
-            output_dir, tile_name, (ly1 - ly0, lx1 - lx0), seam_edges=seam_edges,
+            output_dir, tile_name, dish_crop, seam_edges=seam_edges,
         )
-        logger.info("Tile %s: 核心遮罩全空 → 空白 placeholder", tile_name)
+        logger.info("Tile %s: 核心遮罩全空 → 無細胞標註，僅底圖 DISH", tile_name)
         return []
 
     cr = _finish_chunk_cpu(tg.chunk)
 
     owned = filter_and_absolutize(cr, geometry, tg.abs_x, tg.abs_y)
 
-    # 標註 overlay（醫師 / slide 級 QuPath），以 dish_mask_overlay 為底畫全塊、核心裁切。
+    # 標註 overlay（醫師 / slide 級 QuPath），以原始未遮罩 dish 為底畫全塊、核心裁切
+    # （dish_mask_overlay 只供 M2/M3 計算用，不再是最終底圖）。
     # 以全塊 results/instance_mask/all_dots/dish_nucleus_mask/per_cell_dots 繪製後裁核心：
     # 核心區彼此無重疊、無縫隙，故每個標註像素在拼回的整片中恰出現一次。
     annotated = render_overlay_image(
-        cr.dish_mask_overlay, cr.instance_mask, cr.results,
+        cr.dish, cr.instance_mask, cr.results,
         all_dots=cr.all_dots,
         dish_nucleus_mask=cr.dish_nucleus_mask,
         per_cell_dots=cr.per_cell_dots,
@@ -392,18 +400,15 @@ def _save_tile_array(path: Path, array: np.ndarray) -> None:
 def _write_blank_tile(
     output_dir: Path,
     tile_name: str,
-    crop_hw: tuple,
+    dish_crop: np.ndarray,
     seam_edges: tuple = (False, False),
 ) -> None:
-    """核心遮罩全空的背景塊：寫一張空白 overlay placeholder，維持縫合每格一檔。
+    """核心遮罩全空的背景塊：無細胞可標註，直接寫原始未遮罩 DISH crop，維持縫合每格一檔。
 
-    ``seam_edges`` = ``(right, bottom)``：空白塊的 overlay 仍畫 tile 接縫虛線，讓拼回
-    overlay_slide 後的接縫格線在空白區域維持連續、不留缺口。
+    ``seam_edges`` = ``(right, bottom)``：這塊的 overlay 仍畫 tile 接縫虛線，讓拼回
+    overlay_slide 後的接縫格線在這塊區域維持連續、不留缺口。
     """
-    ch, cw = crop_hw
-    blank_overlay = np.full(
-        (ch, cw, 3), config.background_fill_value, dtype=np.uint8
-    )
+    blank_overlay = np.ascontiguousarray(dish_crop)
     draw_tile_seam_edges(
         blank_overlay, right=seam_edges[0], bottom=seam_edges[1]
     )
@@ -510,6 +515,7 @@ def _process_one_chunk_gpu(
         abs_x=abs_x,
         abs_y=abs_y,
         core_mask=core_mask,
+        dish=dish,
         dish_mask_overlay=m1.dish_mask_overlay,
         instance_mask=instance_mask,
         dish_nucleus_mask=dish_nucleus_mask,
@@ -539,12 +545,30 @@ def _finish_chunk_cpu(gs: _ChunkGpuState) -> ChunkResult:
     )
     results = merge_dot_results_to_cell_analysis(results_pre, per_cell_dots)
 
+    # Off-population（蛋白陰性族群）：未被任一 IHC 細胞贏走的 DISH 核。id_offset 取
+    # 本塊 IHC 最大 id——IHC 局部 id 為 1..N，故偏移後必大於 N，同塊不可能撞號
+    # （全域重編號仍只在 _finish_batch 發生，這個偏移只需活過 per-tile 階段）。
+    matched_dish_ids = {
+        int(d) for cdr in per_cell_dots.values() for d in cdr.assigned_dish_ids
+    }
+    # 點偵測底圖用**原始未遮罩** gs.dish，不能用 gs.dish_mask_overlay：後者核心遮罩外
+    # 已被白填（background_fill_value），而 off-population 核依定義多半就落在核心外，
+    # 用它會讓這族群的 ROI 全被 L 背景閾值濾掉、結構性恆為 0/0 negative。
+    id_offset = max((r.cell_id for r in results), default=0)
+    off_results, off_dots = build_off_population_results(
+        gs.dish, dish_nucleus_mask, matched_dish_ids, config, id_offset,
+    )
+    results = results + off_results
+    # 併入 all_dots，overlay 的橘色（未配對）核才會跟 IHC 細胞一樣畫出紅黑點。
+    all_dots = all_dots + off_dots
+
     return ChunkResult(
         abs_x=gs.abs_x,
         abs_y=gs.abs_y,
         instance_mask=gs.instance_mask,
         dish_nucleus_mask=dish_nucleus_mask,
         dish_mask_overlay=gs.dish_mask_overlay,
+        dish=gs.dish,
         results=results,
         all_dots=all_dots,
         per_cell_dots=per_cell_dots,

@@ -43,7 +43,7 @@ def _build_elastix_params(max_image_dim_px: int):
     # 提高優化強度，讓局部形變更容易被學到。
     params["MaximumNumberOfIterations"] = ["2500"]
     params["NumberOfSpatialSamples"] = ["8000"]
-    params["NumberOfResolutions"] = ["5"]
+    params["NumberOfResolutions"] = ["6"]
 
     return params
 
@@ -82,7 +82,7 @@ def align_images(
         # B-spline 天然無翻折問題，更適合醫學影像配準
         "params": elastix_params,
         "ammi_weight": 0.5,  # AdvancedMattesMutualInformation 互信息權重
-        "bending_penalty_weight": 0.03,  # 降低平滑懲罰以增加非剛性形變
+        "bending_penalty_weight": 0.001,  # 降低平滑懲罰以增加非剛性形變
         "kp_weight": 0,  # 控制點權重（無控制點時會自動忽略）
     }
 
@@ -106,11 +106,6 @@ def align_images(
 
     # 執行配準
     print("開始執行配準...")
-    # elastix/transformix 的 OutputDirectory 預設是 "."，valis 沒設過，所以
-    # result.0.nii / deformationField.nii 會掉在啟動 uvicorn 的目錄（repo 根目錄）。
-    # 切到 output_dir 讓這些中間檔跟著各自的 run 走。
-    # ponytail: chdir 是 process-global；若日後多個 run 同時對準，改成對
-    # sitk.ElastixImageFilter/TransformixImageFilter SetOutputDirectory。
     with contextlib.chdir(output_dir):
         registrar.register()
     print("✓ 配準完成")

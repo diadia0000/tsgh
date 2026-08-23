@@ -48,6 +48,11 @@ class CellAnalysisResult:
     score: float = 0.0
     blue_region_count: int = 0
     excluded: bool = False
+    # 排除原因，excluded=True 時必為三者之一，否則 ""：
+    #   "low_cep17"     紅點 < score_cep17_min_count，算不出 Score（訊號品質）
+    #   "drop_out"      0 核、曾有候選但競爭落敗（IHC/DISH 對位品質）
+    #   "out_of_bounds" 0 核且壓在 UNet++ 核心遮罩邊界上（同上）
+    exclusion_reason: str = ""
 
 
 @dataclass
@@ -62,6 +67,7 @@ class CellDotResult:
     score: float = 0.0                   # Score(r,b)=r/b（cep17≥2 且 ratio≥2 才>0，否則 0）
     blue_region_count: int = 0
     excluded: bool = False               # drop-out(0 核、競爭落敗) / cep17<2 → 排除、打 X
+    exclusion_reason: str = ""           # 見 CellAnalysisResult.exclusion_reason
     her2_dots: List[DetectedDot] = field(default_factory=list)
     cep17_dots: List[DetectedDot] = field(default_factory=list)
     # elastic matching 認領到的 DISH 核 ID（用於視覺化飄移箭頭與粉色輪廓）

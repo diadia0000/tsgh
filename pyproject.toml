@@ -14,7 +14,7 @@ dependencies = [
     "albumentations",
     # valis HEAD also raised its floor to opencv >=4.10.
     "opencv-contrib-python-headless>=4.10,<5",
-    "scikit-image",
+    "scikit-image<0.26",
     "scikit-learn",
     "scipy",
     "pandas>=2",
@@ -71,3 +71,8 @@ valis-wsi = { git = "https://github.com/diadia0000/valis.git" }
 # dinov3 is not on PyPI. Pinned to the commit that was previously installed in
 # the validated venv; without a rev, uv would float to the branch head.
 dinov3 = { git = "https://github.com/facebookresearch/dinov3", rev = "346f38fee679c56a6888f91c51670fae61d364e0" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

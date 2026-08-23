@@ -16,7 +16,7 @@ def _save_triple_tiles(args):
     her2_dir, dish_dir = output_dirs
     
     # 讀取並切割 HER2 tile
-    her2_img = pyvips.Image.new_from_file(str(her2_path), access='sequential')
+    her2_img = pyvips.Image.new_from_file(str(her2_path), access='random')
     her2_tile = her2_img.crop(x, y, w, h)
     her2_tile.write_to_file(
         str(her2_dir / f"tile_x{x}_y{y}.tiff"), 
@@ -24,7 +24,7 @@ def _save_triple_tiles(args):
     )
     
     # 讀取並切割 DISH tile
-    dish_img = pyvips.Image.new_from_file(str(dish_path), access='sequential')
+    dish_img = pyvips.Image.new_from_file(str(dish_path), access='random')
     dish_tile = dish_img.crop(x, y, w, h)
     dish_tile.write_to_file(
         str(dish_dir / f"tile_x{x}_y{y}.tiff"), 
@@ -67,7 +67,7 @@ def generate_triple_tiles(
             raise FileNotFoundError(f"{name} 檔案不存在: {path}")
     
     # 讀取影像尺寸 (使用 HER2 作為參考)
-    ref_img = pyvips.Image.new_from_file(str(her2_tiff), access='sequential')
+    ref_img = pyvips.Image.new_from_file(str(her2_tiff), access='random')
     width = ref_img.width
     height = ref_img.height
     print(f"影像尺寸: {width} x {height}")
@@ -101,10 +101,10 @@ def generate_triple_tiles(
 
 if __name__ == "__main__":
     # 設定路徑
-    output_base = Path("/home/sec312/tsgh/picture/tiff/reigion/")
+    output_base = Path("picture/tiff")
     
-    her2_tiff = output_base / "HER2_region.tiff"
-    dish_tiff = output_base / "DISH_region.tiff"
+    her2_tiff = output_base / "her2_warped_lv0.tiff"
+    dish_tiff = output_base / "dish_warped_lv0.tiff"
     output_dir = output_base / "tiles_region-1024"
     
     # 切割 tiles（使用 1024x1024)
@@ -112,7 +112,7 @@ if __name__ == "__main__":
         her2_tiff=her2_tiff,
         dish_tiff=dish_tiff,
         output_base_dir=output_dir,
-        tile_width=1024,
-        tile_height=1024,
+        tile_width=2048,
+        tile_height=2048,
         workers=16  # 根據您的 CPU 核心數調整
     )
