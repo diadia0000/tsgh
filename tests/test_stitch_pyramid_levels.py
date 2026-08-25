@@ -34,7 +34,7 @@ from skimage import io
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend.algorithms.hybrid.config import config  # noqa: E402
+from backend.algorithms.hybrid.output.tile_x98304_y20480.config import config  # noqa: E402
 from backend.algorithms.hybrid.m0_slide import (  # noqa: E402
     _STITCH_SCRATCH,
     _stitch_overlay_slide,

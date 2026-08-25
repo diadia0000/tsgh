@@ -13,10 +13,10 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 try:
-    from ..config import config, compute_config_hash
+    from ..output.tile_x98304_y20480.config import config, compute_config_hash
     from ..m3_cell_detection import CellAnalysisResult
 except ImportError:
-    from config import config, compute_config_hash
+    from backend.algorithms.hybrid.output.tile_x98304_y20480.config import config, compute_config_hash
     from m3_cell_detection import CellAnalysisResult
 
 from .m0_stitch import TileGeometry

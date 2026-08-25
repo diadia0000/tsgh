@@ -76,7 +76,7 @@ try:
         dedup_cross_tile_duplicates,
     )
 except ImportError:
-    from config import config, compute_config_hash
+    from backend.algorithms.hybrid.output.tile_x98304_y20480.config import config, compute_config_hash
     from m1_overlay import (
         find_paired_tiles,
         parse_tile_coords,

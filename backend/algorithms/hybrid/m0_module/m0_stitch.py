@@ -60,11 +60,11 @@ import pyvips
 from scipy.spatial import cKDTree
 
 try:
-    from ..config import config
+    from ..output.tile_x98304_y20480.config import config
     from ..hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
     from ..m2_segmentation import _relabel_sequential, _remove_border_cells
 except ImportError:
-    from config import config
+    from backend.algorithms.hybrid.output.tile_x98304_y20480.config import config
     from hybrid_data_types import CellAnalysisResult, CellDotResult, DetectedDot
     from m2_segmentation import _relabel_sequential, _remove_border_cells
 

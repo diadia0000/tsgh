@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
 
-from backend.algorithms.hybrid.config import config
+from backend.algorithms.hybrid.output.tile_x98304_y20480.config import config
 from backend.algorithms.hybrid.hybrid_pipeline import run_batch
 from backend.algorithms.hybrid.m0_slide import PrecutStream
 from backend.api import hybrid_progress
