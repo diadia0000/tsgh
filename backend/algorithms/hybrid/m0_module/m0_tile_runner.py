@@ -23,7 +23,7 @@ from skimage import io
 sparse.check_sparse_tensor_invariants.disable()
 
 try:
-    from ..output.tile_x98304_y20480.config import config
+    from ..config import config
     from ..m1_overlay import (
         apply_mask_to_ihc_image,
         fuse_masked_ihc_with_dish,
@@ -47,7 +47,7 @@ try:
         render_overlay_image,
     )
 except ImportError:
-    from backend.algorithms.hybrid.output.tile_x98304_y20480.config import config
+    from backend.algorithms.hybrid.config import config
     from m1_overlay import (
         apply_mask_to_ihc_image,
         fuse_masked_ihc_with_dish,
