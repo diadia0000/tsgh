@@ -148,7 +148,8 @@ class CziPreprocessor:
             results = list(tqdm(
                 pool.imap_unordered(process_strip_worker, all_strip_tasks),
                 total=total_tasks,
-                desc="處理進度"
+                desc="處理進度",
+                unit="區塊",
             ))
         
         # 檢查錯誤

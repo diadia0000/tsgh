@@ -1,12 +1,12 @@
 /**
  * Turns "which alignment steps are finished" into a percentage and an ETA.
  *
- * The backend reports only pending/running/done -- no progress number exists to
- * read -- so the only honest percentage is the one the step chain itself gives:
- * four steps, each either finished or not. That alone would leave the bar frozen
- * at 25% for the length of a step, so a step already timed on this machine also
- * contributes its elapsed fraction, and the steps are weighted by how long they
- * actually took rather than counted equally.
+ * The step chain gives the only percentage that is always available: four
+ * steps, each either finished or not. That alone would leave the bar frozen at
+ * 25% for the length of a step, so the running step also contributes a fraction
+ * -- its own done/total when the backend publishes a counter for it, otherwise
+ * its elapsed share of how long it took on this machine before -- and the steps
+ * are weighted by how long they actually took rather than counted equally.
  *
  * Everything here degrades to plain step counting on a machine with no history
  * yet, and `fromHistory` says which of the two the caller is showing -- an
@@ -46,12 +46,17 @@ export function estimateProgress({
   currentStep,
   elapsedInStep,
   durations,
+  fraction = null,
 }: {
   steps: readonly string[]
   doneSteps: readonly string[]
   currentStep: string | null
   elapsedInStep: number
   durations: StepDurations
+  /** The running step's own done/total when the job publishes a counter; null
+   *  falls back to the elapsed-time guess. Counted progress moves the bar on a
+   *  machine with no history too, where the guess has nothing to go on. */
+  fraction?: number | null
 }): { percent: number; etaSeconds: number | null; fromHistory: boolean } {
   const fromHistory = steps.every((s) => durations[s] > 0)
   const weight = (step: string) => (fromHistory ? durations[step] : 1)
@@ -61,13 +66,19 @@ export function estimateProgress({
   const isDone = (step: string) => doneSteps.includes(step)
   let elapsedWeight = steps.filter(isDone).reduce((sum, s) => sum + weight(s), 0)
 
-  // The running step counts for the fraction of its usual duration spent so far.
+  // The running step counts for its measured fraction when it reports one, else
+  // for the fraction of its usual duration spent so far.
   let remainingCurrent = 0
   if (currentStep && !isDone(currentStep) && steps.includes(currentStep)) {
     const expected = durations[currentStep]
-    if (expected > 0) {
-      const fraction = Math.min(elapsedInStep / expected, CURRENT_STEP_CAP)
-      elapsedWeight += weight(currentStep) * fraction
+    if (fraction !== null && Number.isFinite(fraction)) {
+      const done = Math.min(Math.max(fraction, 0), CURRENT_STEP_CAP)
+      elapsedWeight += weight(currentStep) * done
+      // Rate measured on this run once a unit has finished; before that, history.
+      remainingCurrent = done > 0 ? (elapsedInStep / done) * (1 - done) : expected
+    } else if (expected > 0) {
+      const spent = Math.min(elapsedInStep / expected, CURRENT_STEP_CAP)
+      elapsedWeight += weight(currentStep) * spent
       remainingCurrent = Math.max(expected - elapsedInStep, 0)
     }
   }

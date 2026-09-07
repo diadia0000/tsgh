@@ -13,8 +13,8 @@ class JobAccepted(BaseModel):
 
 class JobProgress(BaseModel):
     """How far a long job has got, when the job knows. Absent (None on
-    JobStatus) whenever nothing is publishing it -- the alignment pipeline
-    reports only step transitions, and its panel estimates from those.
+    JobStatus) whenever nothing is publishing it -- before a job's first
+    counter reports, or under an older backend; the panel then estimates.
 
     `done`/`total` count the units named by `unit_label`; `phase` says which
     stretch of the run is executing, because a pipeline's last phase can be

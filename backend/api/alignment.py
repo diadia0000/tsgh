@@ -22,6 +22,7 @@ from backend.algorithms.thriple_image_layer.module1_preprocess import CziPreproc
 from backend.algorithms.thriple_image_layer.module2_alignment import align_images
 from backend.algorithms.thriple_image_layer.module3_roi_evaluation import evaluate_roi
 from backend.algorithms.thriple_image_layer.module4_thumbnail import generate_thumbnail
+from backend.api import tqdm_progress
 from backend.api.jobs import active_job, submit_job
 from backend.io import pyramid
 from backend.schemas.alignment import (
@@ -33,6 +34,9 @@ from backend.schemas.alignment import (
     run_base,
 )
 from backend.schemas.common import JobAccepted
+
+# Republish the pipeline's tqdm bars as job progress (see tqdm_progress).
+tqdm_progress.install()
 
 router = APIRouter(prefix="/api/alignment")
 
@@ -175,7 +179,7 @@ def run_preprocess(body: AlignmentConfigIn, background_tasks: BackgroundTasks) -
         CziPreprocessor(config).run()
         return str(config.input_dir), {"modalities": [m.name for m in config.modalities]}
 
-    return JobAccepted(job_id=submit_job(background_tasks, _run, key=body.run_id))
+    return JobAccepted(job_id=submit_job(background_tasks, tqdm_progress.reporting(_run), key=body.run_id))
 
 @router.post("/align", response_model=JobAccepted)
 def run_align(body: AlignmentConfigIn, background_tasks: BackgroundTasks) -> JobAccepted:
@@ -185,7 +189,7 @@ def run_align(body: AlignmentConfigIn, background_tasks: BackgroundTasks) -> Job
         align_images(config)  # returns a non-serializable VALIS registrar; not forwarded (guardrail 7)
         return str(config.pickle_path), {"output_dir": str(config.output_dir)}
 
-    return JobAccepted(job_id=submit_job(background_tasks, _run, key=body.run_id))
+    return JobAccepted(job_id=submit_job(background_tasks, tqdm_progress.reporting(_run), key=body.run_id))
 
 
 @router.post("/roi-eval", response_model=JobAccepted)
@@ -198,7 +202,7 @@ def run_roi_eval(body: AlignmentConfigIn, background_tasks: BackgroundTasks) -> 
             "overlay": str(config.output_dir / "Merged_ROI.png")
         }
 
-    return JobAccepted(job_id=submit_job(background_tasks, _run, key=body.run_id))
+    return JobAccepted(job_id=submit_job(background_tasks, tqdm_progress.reporting(_run), key=body.run_id))
 
 
 @router.post("/thumbnail", response_model=JobAccepted)
@@ -217,4 +221,4 @@ def run_thumbnail(body: AlignmentConfigIn, background_tasks: BackgroundTasks) ->
         _published_run_id = body.run_id
         return str(result_tiff), metadata
 
-    return JobAccepted(job_id=submit_job(background_tasks, _run, key=body.run_id))
+    return JobAccepted(job_id=submit_job(background_tasks, tqdm_progress.reporting(_run), key=body.run_id))

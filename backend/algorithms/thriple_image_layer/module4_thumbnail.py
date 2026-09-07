@@ -3,6 +3,7 @@
 產生對齊疊合縮圖
 """
 import pyvips
+from tqdm import tqdm
 from valis import registration, slide_io
 
 try:
@@ -57,6 +58,7 @@ def generate_thumbnail(
     for temp_file in (dish_temp, her2_temp):
         temp_file.unlink(missing_ok=True)
 
+    stages = tqdm(total=3, desc="產生疊合影像", unit="步")
     print(f"對齊並儲存 DISH 影像 (non_rigid={use_non_rigid})...")
     dish_warped = dish_obj.warp_slide(level=level, non_rigid=True, crop="overlap")
     dish_warped.tiffsave(
@@ -72,6 +74,8 @@ def generate_thumbnail(
         bigtiff=True,
     )
 
+    stages.update()
+
     print("對齊並儲存 HER2 影像 (non_rigid=False)...")
     her2_warped = her2_obj.warp_slide(level=level, non_rigid=True, crop="overlap")
     her2_warped.tiffsave(
@@ -86,6 +90,8 @@ def generate_thumbnail(
         subifd=False,
         bigtiff=True,
     )
+
+    stages.update()
 
     # 使用 pyvips 讀取並合併（串流處理，不會一次載入全部記憶體）
     print(f"合併影像中 (使用一般 0.5/0.5 融合)...")
@@ -118,6 +124,9 @@ def generate_thumbnail(
         Q=100,
         compression='jpeg',
     )
+
+    stages.update()
+    stages.close()
 
     print(f"已儲存: {output_path}")
     print(f"影像尺寸: {merged.width} x {merged.height}, 通道數: {merged.bands}")

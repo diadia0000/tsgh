@@ -200,15 +200,27 @@ export function PipelinePanel({
     setAlignOpen(false)
   }, [complete])
 
+  // The running step's own counter (module1 strips, module3 ROIs, module4
+  // stages), published by the backend's tqdm hook; null until the step's first
+  // bar reports, and for older backends.
+  const counts = running ? job.data?.progress ?? null : null
+  const currentStep = pipelineStepIndex !== null ? ALIGN_STEPS[pipelineStepIndex].step : null
+  // VALIS runs the align step as a sequence of stages, each with a counter of
+  // its own. Those counts are shown but do not drive the bar, which would fall
+  // back to zero at every stage boundary; that step stays on the time estimate.
+  const fraction =
+    counts && counts.total > 0 && currentStep !== 'align' ? counts.done / counts.total : null
+
   // Percent and ETA for the whole four-step chain. Fed the run's own record of
   // finished steps, so a resumed run starts from where it actually is rather
   // than from zero.
   const progress = estimateProgress({
     steps: ALIGN_STEPS.map((s) => s.step),
     doneSteps: run?.done ?? [],
-    currentStep: pipelineStepIndex !== null ? ALIGN_STEPS[pipelineStepIndex].step : null,
+    currentStep,
     elapsedInStep: elapsed,
     durations,
+    fraction,
   })
 
   // A just-created folder isn't in the server list until it refetches; keep it
@@ -481,6 +493,11 @@ export function PipelinePanel({
               {pipelineStepIndex !== null && (
                 <p className="mt-2 text-xs text-sky-300">
                   {ALIGN_STEPS[pipelineStepIndex].plain}…（第 {pipelineStepIndex + 1} 步，共 {ALIGN_STEPS.length} 步）
+                </p>
+              )}
+              {counts && counts.total > 0 && (
+                <p className="mt-1 text-xs text-neutral-400">
+                  {counts.phase} {counts.done}/{counts.total} {counts.unit_label}
                 </p>
               )}
               <div className="mt-2 flex items-baseline justify-between text-xs">

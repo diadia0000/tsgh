@@ -5,6 +5,7 @@ from PIL import Image
 from scipy.ndimage import binary_erosion
 from skimage import color
 from sklearn.metrics import mutual_info_score, normalized_mutual_info_score
+from tqdm import tqdm
 from valis import registration, slide_io, warp_tools
 import pyvips
 
@@ -77,7 +78,7 @@ def evaluate_roi(config: RegistrationConfig) -> None:
     slide_names = sorted(registrar.slide_dict.keys())
     rois = {}
     
-    for name in slide_names:
+    for name in tqdm(slide_names, desc="提取 ROI", unit="張"):
         slide_obj = registrar.slide_dict[name]
         roi = slide_obj.warp_img(
             img=slide_obj.image,
