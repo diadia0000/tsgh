@@ -105,9 +105,6 @@ python hybrid_pipeline.py --ihc a.tiff --dish b.tiff --workers 4 --resume   # un
 
 Tiles pair by filename coordinate `tile_x{int}_y{int}`. There is no `--batch` mode — `--ihc`/`--dish` already precuts internally.
 
-`workers=4` is the practical setting for a full slide on a 32 GB card; it needs materially more RAM/VRAM than a small ROI request (a full ~35,700-tile slide measured ~14 GB peak RSS and ~30 GB VRAM at `workers=4`, see Hardware below). `config.cuda_alloc_conf = "expandable_segments:True"` (already the default in `config_example.py`) is required at `workers>1` to avoid intermittent CUDA allocator OOM — even so, a `workers=4` batch can still OOM on rare occasion (~1 in 10 runs measured on a crop 48x smaller than a full slide); combined VRAM headroom across all four workers is tight (~2.5 GB).
-
-For a full-slide run, point `--ihc`/`--dish` at the **registered** pair `module4_thumbnail.py` already produces (`her2_warped_lv0.tiff` / `dish_warped_lv0.tiff`), not the raw `*_processed.tiff` Module 1 output — the two are naturally equal-sized (`crop="overlap"`) and analysis-ready. Feeding the raw pair silently analyzes misaligned tissue (see [`docs/hybrid-pipeline/44-conform-intersection-shift-investigation.md`](docs/hybrid-pipeline/44-conform-intersection-shift-investigation.md)).
 
 ### Triple image layer pipeline (preprocessing)
 
@@ -184,17 +181,6 @@ A run leaves exactly three files in `output_dir/`. No per-tile intermediates —
 | RAM | 32 GB | measured **~14 GB peak RSS** on the real ~35,700-tile registered slide (round 15) |
 | GPU | 18 GB VRAM | 32 GB (`workers=4` peaked ~30.4 GB) |
 | Disk | 100 GB SSD | ~350 GB output, NVMe |
-
-A full-slide run also wants `RLIMIT_NOFILE` comfortably above the tile count (~35,700 on the real
-registered slide); the pipeline raises the soft limit itself when the hard limit allows.
-
-The RAM figure dropped sharply from an earlier "~60 GB" estimate for two independent reasons: the
-round-13 `tifffile` stitch backend (default since then) replaced a lazy join holding every overlay
-tile open with band streaming (45.6 → 17.0 GB on its own), and the ~60 GB figure itself was measured
-on an **unregistered, 27,565-tile canvas** later found to be the wrong input for a full-slide run —
-see [`docs/hybrid-pipeline/44-conform-intersection-shift-investigation.md`](docs/hybrid-pipeline/44-conform-intersection-shift-investigation.md).
-The real registered slide is larger (35,700 tiles) but its measured peak RSS is lower still (13.66 GB,
-[`docs/hybrid-pipeline/46-round-15-eta-estimation-implementation.md`](docs/hybrid-pipeline/46-round-15-eta-estimation-implementation.md) §3.7).
 
 ---
 
