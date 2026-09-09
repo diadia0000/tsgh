@@ -58,6 +58,7 @@ except ImportError:
 import numpy as np
 import pyvips
 from scipy.spatial import cKDTree
+from tqdm import tqdm
 
 try:
     from ..config import config
@@ -598,6 +599,13 @@ def _stitch_overlay_slide_pyvips(output_dir: Path, geometry: TileGeometry) -> No
     """
     overlay_dir = output_dir / _STITCH_SCRATCH
     slide = _join_overlay_tiles(output_dir, geometry)
+    # tiffsave 是單一呼叫，沒有可數的單位；libvips 的 eval 訊號給的是 0–100 的百分比
+    # （在呼叫端執行緒上發出，所以 API 的 job 進度也收得到）。
+    bar = tqdm(total=100, desc="縫合影像", unit="%")
+    slide.set_progress(True)
+    slide.signal_connect(
+        "eval", lambda _img, p: bar.update(p.percent - bar.n) if p.percent > bar.n else None,
+    )
     slide.tiffsave(
         str(output_dir / "overlay_slide.tiff"),
         tile=True,
@@ -620,6 +628,7 @@ def _stitch_overlay_slide_pyvips(output_dir: Path, geometry: TileGeometry) -> No
         # level** — `tests/test_stitch_pyramid_levels.py` will fail if you do.
         predictor="none",
     )
+    bar.close()
     logger.info(
         "overlay_slide.tiff 縫合完成: %d×%d px", slide.width, slide.height
     )
@@ -826,9 +835,11 @@ def _stitch_overlay_slide_tifffile(output_dir: Path, geometry: TileGeometry) -> 
 
     with ThreadPoolExecutor(max_workers=_ENCODE_THREADS) as pool, \
             ThreadPoolExecutor(max_workers=1,
-                               thread_name_prefix="stitch-band-read") as rpool:
+                               thread_name_prefix="stitch-band-read") as rpool, \
+            tqdm(total=len(geometry.row_of), desc="縫合影像", unit="列") as bar:
         for band in _prefetch_bands(_band_source(output_dir, geometry), rpool):
             feed(0, band, pool)
+            bar.update()
         flush(0, pool)
 
     with tifffile.TiffWriter(str(output_dir / "overlay_slide.tiff"),

@@ -6,7 +6,6 @@
     3. 所有 Cellpose 分割出的細胞標記為陽性。
 """
 
-import logging
 import math
 from typing import List
 
@@ -18,8 +17,6 @@ try:
     from ..hybrid_data_types import CellAnalysisResult  # noqa: F401 (re-exported)
 except ImportError:
     from hybrid_data_types import CellAnalysisResult  # noqa: F401 (re-exported)
-
-logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------
@@ -39,7 +36,6 @@ def build_all_positive_results(
     """
     cell_ids = sorted(int(cid) for cid in np.unique(cell_instance_mask) if cid != 0)
     if not cell_ids:
-        logger.info("All-positive 標註完成: 0 個細胞")
         return []
 
     # 一次掃完整張 label mask 取得所有質心，避免逐細胞建立全圖 boolean mask。
@@ -62,7 +58,6 @@ def build_all_positive_results(
             )
         )
 
-    logger.info("All-positive 標註完成: %d 個細胞", len(results))
     return results
 
 
@@ -106,9 +101,4 @@ def enlarge_cell_instances(
     if distance <= 0:
         return cell_instance_mask
 
-    enlarged = expand_labels(cell_instance_mask, distance=distance)
-    logger.info(
-        "enlarge_cell_instances: %d 顆細胞, factor=%.2f(面積), 中位半徑=%.1fpx, 外擴=%.1fpx",
-        int(areas.size), factor, median_radius, distance,
-    )
-    return enlarged
+    return expand_labels(cell_instance_mask, distance=distance)

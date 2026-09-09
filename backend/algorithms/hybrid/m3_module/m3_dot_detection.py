@@ -20,7 +20,6 @@ DISH 核彈性匹配在 m3_elastic_matching.py（該檔的 docstring 即該演�
 
 from __future__ import annotations
 
-import logging
 from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
@@ -38,8 +37,6 @@ from .m3_dot_kernels import (
     _rgb_to_lab,
 )
 from .m3_elastic_matching import elastic_dish_nucleus_matching
-
-logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------
@@ -219,12 +216,6 @@ def detect_all_dots(
 
     _finalize_per_cell(per_cell, dish_ids_by_cell, drop_out_ids, oob_overlap_cells, config)
 
-    n_red = sum(1 for d in all_dots if d.dot_type == "cep17")
-    n_black = sum(1 for d in all_dots if d.dot_type == "her2")
-    logger.info(
-        "detect_all_dots: 紅點=%d, 黑點=%d, 涉及細胞=%d",
-        n_red, n_black, len(per_cell),
-    )
     return all_dots, per_cell, dish_nucleus_mask
 
 
@@ -545,8 +536,4 @@ def build_off_population_results(
             )
         )
 
-    logger.info(
-        "Off-population 標註完成: %d 個未配對 DISH 核, 紅黑點 %d",
-        len(results), len(dots),
-    )
     return results, dots

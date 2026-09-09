@@ -1,20 +1,3 @@
-"""Republishes the tqdm bars a background job runs as that job's progress.
-
-tqdm is already the alignment pipeline's progress primitive: module1 wraps its
-strip pool in one, modules 3/4 count their stages with one, and VALIS wraps
-every registration stage ("Converting images", "Finding rigid transforms", ...)
-in one of its own. Hooking the class once, here, turns all of them into
-`/api/jobs/{id}` counts -- the same shape as hybrid_progress: observe what the
-pipeline already emits instead of threading a callback through
-`backend/algorithms/**`.
-
-Opt-in per job via `reporting(run)`, not global: cellpose emits tqdm bars too,
-and inside a hybrid job they would overwrite the per-tile counter that
-hybrid_progress publishes. Only bars on the job's own thread report (that is
-where the job id contextvar lives); a bar inside a Pool worker publishes into
-the forked copy of the registry and is never seen, which is the right outcome.
-Outside any job (CLI runs, tests) the hook is a no-op.
-"""
 from contextvars import ContextVar
 from typing import Callable
 
@@ -47,11 +30,16 @@ def _publish(bar: tqdm) -> None:
 
 
 def install() -> None:
-    """Hook tqdm.update/close once. Idempotent."""
+    """Hook tqdm.__init__/update/close once. Idempotent."""
     global _installed
     if _installed:
         return
-    orig_update, orig_close = tqdm.update, tqdm.close
+    orig_init, orig_update, orig_close = tqdm.__init__, tqdm.update, tqdm.close
+
+    def __init__(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        if not self.disable:
+            _publish(self)
 
     def update(self, n=1):
         shown = orig_update(self, n)
@@ -67,5 +55,5 @@ def install() -> None:
         if was_open:
             _publish(self)
 
-    tqdm.update, tqdm.close = update, close
+    tqdm.__init__, tqdm.update, tqdm.close = __init__, update, close
     _installed = True

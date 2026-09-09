@@ -1,9 +1,9 @@
-"""tqdm bars inside an alignment job must land as job progress -- and nowhere else.
+"""tqdm bars inside a reporting job must land as job progress -- and nowhere else.
 
-`backend/api/tqdm_progress.py` hooks tqdm.update/close so the counters the
-alignment modules and VALIS already keep become `/api/jobs/{id}` counts. Two
-things can silently break: the hook stops firing (bar never moves), or it fires
-for jobs that did not opt in and tramples the hybrid pipeline's tile counter.
+`backend/api/tqdm_progress.py` hooks tqdm.__init__/update/close so the bars the
+alignment modules, VALIS and the hybrid pipeline already keep become
+`/api/jobs/{id}` counts. Two things can silently break: the hook stops firing
+(bar never moves), or it fires for jobs that did not opt in.
 """
 from __future__ import annotations
 
@@ -37,6 +37,16 @@ def test_bar_inside_reporting_job_publishes_counts():
     assert (seen.phase, seen.done, seen.total, seen.unit_label) == ("處理進度", 3, 4, "區塊")
 
 
+def test_bar_publishes_its_denominator_on_creation():
+    """A stage's total is known the moment its bar opens; a panel should get
+    0/total then, not sit empty until the first unit lands."""
+    tqdm_progress.install()
+    job_id = _job()
+    _run_bar_in_job(job_id, tqdm_progress.reporting(lambda: (tqdm(total=25, desc="分析", unit="塊"), {})))
+    progress = jobs.get_job(job_id).progress
+    assert (progress.phase, progress.done, progress.total, progress.unit_label) == ("分析", 0, 25, "塊")
+
+
 def test_close_publishes_the_final_count():
     """`for x in tqdm(...)` skips update() inside mininterval, so the last items
     of a loop only land when the bar closes -- that must still be published."""
@@ -61,8 +71,8 @@ def test_default_unit_is_dropped():
 
 
 def test_bar_in_job_that_did_not_opt_in_is_ignored():
-    """A hybrid job runs cellpose, which has tqdm bars of its own; they must not
-    overwrite the tile counter hybrid_progress publishes."""
+    """A job that never opted in keeps progress=None, whatever bars the
+    libraries it calls happen to open."""
     tqdm_progress.install()
     job_id = _job()
     _run_bar_in_job(job_id, lambda: tqdm(total=2, desc="cellpose").update())

@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from torch import cuda
+from tqdm import tqdm
 
 # 將專案根目錄與 hybrid 目錄加入 sys.path，確保直接執行腳本時可解析套件匯入
 _HYBRID_DIR = Path(__file__).resolve().parent
@@ -116,6 +117,9 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+# 第三方套件的 INFO 只是雜訊（pyvips 每個 threadpool 一行、dinov3 印 rope 設定），壓到 WARNING。
+for _name in ("pyvips", "dinov3"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -227,13 +231,11 @@ def run_batch(
         stats["skipped" if len(owned) == 0 else "success"] += 1
         if checkpoint:
             _checkpoint_save(ckpt_dir, abs_x, abs_y, owned)
+        bar.update()
 
     remaining = total - len(done)
 
     if remaining == 0:
-        # 斷點裡已經有全部的塊：直接去做全域合併 + 縫合。不短路的話，兩條路徑都會為了
-        # 零塊工作先把三個模型載起來（多行程還是每個 worker 各一份），純浪費。這條路徑
-        # 也正好是「只想重跑最後的縫合」時要走的。
         logger.info("斷點已涵蓋全部 %d 塊，跳過分析，直接進行全域合併與縫合。", total)
         return _finish_batch(
             run_id, per_tile_owned, stats, total, output_dir, geometry,
@@ -243,17 +245,21 @@ def run_batch(
         # 多行程路徑：模型只在 worker 內載入，父行程完全不碰 CUDA（不然會白付一份
         # context + 權重）。回傳的 tuple 與單行程迴圈產生的完全同型，故下方的全域
         # 合併 / 重編號 / 縫合完全共用，一行都不必改。
-        _run_tiles_multiprocess(
-            tiles, remaining, geometry, output_dir, merge_dir, workers, cfg_hash,
-            on_tile=_record,
-        )
+        with tqdm(total=remaining, desc="分析", unit="塊") as bar:
+            _run_tiles_multiprocess(
+                tiles, remaining, geometry, output_dir, merge_dir, workers, cfg_hash,
+                on_tile=_record,
+            )
         return _finish_batch(
             run_id, per_tile_owned, stats, total, output_dir, geometry,
         )
 
-    unet = _init_unet_inferencer()
-    cellpose = _init_cellpose_segmenter()
-    dish_cellpose = _init_dish_cellpose_segmenter()
+    unet, cellpose, dish_cellpose = [
+        init() for init in tqdm(
+            (_init_unet_inferencer, _init_cellpose_segmenter, _init_dish_cellpose_segmenter),
+            desc="載入模型", unit="個", mininterval=0,
+        )
+    ]
 
     def _collect(entry: Tuple[int, int, Future]) -> None:
         """收一塊已提交的 CPU 後段結果並累計統計；其真實錯誤在此 raise → fail-fast。"""
@@ -273,15 +279,12 @@ def run_batch(
     pending: Optional[Tuple[int, int, Future]] = None
     with _frozen_gc_generation() as refreezer, \
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="tile-cpu") as pool, \
-            ThreadPoolExecutor(max_workers=1, thread_name_prefix="tile-read") as rpool:
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="tile-read") as rpool, \
+            tqdm(total=remaining, desc="分析", unit="塊") as bar:
         # 讀檔提前一塊（doc 30 Option L）：本塊的 GPU 前向跑的同時，下一塊的兩個檔已在
         # 背景解碼。用**獨立**的單執行緒池，不跟上面 tile-cpu 那條（跑 detect_all_dots
         # 的背景臂）互搶——那是兩份不相干的工作，共用一條會把讀取排在 CPU 後段之後。
-        for idx, ((ihc_path, dish_path, (ax, ay)), read_fut) in enumerate(
-                prefetch_tile_reads(tiles, rpool), start=1):
-            logger.info(
-                "[%d/%d] 處理 tile: %s", idx, remaining, dish_path.stem
-            )
+        for (ihc_path, dish_path, (ax, ay)), read_fut in prefetch_tile_reads(tiles, rpool):
             try:
                 preread = read_fut.result()
             except Exception as exc:
@@ -356,6 +359,7 @@ def _finish_batch(
     # 重新編號成 1..N。這是唯一發生全域 cell 編號的地方；質心等其他欄位保留。
     # Ghost-row 安全網：兩塊各自獨立偵測到同一顆物理細胞、質心差幾個像素時，
     # core-ownership 去重會兩邊都留下（見 m0_stitch 模組 docstring）。
+    export = tqdm(total=3, desc="匯出報表", unit="步")
     ghost_dedup_px = float(getattr(config, "ghost_dedup_distance_px", 6.0))
     per_tile_owned = dedup_cross_tile_duplicates(per_tile_owned, ghost_dedup_px)
 
@@ -368,10 +372,14 @@ def _finish_batch(
     renumbered = [
         replace(r, cell_id=i) for i, (_ay, _ax, _cid, r) in enumerate(flat, start=1)
     ]
+    export.update()
 
     # 表格輸出（空清單由 export_* 自身妥善處理，不特判）。
     export_tile_csv(renumbered, output_dir / "report.csv")
+    export.update()
     export_summary_statistics(renumbered, output_dir / "summary.txt")
+    export.update()
+    export.close()
 
     # slide 級 overlay：把每格核心裁切的暫存 tile 惰性拼回整片，拼完刪暫存夾。
     _stitch_overlay_slide(output_dir, geometry)

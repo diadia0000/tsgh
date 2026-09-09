@@ -20,15 +20,12 @@
 
 from __future__ import annotations
 
-import logging
 import math
 from typing import Dict, List, Set, Tuple
 
 import numpy as np
 from scipy.ndimage import center_of_mass, find_objects
 from scipy.spatial import cKDTree
-
-logger = logging.getLogger(__name__)
 
 
 def _centroids_and_areas(
@@ -184,12 +181,4 @@ def elastic_dish_nucleus_matching(
     # 0 核細胞再分：曾有候選卻競爭落敗=drop-out（打 X）；從無候選=照常計入(0/0)。
     drop_out_ids: Set[int] = {c for c in had_candidate if c not in assigned_cell}
 
-    n_nocand = sum(1 for c in ihc_ids if not result[c] and c not in had_candidate)
-    logger.info(
-        "elastic_dish_nucleus_matching(overlap-first): IHC=%d, DISH=%d, "
-        "matched(1核)=%d (其中重疊=%d), drop-out(競爭落敗)=%d, 無候選(計入)=%d, "
-        "factor=%.2f, min_reach=%.1f",
-        len(ihc_ids), len(dish_ids), len(assigned_cell), n_overlap_assigned,
-        len(drop_out_ids), n_nocand, factor, min_reach,
-    )
     return result, drop_out_ids

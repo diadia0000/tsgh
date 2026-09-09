@@ -286,11 +286,6 @@ class UNetPPInference:
         win_h, win_w = self.image_size
         windows = self._generate_window_coords(h, w, win_h, win_w)
 
-        logger.info(
-            "滑動視窗推論: 影像 (%d, %d), 視窗 (%d, %d), 無重疊, 共 %d 個視窗",
-            h, w, win_h, win_w, len(windows),
-        )
-
         num_classes = int(getattr(self.model, "classes", 2))
         proba_full = None
         mask_full = None

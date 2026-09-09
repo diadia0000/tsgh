@@ -155,12 +155,6 @@ def segment_windowed(
         sub = canvas[iy:iy + ph, ix:ix + pw]
         sub[(sub == 0) & patch] = new_id
 
-    n_raw, n_kept = len(instances), len(accepted)
-    if n_kept != n_raw:
-        logger.info(
-            "重疊去重: %d 個視窗 instance → %d 顆（去除重複 %d），overlap=%d, iomin=%.2f",
-            n_raw, n_kept, n_raw - n_kept, overlap, dedup_iomin,
-        )
     return canvas
 
 
@@ -254,15 +248,8 @@ def _remove_border_cells(instance_mask: np.ndarray) -> np.ndarray:
     Returns:
         移除邊界細胞後的 ``int32`` 實例遮罩（ID 連續化）。
     """
-    before_ids = set(np.unique(instance_mask)) - {0}
-
     cleaned = clear_border(instance_mask)
     cleaned = cleaned.astype(np.int32)
-
-    after_ids = set(np.unique(cleaned)) - {0}
-    removed_count = len(before_ids) - len(after_ids)
-    if removed_count > 0:
-        logger.info("移除 %d 個邊界細胞", removed_count)
 
     return _relabel_sequential(cleaned)
 

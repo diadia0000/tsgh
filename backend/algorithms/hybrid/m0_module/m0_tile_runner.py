@@ -349,7 +349,6 @@ def _process_precut_tile_cpu(
         _write_blank_tile(
             output_dir, tile_name, dish_crop, seam_edges=seam_edges,
         )
-        logger.info("Tile %s: 核心遮罩全空 → 無細胞標註，僅底圖 DISH", tile_name)
         return []
 
     cr = _finish_chunk_cpu(tg.chunk)
@@ -382,12 +381,6 @@ def _process_precut_tile_cpu(
             merge_dir, output_dir, tile_name, cr, (lx0, lx1, ly0, ly1)
         )
 
-    elapsed = time.perf_counter() - tg.start_time
-    pos_count = sum(1 for r in owned if r.is_her2_positive)
-    logger.info(
-        "Tile %s 完成: 核心擁有 %d 細胞 (%d 陽性), %.2f 秒",
-        tile_name, len(owned), pos_count, elapsed,
-    )
     return owned
 
 
@@ -448,7 +441,6 @@ def _export_chunk_merge_overlay(
         output_dir / "merge_overlay" / f"{tile_name}.tiff",
         annotated[ly0:ly1, lx0:lx1],
     )
-    logger.info("Merge overlay 匯出完成: %s", tile_name)
 
 
 def _process_one_chunk_gpu(

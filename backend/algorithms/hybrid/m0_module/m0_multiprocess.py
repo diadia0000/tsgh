@@ -366,8 +366,6 @@ def _run_tiles_multiprocess(
             collected.append(payload)
             if on_tile is not None:
                 on_tile(*payload)
-            logger.info("[%d/%d] 已回收 tile_x%d_y%d",
-                        len(collected), total, payload[0], payload[1])
     except BaseException:
         # 任一塊失敗 → 先停止供料、再終止所有兄弟行程，然後才往上拋。放兄弟跑完會產出
         # 「有未記載破洞」的玻片，正是單行程 fail-fast 設計要擋的失效模式（doc 20 §1 item 2）。
