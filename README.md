@@ -74,11 +74,6 @@ tsgh/
 │   ├── tests/                          # API-side pytest suite
 │   └── main.py                         # FastAPI app (uvicorn, port 8000)
 ├── frontend/                           # React + Vite + OpenSeadragon viewer
-├── cell_mask/                          # Model *training* only, not part of the runtime pipeline
-├── scripts/                            # Standalone utilities + perf/probe scripts
-├── tests/                              # Pipeline pytest suite
-├── docs/UI/                            # FastAPI + React handoff docs (start at README.md)
-├── docs/BACKLOG.md                     # Open items
 ├── Dockerfile / docker-compose.yml     # nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04
 └── pyproject.toml                      # Deps + uv config; uv.lock is the lockfile
 ```
